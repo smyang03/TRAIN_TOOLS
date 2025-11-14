@@ -240,8 +240,8 @@ class MainApp:
 		keysetting[34]=cfg['SpecialKeySetting']['ViewClass']
 		keysetting[35]=cfg['SpecialKeySetting']['OnlySelect']
 		keysetting[36]=cfg['BasicKeySetting']['CopyLabeling']
-		keysetting[37]=cfg['SpecialKeySetting']['OnlyBox']        
-		keysetting[38]=cfg['BasicKeySetting']['ResetLabeling']
+		keysetting[37]=cfg['SpecialKeySetting']['OnlyBox']
+		# keysetting[38]=cfg['BasicKeySetting']['ResetLabeling']  # 제거됨 - 위험한 기능
 		
 		# 메인 윈도우 생성
 		self.master = tk.Tk()
@@ -2575,55 +2575,6 @@ class MainApp:
 		else : self.viewclass = True
 		pyautogui.press('ctrl')
 
-	def on_resetlabeling(self, event):
-		startframestr = input("Reset Start Frame Num : ")
-		startframe = int(startframestr)
-		endframestr = input("Reset End Frame Num : ")
-		endframe = int(endframestr)
-		labeldir = os.path.dirname(self.gt_fn)
-		file_list = os.listdir(labeldir)
-		fileidx=0
-		for file in file_list :
-			if file.endswith(".txt"):
-				fileidx += 1
-				if fileidx < startframe : continue
-				elif fileidx > startframe + endframe : break
-				print("Reset Frame Num :"+str(fileidx))
-				f = open(labeldir + "/" + file, 'wt')
-				f.close()
-		return
-
-	# def on_copylabeling(self, event):
-	# 	self.write_bbox()
-	# 	copydir = os.path.dirname(self.gt_fn)
-	# 	file_list = os.listdir(copydir)
-	# 	copy_list = [file for file in file_list if file.endswith(".txt")]
-	# 	copytext = []
-	# 	for copyf in copy_list:
-	# 		if copyf == os.path.basename(self.gt_fn) : 
-	# 			with open(copydir + "/" + copyf, 'rt') as f:
-	# 				line = None    # 변수 line을 None으로 초기화
-	# 				while line != '':
-	# 					line = f.readline()
-	# 					copytext.append(line)
-	# 			break
-	# 	startframestr = input("Copy Start Frame Num : ")
-	# 	startframe = int(startframestr)
-	# 	endframestr = input("Copy End Frame Num : ")
-	# 	endframe = int(endframestr)
-	# 	fileidx=0
-	# 	for file in copy_list :
-	# 		if file.endswith(".txt"):
-	# 			fileidx += 1
-	# 			if fileidx < startframe : continue
-	# 			elif fileidx > startframe + endframe : break
-	# 			print("Copy Frame Num :"+str(fileidx))
-	# 			origin_path = copydir + "\\" + file
-	# 			f = open(copydir + "/" + file, 'at')
-	# 			for text in copytext:
-	# 				f.writelines(text)
-	# 			f.close()
-	# 	return
 	def on_copylabeling(self, event):
 		"""레이블 복사 단축키 처리 - UI 기반 복사 함수 호출"""
 		self.copy_label_to_range()
@@ -2972,8 +2923,8 @@ class MainApp:
 			self.canvas.bind(keysetting[36], self.on_copylabeling)
 		if keysetting[37]:
 			self.canvas.bind(keysetting[37], self.on_onlybox)
-		if keysetting[38]:
-			self.canvas.bind(keysetting[38], self.on_resetlabeling)
+		# if keysetting[38]:  # ResetLabeling 기능 제거됨
+		# 	self.canvas.bind(keysetting[38], self.on_resetlabeling)
 		self.canvas.bind('p', self.on_polygon_masking_key)  # 폴리곤 마스킹 활성화/비활성화
 		self.canvas.bind('h', self.on_close_polygon_key)    # 폴리곤 닫기
 		
@@ -3009,60 +2960,6 @@ class MainApp:
 					self.change_class(self.button_class_map[btn]))
 		
 		return
-	# def bind_event_handlers(self):
-	# 	# 마우스 이벤트는 캔버스에 바인딩
-	# 	self.canvas.bind("<Button-1>", self.on_mouse_down)
-	# 	self.canvas.bind("<B1-Motion>", self.on_click_mouse_move)
-	# 	self.canvas.bind("<Motion>", self.on_mouse_move)
-	# 	self.canvas.bind("<ButtonRelease-1>", self.on_mouse_up)
-	# 	self.canvas.bind("<Control-1>", self.on_mouse_ctrl_down)
-		
-	# 	# 마우스 휠 이벤트
-	# 	self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)  # Windows
-	# 	self.canvas.bind('<Button-4>', self.on_mouse_wheel)    # Linux 위로
-	# 	self.canvas.bind('<Button-5>', self.on_mouse_wheel)    # Linux 아래로
-		
-	# 	# 중요: 캔버스에 직접 키보드 이벤트 바인딩
-	# 	self.canvas.bind("<Key>", lambda e: self.on_key(e))
-		
-	# 	# 각 키 이벤트 바인딩 - 마스터 윈도우에도 바인딩하여 항상 작동하게 함
-	# 	for widget in [self.canvas, self.master]:
-	# 		# 기본 키보드 이벤트
-	# 		widget.bind("<Key>", self.on_key)
-			
-	# 		# 방향키
-	# 		widget.bind('<Up>', self.on_key_up)
-	# 		widget.bind('<Down>', self.on_key_down)
-	# 		widget.bind('<Left>', self.on_key_left)
-	# 		widget.bind('<Right>', self.on_key_right)
-			
-	# 		# 설정된 키 바인딩
-	# 		widget.bind(keysetting[18], self.on_key_tab)
-	# 		widget.bind(keysetting[19], self.on_key_shift_tab)
-	# 		widget.bind(keysetting[20], self.on_key_shift_up)
-	# 		widget.bind(keysetting[21], self.on_key_shift_down)
-	# 		widget.bind(keysetting[22], self.on_key_shift_right)
-	# 		widget.bind(keysetting[23], self.on_key_shift_left)
-	# 		widget.bind(keysetting[24], self.on_key_control_up)
-	# 		widget.bind(keysetting[25], self.on_key_control_down)
-	# 		widget.bind(keysetting[26], self.on_key_control_right)
-	# 		widget.bind(keysetting[27], self.on_key_control_left)
-	# 		widget.bind(keysetting[33], self.on_reload_backup)
-	# 		widget.bind(keysetting[34], self.on_viewclass)
-	# 		widget.bind(keysetting[35], self.on_onlyselect)
-	# 		widget.bind(keysetting[36], self.on_copylabeling)
-	# 		widget.bind(keysetting[37], self.on_onlybox)
-	# 		widget.bind(keysetting[38], self.on_resetlabeling)
-			
-	# 		# F 키들
-	# 		if self.CLASSIFY_TPFP:
-	# 			widget.bind("<F1>", self.on_F1)
-	# 			widget.bind("<F2>", self.on_F2)
-	# 			widget.bind("<F3>", self.on_F3)
-		
-	# 	# 캔버스에 포커스 설정 - 중요!
-	# 	self.canvas.focus_set()
-	# 	return
 	def toggle_size_display(self):
 		# 크기 정보 표시 여부가 변경되면 현재 바운딩 박스 다시 그리기
 		self.draw_bbox()
@@ -3301,12 +3198,6 @@ class MainApp:
 		self.draw_image()
 		return
 
-	# def zoom(self, is_zoom_in):
-	# 	self.pi = -1
-	# 	self.zoom_ratio += (0.1 if is_zoom_in else -0.1)
-	# 	print('zoom: %d' % int(self.zoom_ratio*100))
-	# 	self.draw_image()
-	# 	return
 	def zoom(self, is_zoom_in):
 		self.pi = -1
 		self.zoom_ratio += (0.1 if is_zoom_in else -0.1)
@@ -4427,24 +4318,6 @@ class MainApp:
 			
 			# 매핑 업데이트
 			self.button_class_map[button] = class_idx
-
-	# def change_class(self, clsid):
-	# 	"""선택된 객체의 클래스를 변경합니다"""
-	# 	if self.selid < 0:
-	# 		return
-		
-	# 	# 클래스 인덱스가 유효한지 확인
-	# 	if 0 <= clsid < len(class_name):
-	# 		# 선택된 바운딩 박스의 클래스 이름을 업데이트
-	# 		self.bbox[self.selid][1] = class_name[clsid]
-			
-	# 		# pre_rc가 있는 경우 업데이트
-	# 		if self.pre_rc is not None:
-	# 			self.pre_rc[1] = self.bbox[self.selid][1]
-			
-	# 		# 화면에 바운딩 박스 다시 그리기
-	# 		self.draw_bbox()
-	# 	return
 
 	def open_class_search_dialog(self, button):
 		"""클래스 검색 다이얼로그 열기"""
