@@ -37,12 +37,10 @@ class ImageViewer:
 
         self.selid = -1
 
-        self.label_cache = {}  # 라벨 데이터 캐시
-        self.image_cache = {}  # 썸네일 이미지 캐시
+        # OrderedDict로 LRU 캐시 구현 (O(1) move_to_end 성능)
+        self.label_cache = OrderedDict()  # 라벨 데이터 캐시
+        self.image_cache = OrderedDict()  # 썸네일 이미지 캐시
         self.cache_limit = 2000  # 최대 캐시 항목 수
-
-        self.label_cache_access_order = []
-        self.image_cache_access_order = []
 
         # 마스킹 관련 변수 추가
         self.original_width = 0
@@ -505,24 +503,20 @@ class ImageViewer:
         """메모리 정리 작업 수행"""
         print("메모리 정리 작업 시작...")
         
-        # 1. 캐시 크기 줄이기
+        # 1. 캐시 크기 줄이기 (OrderedDict 사용)
         target_size = int(self.cache_limit * 0.7)  # 30% 줄이기
         removed_label_count = 0
         removed_image_count = 0
-        
-        # 라벨 캐시 정리
-        while len(self.label_cache) > target_size and self.label_cache_access_order:
-            oldest_key = self.label_cache_access_order.pop(0)
-            if oldest_key in self.label_cache:
-                del self.label_cache[oldest_key]
-                removed_label_count += 1
-        
-        # 이미지 캐시 정리
-        while len(self.image_cache) > target_size and self.image_cache_access_order:
-            oldest_key = self.image_cache_access_order.pop(0)
-            if oldest_key in self.image_cache:
-                del self.image_cache[oldest_key]
-                removed_image_count += 1
+
+        # 라벨 캐시 정리 (OrderedDict의 popitem(last=False) 사용)
+        while len(self.label_cache) > target_size:
+            self.label_cache.popitem(last=False)
+            removed_label_count += 1
+
+        # 이미지 캐시 정리 (OrderedDict의 popitem(last=False) 사용)
+        while len(self.image_cache) > target_size:
+            self.image_cache.popitem(last=False)
+            removed_image_count += 1
         
         # 2. 미사용 데이터 정리
         # 현재 표시되지 않은 이미지 관련 데이터 정리
@@ -538,8 +532,6 @@ class ImageViewer:
         for key in list(self.image_cache.keys()):
             if isinstance(key, str) and not any(path in key for path in current_display_paths):
                 del self.image_cache[key]
-                if key in self.image_cache_access_order:
-                    self.image_cache_access_order.remove(key)
                 cleaned_paths += 1
         
         # 3. 명시적 가비지 컬렉션 수행
@@ -554,13 +546,7 @@ class ImageViewer:
         # 이 코드를 setup_ui 메서드 마지막 부분에 추가
         self.setup_keyboard_events()
         self.add_similar_label_controls()
-    def reset_overlap_cache(self):
-        """겹침 캐시 초기화"""
-        self.overlap_cache = {}
-        # 값이 변경되면 디스플레이 업데이트
-        if self.overlap_filter_var.get() != "모두 보기" and self.overlap_class_selector.get() != "선택 안함":
-            self.update_display()
-            
+
     def reset_overlap_cache(self):
         """겹침 캐시 초기화"""
         self.overlap_cache = {}
@@ -568,28 +554,26 @@ class ImageViewer:
         if self.overlap_filter_var.get() != "모두 보기" and self.overlap_class_selector.get() != "선택 안함":
             self.update_display()
     def update_cache_access(self, cache_type, key):
-        """캐시 접근 순서를 업데이트합니다."""
-        if cache_type == 'label':
-            if key in self.label_cache_access_order:
-                self.label_cache_access_order.remove(key)
-            self.label_cache_access_order.append(key)
-        elif cache_type == 'image':
-            if key in self.image_cache_access_order:
-                self.image_cache_access_order.remove(key)
-            self.image_cache_access_order.append(key)
+        """캐시 접근 순서를 업데이트합니다 (OrderedDict의 move_to_end 사용)."""
+        try:
+            if cache_type == 'label' and key in self.label_cache:
+                self.label_cache.move_to_end(key)
+            elif cache_type == 'image' and key in self.image_cache:
+                self.image_cache.move_to_end(key)
+        except KeyError:
+            # 키가 없는 경우 무시
+            pass
 
     def manage_cache_size(self, cache_type):
-        """LRU 전략으로 캐시 크기를 관리합니다."""
+        """LRU 전략으로 캐시 크기를 관리합니다 (OrderedDict의 popitem 사용)."""
         if cache_type == 'label':
-            while len(self.label_cache) > self.cache_limit and self.label_cache_access_order:
-                oldest_key = self.label_cache_access_order.pop(0)
-                if oldest_key in self.label_cache:
-                    del self.label_cache[oldest_key]
+            while len(self.label_cache) > self.cache_limit:
+                # popitem(last=False)로 가장 오래된 항목 제거 (O(1))
+                self.label_cache.popitem(last=False)
         elif cache_type == 'image':
-            while len(self.image_cache) > self.cache_limit and self.image_cache_access_order:
-                oldest_key = self.image_cache_access_order.pop(0)
-                if oldest_key in self.image_cache:
-                    del self.image_cache[oldest_key]
+            while len(self.image_cache) > self.cache_limit:
+                # popitem(last=False)로 가장 오래된 항목 제거 (O(1))
+                self.image_cache.popitem(last=False)
     def initial_setup(self, file_path):
         """Initialize/reset all instance variables when loading new data"""
         # Reset paths and file info
@@ -745,12 +729,15 @@ class ImageViewer:
             def update_progress():
                 nonlocal processed
                 
-                # 결과 대기열에서 데이터 가져오기
+                # 결과 대기열에서 데이터 가져오기 (최대 1000개씩 배치 처리)
                 results_to_process = []
+                max_batch_size = 1000
                 try:
-                    while True:  # 대기열에 있는 모든 결과 가져오기
+                    batch_count = 0
+                    while batch_count < max_batch_size:  # 배치 크기 제한
                         results_to_process.append(result_queue.get(block=False))
                         result_queue.task_done()
+                        batch_count += 1
                 except queue.Empty:
                     pass
                 
@@ -2481,26 +2468,28 @@ class ImageViewer:
         if not label_path:
             return []
             
-        # # 파일 존재 여부 확인
-        # if not os.path.isfile(label_path):
-        #     if hasattr(self, 'logger'):
-        #         self.logger.warning(f"라벨 파일이 존재하지 않습니다: {label_path}")
-        #     else:
-        #         print(f"라벨 파일이 존재하지 않습니다: {label_path}")
-        #     return []
-        
-        # # 파일 크기 확인
-        # try:
-        #     file_size = os.path.getsize(label_path)
-        #     if file_size == 0:
-        #         print(f"빈 라벨 파일입니다: {label_path}")
-        #         return []
-            
-        #     # 지나치게 큰 파일 확인 (100MB 이상)
-        #     if file_size > 100_000_000:
-        #         print(f"경고: 라벨 파일이 너무 큽니다 ({file_size / 1024 / 1024:.2f}MB): {label_path}")
-        # except OSError:
-        #     print(f"파일 크기 확인 중 오류: {label_path}")
+        # 파일 존재 여부 확인
+        if not os.path.isfile(label_path):
+            if hasattr(self, 'logger'):
+                self.logger.warning(f"라벨 파일이 존재하지 않습니다: {label_path}")
+            else:
+                print(f"라벨 파일이 존재하지 않습니다: {label_path}")
+            return []
+
+        # 파일 크기 확인
+        try:
+            file_size = os.path.getsize(label_path)
+            if file_size == 0:
+                # 빈 파일은 경고만 하고 빈 리스트 반환 (에러는 아님)
+                # print(f"빈 라벨 파일입니다: {label_path}")
+                return []
+
+            # 지나치게 큰 파일 확인 (100MB 이상)
+            if file_size > 100_000_000:
+                print(f"경고: 라벨 파일이 너무 큽니다 ({file_size / 1024 / 1024:.2f}MB): {label_path}")
+        except OSError as e:
+            print(f"파일 크기 확인 중 오류: {label_path}, error: {e}")
+            return []
         
         # 재시도 로직 추가
         retry_count = 0

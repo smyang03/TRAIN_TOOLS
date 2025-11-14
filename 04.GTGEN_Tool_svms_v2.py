@@ -174,6 +174,11 @@ class MainApp:
 	is_polygon_closed = False
 	show_polygon_points = True
 
+	# 프레임간 라벨 추적 기능 변수
+	label_tracking_mode = False  # 추적 모드 활성화 여부
+	tracking_labels = []  # 추적 중인 라벨 정보 [(bbox, class_name), ...]
+	tracking_iou_threshold = 0.3  # IoU 임계값 (30% 이상 겹치면 매칭으로 간주)
+
 	def __init__(self, _dir):
 		# 클래스 이름 출력
 		for i in range(len(class_name)):
@@ -368,10 +373,21 @@ class MainApp:
 		)
 		self.chk_show_label_list.pack(side=tk.LEFT, padx=5)
 
+		# 라벨 추적 모드 체크박스
+		self.label_tracking_var = tk.BooleanVar()
+		self.label_tracking_var.set(False)
+		self.chk_label_tracking = tk.Checkbutton(
+			self.button_frame,
+			text="Track Labels",
+			variable=self.label_tracking_var,
+			command=self.toggle_label_tracking
+		)
+		self.chk_label_tracking.pack(side=tk.LEFT, padx=5)
+
 		self.btnMultiClassSelect = tk.Button(
-		self.button_frame, 
-		text="다중 클래스", 
-		command=self.implement_multi_class_selection, 
+		self.button_frame,
+		text="다중 클래스",
+		command=self.implement_multi_class_selection,
 		bd=1)
 		self.btnMultiClassSelect.pack(side=tk.LEFT, padx=5)  # 다른 버튼들 옆에 배치
 
@@ -1392,7 +1408,12 @@ class MainApp:
 			if ext=='.db':
 				return
 			if ext!='':
-				im = Image.open(self.im_fn)
+				try:
+					im = Image.open(self.im_fn)
+				except (IOError, OSError, FileNotFoundError) as e:
+					messagebox.showerror("Image Load Error", f"Failed to open image: {self.im_fn}\nError: {e}")
+					print(f"ERROR: Failed to open image {self.im_fn}: {e}")
+					return
 				
 			# === 새로운 마스킹 메모리 관리 코드 추가 ===
 			# 새 이미지 로드 시 배열 초기화
@@ -1439,9 +1460,13 @@ class MainApp:
 					rc = self.convert_abs2rel(self.bbox[self.selid])
 					self.pre_rc = self.convert_rel2abs(rc)
 			self.canvas.focus_set()
-		except:
-			print("Please Check Image Path")
-			os.startfile(BASE_DIR + "RemoveDefaultdll.exe")		
+		except Exception as e:
+			print(f"ERROR in draw_image: {e}")
+			messagebox.showerror("Error", f"An error occurred while drawing image:\n{e}\n\nPlease check image path.")
+			try:
+				os.startfile(BASE_DIR + "RemoveDefaultdll.exe")
+			except Exception:
+				pass  # 프로그램 실행 실패 시 무시
 		return
 	def setup_label_list_ui(self):
 		"""라벨 리스트와 크롭 프리뷰 UI 초기화 - 개선된 버전"""
@@ -2272,28 +2297,50 @@ class MainApp:
 		self.current_img_array[y_min:y_max, x_min:x_max, :] = [255, 0, 255]
 		self.is_masking_dirty = True  # 저장 필요 플래그 설정
 	def convert_rel2abs(self, rc):
-		w = rc[3] * self.imsize[0]
-		h = rc[4] * self.imsize[1]
-		x = (rc[1] - rc[3]/2) * self.imsize[0]
-		y = (rc[2] - rc[4]/2) * self.imsize[1]
-		if x<0:
-			x=0
-		if y<0:
-			y=0
-		if x+w>self.imsize[0]:
-			w=self.imsize[0]-x-1
-		if y+h>self.imsize[1]:
-			h=self.imsize[1]-y-1
-		name = class_name[rc[0]]
-		return [False, name, -1, (x), (y), (x+w), (y+h)]
+		try:
+			w = rc[3] * self.imsize[0]
+			h = rc[4] * self.imsize[1]
+			x = (rc[1] - rc[3]/2) * self.imsize[0]
+			y = (rc[2] - rc[4]/2) * self.imsize[1]
+			if x<0:
+				x=0
+			if y<0:
+				y=0
+			if x+w>self.imsize[0]:
+				w=self.imsize[0]-x-1
+			if y+h>self.imsize[1]:
+				h=self.imsize[1]-y-1
+
+			# 클래스 인덱스 범위 체크
+			class_idx = int(rc[0])
+			if 0 <= class_idx < len(class_name):
+				name = class_name[class_idx]
+			else:
+				print(f"WARNING: Invalid class index {class_idx}, using default")
+				name = class_name[0] if class_name else "unknown"
+
+			return [False, name, -1, (x), (y), (x+w), (y+h)]
+		except (IndexError, ValueError, TypeError) as e:
+			print(f"ERROR in convert_rel2abs: {e}, rc={rc}")
+			return [False, class_name[0] if class_name else "unknown", -1, 0, 0, 10, 10]
 
 	def convert_abs2rel(self, rc):
 		r = rc[3:]
-		cx = 0.5 * (float(r[0]) + float(r[2])) / float(self.imsize[0])
-		cy = 0.5 * (float(r[1]) + float(r[3])) / float(self.imsize[1])
-		w  = abs(float(r[2] - r[0])  / float(self.imsize[0]))
-		h  = abs(float(r[3] - r[1])  / float(self.imsize[1]))
-		return [class_name.index(rc[1]), cx, cy, w, h]
+
+		# Division by zero 방어
+		if self.imsize[0] == 0 or self.imsize[1] == 0:
+			print(f"ERROR: Image size is zero: {self.imsize}")
+			return [0, 0.5, 0.5, 0.1, 0.1]  # 기본값 반환
+
+		try:
+			cx = 0.5 * (float(r[0]) + float(r[2])) / float(self.imsize[0])
+			cy = 0.5 * (float(r[1]) + float(r[3])) / float(self.imsize[1])
+			w  = abs(float(r[2] - r[0])  / float(self.imsize[0]))
+			h  = abs(float(r[3] - r[1])  / float(self.imsize[1]))
+			return [class_name.index(rc[1]), cx, cy, w, h]
+		except (ValueError, ZeroDivisionError) as e:
+			print(f"ERROR in convert_abs2rel: {e}, rc={rc}")
+			return [0, 0.5, 0.5, 0.1, 0.1]
 
 	def bound_box_coord(self, r):
 		if r[2] < 0: r[2] = 0
@@ -2305,37 +2352,48 @@ class MainApp:
 	def load_bbox(self):
 		self.selid = -1
 		self.bbox = []
-		f = None
-		try:
-			f = open(self.gt_fn)
-			for l in f.readlines():
-				gt = [float(c) for c in l.replace('\r','').replace('\n','').split(' ')]
-				gt[0] = int(gt[0])
-				# if gt[0] > 0:
-				# 	gt[0] = gt[0]+6
 
-				self.bbox.append(self.convert_rel2abs(gt))
+		try:
+			with open(self.gt_fn, 'r') as f:
+				for l in f.readlines():
+					try:
+						# 빈 라인 무시
+						if not l.strip():
+							continue
+
+						gt = [float(c) for c in l.replace('\r','').replace('\n','').split(' ')]
+						gt[0] = int(gt[0])
+						# if gt[0] > 0:
+						# 	gt[0] = gt[0]+6
+
+						self.bbox.append(self.convert_rel2abs(gt))
+					except (ValueError, IndexError) as e:
+						print(f"WARNING: Malformed label data: {l.strip()}, error: {e}")
+						continue
 			#self.bbox.append(self.remove_bbox_rc())
-		except:
-			None
-		finally:
-			if f is not None:
-				f.close()
-		if len(self.bbox) <= 0: return
-		self.bbox[0][0] = True
-		self.selid = 0
+		except FileNotFoundError:
+			# 라벨 파일이 없는 경우 - 정상 (새 이미지)
+			pass
+		except (IOError, PermissionError) as e:
+			print(f"ERROR: Failed to load bbox from {self.gt_fn}: {e}")
+
+		if len(self.bbox) > 0:
+			self.bbox[0][0] = True
+			self.selid = 0
 		return
 
 	def write_bbox(self):
-		f = None
+		if self.gt_fn is None:
+			print("WARNING: gt_fn is None, cannot write bbox")
+			return
+
 		try:
-			if self.gt_fn != None:
-				f = open(self.gt_fn, 'wt')
-			for rc in self.bbox:
-				f.write(' '.join(str(e) for e in self.convert_abs2rel(rc)) + '\n')
-		finally:
-			if f is not None:
-				f.close()
+			with open(self.gt_fn, 'wt') as f:
+				for rc in self.bbox:
+					f.write(' '.join(str(e) for e in self.convert_abs2rel(rc)) + '\n')
+		except (IOError, PermissionError) as e:
+			print(f"ERROR: Failed to write bbox to {self.gt_fn}: {e}")
+			messagebox.showerror("File Write Error", f"Failed to save labels:\n{e}")
 		return
 
 	def draw_bbox(self):
@@ -3007,7 +3065,110 @@ class MainApp:
 	# 	return
 	def toggle_size_display(self):
 		# 크기 정보 표시 여부가 변경되면 현재 바운딩 박스 다시 그리기
-		self.draw_bbox()	
+		self.draw_bbox()
+
+	def toggle_label_tracking(self):
+		"""라벨 추적 모드 토글"""
+		self.label_tracking_mode = self.label_tracking_var.get()
+
+		if self.label_tracking_mode:
+			# 추적 모드 활성화 - 현재 선택된 라벨들을 추적 대상으로 설정
+			self.start_label_tracking()
+			print("라벨 추적 모드 활성화")
+		else:
+			# 추적 모드 비활성화
+			self.tracking_labels = []
+			print("라벨 추적 모드 비활성화")
+
+		self.draw_bbox()
+
+	def start_label_tracking(self):
+		"""현재 선택된 라벨들을 추적 대상으로 설정"""
+		self.tracking_labels = []
+
+		# 다중 선택된 라벨이 있으면 모두 추적 대상에 추가
+		if self.multi_selected:
+			for idx in self.multi_selected:
+				if 0 <= idx < len(self.bbox):
+					bbox = self.bbox[idx]
+					# bbox 형식: [selected, class_name, judge, x1, y1, x2, y2]
+					self.tracking_labels.append({
+						'bbox': [bbox[3], bbox[4], bbox[5], bbox[6]],  # [x1, y1, x2, y2]
+						'class_name': bbox[1],
+						'matched': False
+					})
+		# 단일 선택된 라벨이 있으면 추가
+		elif self.selid >= 0 and self.selid < len(self.bbox):
+			bbox = self.bbox[self.selid]
+			self.tracking_labels.append({
+				'bbox': [bbox[3], bbox[4], bbox[5], bbox[6]],
+				'class_name': bbox[1],
+				'matched': False
+			})
+
+		if self.tracking_labels:
+			print(f"추적 시작: {len(self.tracking_labels)}개 라벨")
+		else:
+			print("경고: 선택된 라벨이 없습니다. 라벨을 선택한 후 추적 모드를 활성화하세요.")
+
+	def track_labels_in_next_frame(self):
+		"""다음 프레임에서 추적 중인 라벨과 매칭되는 라벨만 유지"""
+		if not self.label_tracking_mode or not self.tracking_labels:
+			return
+
+		# 현재 프레임의 모든 라벨과 추적 라벨 간의 IoU 계산
+		labels_to_keep = []
+		matched_tracking_labels = set()
+
+		for bbox_idx, current_bbox in enumerate(self.bbox):
+			# current_bbox 형식: [selected, class_name, judge, x1, y1, x2, y2]
+			current_box = [current_bbox[3], current_bbox[4], current_bbox[5], current_bbox[6]]
+			current_class = current_bbox[1]
+
+			# 각 추적 라벨과 비교
+			max_iou = 0
+			best_match_idx = -1
+
+			for track_idx, track_label in enumerate(self.tracking_labels):
+				# 같은 클래스인 경우에만 매칭 시도
+				if track_label['class_name'] == current_class:
+					iou = self.get_iou(current_box, track_label['bbox'])
+
+					if iou > max_iou:
+						max_iou = iou
+						best_match_idx = track_idx
+
+			# IoU 임계값 이상이면 매칭으로 간주
+			if max_iou >= self.tracking_iou_threshold:
+				labels_to_keep.append(bbox_idx)
+				matched_tracking_labels.add(best_match_idx)
+				# 매칭된 추적 라벨의 위치를 현재 위치로 업데이트
+				if best_match_idx >= 0:
+					self.tracking_labels[best_match_idx]['bbox'] = current_box
+					self.tracking_labels[best_match_idx]['matched'] = True
+
+		# 매칭되지 않은 라벨 삭제
+		if labels_to_keep:
+			# 인덱스를 역순으로 정렬하여 삭제 (뒤에서부터 삭제해야 인덱스가 안 꼬임)
+			labels_to_remove = [i for i in range(len(self.bbox)) if i not in labels_to_keep]
+			labels_to_remove.sort(reverse=True)
+
+			removed_count = 0
+			for idx in labels_to_remove:
+				del self.bbox[idx]
+				removed_count += 1
+
+			print(f"추적 결과: {len(labels_to_keep)}개 유지, {removed_count}개 삭제")
+
+			# 선택 상태 초기화
+			self.selid = -1
+			self.multi_selected.clear()
+		else:
+			print("경고: 매칭되는 라벨이 없습니다.")
+
+		# 새로 라벨링한 것을 추적 대상에 추가하려면 사용자가 다시 선택하도록 안내
+		# (자동으로 추가하지 않고 사용자가 선택한 후 추적 모드를 다시 토글하도록)
+
 	def goodbye():
 		fname, ext = os.path.splitext(_dir_goodbye)
 		if ext == '.txt' :
@@ -3446,13 +3607,20 @@ class MainApp:
 	def next_frame(self):
 		# 현재 프레임의 마스킹 저장
 		self.save_masking_if_dirty()
-		
+
 		self.ci += 1
 		if   self.ci >= len(self.imlist) : self.ci = len(self.imlist) - 1; return
 		if   self.ci < 0                 : self.ci = 0; return
 		self.img_slider.set(self.ci + 1)
 		self.slider_info.config(text=f"{self.ci+1}/{len(self.imlist)}")
 		self.write_bbox(); self.draw_image()
+
+		# 라벨 추적 모드가 활성화되어 있으면 추적 실행
+		if self.label_tracking_mode:
+			self.track_labels_in_next_frame()
+			self.write_bbox()  # 변경된 라벨 저장
+			self.draw_bbox()   # 화면 다시 그리기
+
 		return
 	def on_polygon_masking_key(self, event):
 		"""폴리곤 마스킹 모드 토글"""
@@ -3837,6 +4005,17 @@ class MainApp:
 			self.bbox.append([True, default_class_name, -1, x, y, x+10, y+10])
 			self.selid = len(self.bbox) - 1
 			self.bbox_resize_anchor = ('se', )
+
+			# 추적 모드가 활성화되어 있으면 새 라벨을 추적 대상에 추가
+			if self.label_tracking_mode:
+				new_bbox = self.bbox[-1]
+				self.tracking_labels.append({
+					'bbox': [new_bbox[3], new_bbox[4], new_bbox[5], new_bbox[6]],
+					'class_name': new_bbox[1],
+					'matched': False
+				})
+				print(f"추적 대상에 새 라벨 추가: {default_class_name}")
+
 			self.draw_bbox()
 		elif self.bbox_masking:
 			self.m_area = [x, y, x+10, y+10]
