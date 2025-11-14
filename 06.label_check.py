@@ -817,15 +817,21 @@ class ImageViewer:
     def finalize_data_loading(self, progress_window):
         """데이터 로딩 완료 후 마무리 작업"""
         try:
+            print("[DEBUG] finalize_data_loading 시작")
+
             # 클래스 정보 업데이트를 별도 스레드로 분리
             def update_class_info():
+                print("[DEBUG] update_class_info 스레드 시작")
                 # 클래스 정보 업데이트 (이 작업은 시간이 걸릴 수 있음)
-                self.update_class_dropdown()
-                
+                # progress_window를 전달하여 재사용
+                self.update_class_dropdown(existing_progress_window=progress_window)
+
                 # UI 스레드에서 실행할 작업 예약
+                print("[DEBUG] finalize_ui_update 예약")
                 self.root.after(0, lambda: self.finalize_ui_update(progress_window))
-            
+
             # 작업 스레드 시작
+            print("[DEBUG] update_class_info 스레드 시작 예정")
             threading.Thread(target=update_class_info, daemon=True).start()
             
         except Exception as e:
@@ -1654,46 +1660,56 @@ class ImageViewer:
                 self.preview_window.destroy()
                 self.preview_window = None
 
-    def update_class_dropdown(self):
+    def update_class_dropdown(self, existing_progress_window=None):
         """Update class dropdown with available classes from label files - 병렬 처리 및 오류 복구 강화"""
         # 상태 메시지 표시
         if hasattr(self, 'show_status_message'):
             self.show_status_message("클래스 정보 업데이트 중...", duration=10000)
-        
+
         try:
             total_files = len(self.labels)
-            print(f"전체 라벨 파일 수: {total_files}")
-            
+            print(f"[DEBUG] update_class_dropdown 시작 - 전체 라벨 파일 수: {total_files}")
+
             start_time = time.time()
-            
-            # 프로그레스 창 생성
-            progress_window = tk.Toplevel(self.root)
-            progress_window.title("클래스 정보 업데이트")
-            progress_window.geometry("400x150")
-            
-            # 창 위치 중앙 정렬
-            window_width = 400
-            window_height = 150
-            position_right = int(self.root.winfo_x() + (self.root.winfo_width() - window_width) / 2)
-            position_down = int(self.root.winfo_y() + (self.root.winfo_height() - window_height) / 2)
-            progress_window.geometry(f"{window_width}x{window_height}+{position_right}+{position_down}")
-            
-            # 창을 항상 위에 표시하고 모달로 설정
-            progress_window.transient(self.root)
-            progress_window.grab_set()
-            
+
+            # 프로그레스 창 생성 또는 재사용
+            if existing_progress_window is not None:
+                print("[DEBUG] 기존 progress_window 재사용")
+                progress_window = existing_progress_window
+                # 기존 위젯 정리
+                for widget in progress_window.winfo_children():
+                    widget.destroy()
+                progress_window.title("클래스 정보 업데이트")
+            else:
+                print("[DEBUG] 새 progress_window 생성")
+                progress_window = tk.Toplevel(self.root)
+                progress_window.title("클래스 정보 업데이트")
+                progress_window.geometry("400x150")
+
+                # 창 위치 중앙 정렬
+                window_width = 400
+                window_height = 150
+                position_right = int(self.root.winfo_x() + (self.root.winfo_width() - window_width) / 2)
+                position_down = int(self.root.winfo_y() + (self.root.winfo_height() - window_height) / 2)
+                progress_window.geometry(f"{window_width}x{window_height}+{position_right}+{position_down}")
+
+                # 창을 항상 위에 표시하고 모달로 설정
+                progress_window.transient(self.root)
+                progress_window.grab_set()
+
             # 진행 상황 표시 요소 생성
             info_label = tk.Label(progress_window, text=f"전체 {total_files}개 라벨 파일 분석 중...", anchor='w')
             info_label.pack(padx=20, pady=(10,0), fill='x')
-            
+
             progress_bar = ttk.Progressbar(progress_window, length=360, mode='determinate')
             progress_bar.pack(padx=20, pady=(5,0))
             progress_bar["maximum"] = total_files
-            
+
             status_label = tk.Label(progress_window, text="클래스 정보 수집 중...")
             status_label.pack(padx=20, pady=(5,10), fill='x')
-            
+
             progress_window.update()
+            print("[DEBUG] progress_window 업데이트 완료")
             
             # 클래스 정보 초기화
             labelsdata_new = [[] for _ in range(100)]
@@ -1715,9 +1731,9 @@ class ImageViewer:
             
             # 작업자 스레드 함수
             def worker():
-                while not task_queue.empty():
+                while True:
                     try:
-                        label_path = task_queue.get(block=False)
+                        label_path = task_queue.get(timeout=1)  # 1초 타임아웃
                         
                         file_classes = set()
                         file_labels = defaultdict(list)
