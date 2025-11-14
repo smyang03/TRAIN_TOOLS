@@ -842,36 +842,54 @@ class ImageViewer:
     def finalize_ui_update(self, progress_window):
         """UI 업데이트 마무리 (메인 스레드에서 실행)"""
         try:
+            print("[DEBUG] finalize_ui_update 시작")
+            print(f"[DEBUG] image_paths 수: {len(self.image_paths)}")
+            print(f"[DEBUG] labels 수: {len(self.labels)}")
+            print(f"[DEBUG] labelsdata 수: {sum(len(x) for x in self.labelsdata)}")
+
             # 페이지네이션 업데이트
             self.total_pages = (len(self.image_paths) + self.page_size - 1) // self.page_size
+            print(f"[DEBUG] total_pages: {self.total_pages}")
             self.update_pagination_controls()
-            
+            print("[DEBUG] update_pagination_controls 완료")
+
             # 첫 페이지 표시
             self.current_page = 0
+            print("[DEBUG] update_display 호출 시작")
             self.update_display()
-            
+            print("[DEBUG] update_display 완료")
+
             # 로딩 상태 해제
             self.data_loading = False
-            
+            print("[DEBUG] data_loading = False 설정")
+
             # 진행 창 업데이트 및 닫기
             if progress_window and progress_window.winfo_exists():
+                print("[DEBUG] progress_window 업데이트 시작")
                 progress_window.title("로딩 완료")
-                
-                file_label = progress_window.winfo_children()[0]  # 첫 번째 라벨
-                status_label = progress_window.winfo_children()[2]  # 세 번째 라벨
-                
-                file_label.config(text="데이터 로딩 완료!")
-                status_label.config(text=f"{len(self.image_paths)}개 이미지 성공적으로 로드됨")
-                
-                # 닫기 버튼 추가
-                status_label.config(text=f"데이터 로드 완료. 창이 자동으로 닫힙니다...")
+
+                # 위젯 인덱스 오류 방지
+                widgets = progress_window.winfo_children()
+                if len(widgets) >= 3:
+                    file_label = widgets[0]  # 첫 번째 라벨
+                    status_label = widgets[2]  # 세 번째 라벨
+
+                    file_label.config(text="데이터 로딩 완료!")
+                    status_label.config(text=f"{len(self.image_paths)}개 이미지 성공적으로 로드됨")
+
+                    # 닫기 버튼 추가
+                    status_label.config(text=f"데이터 로드 완료. 창이 자동으로 닫힙니다...")
 
                 # 자동 닫기 시간 단축 (1.5초 후)
                 self.root.after(1500, progress_window.destroy)
+                print("[DEBUG] progress_window 자동 닫기 예약")
 
-                
+            print("[DEBUG] finalize_ui_update 완료")
+
         except Exception as e:
             print(f"UI 업데이트 마무리 오류: {e}")
+            import traceback
+            traceback.print_exc()
             self.data_loading = False  # 로딩 상태 해제
             if progress_window and progress_window.winfo_exists():
                 progress_window.destroy()
@@ -1868,27 +1886,30 @@ class ImageViewer:
             # 업데이트 완료 함수
             def finalize_update():
                 nonlocal labelsdata_new
-                
+
                 try:
+                    print("[DEBUG] finalize_update 시작")
                     # 최종 진행 상황 업데이트
                     progress_bar["value"] = total_files
                     status_label.config(text=f"처리 완료: {processed_files}/{total_files} 파일, 유효: {valid_files}, 오류: {invalid_files}")
-                    
+
                     # labelsdata 업데이트
                     self.labelsdata = labelsdata_new
-                    
+                    print(f"[DEBUG] labelsdata 업데이트 완료: {sum(len(x) for x in self.labelsdata)}개 항목")
+
                     # 클래스 정렬 및 메뉴 업데이트
                     sorted_classes = sorted(list(classes), key=lambda x: int(float(x)))
-                    print(f"발견된 클래스: {sorted_classes}")
-                    
+                    print(f"[DEBUG] 발견된 클래스: {sorted_classes}")
+
                     # 클래스 카운트 계산
                     class_counts = [len(self.labelsdata[int(float(class_idx))]) for class_idx in sorted_classes]
-                    print(f"클래스별 라벨 수: {class_counts}")
-                    
+                    print(f"[DEBUG] 클래스별 라벨 수: {class_counts}")
+
                     # 메인 클래스 드롭다운 메뉴 업데이트
+                    print("[DEBUG] 클래스 드롭다운 업데이트 시작")
                     menu = self.class_dropdown["menu"]
                     menu.delete(0, "end")
-                    
+
                     for class_index in sorted_classes:
                         class_index_int = int(float(class_index))
                         label_count = len(self.labelsdata[class_index_int])
@@ -1897,6 +1918,7 @@ class ImageViewer:
                             label=label_text,
                             command=lambda idx=class_index: self.class_selector.set(idx)
                         )
+                    print(f"[DEBUG] 클래스 드롭다운 업데이트 완료: {len(sorted_classes)}개 클래스")
                     
                     # 겹침 필터 드롭다운 메뉴 업데이트
                     overlap_menu = self.overlap_class_dropdown["menu"]
@@ -1920,27 +1942,31 @@ class ImageViewer:
                     
                     # 페이지 초기화 및 첫 번째 클래스 선택 (클래스가 있는 경우)
                     if sorted_classes:
+                        print(f"[DEBUG] 첫 번째 클래스 선택: {sorted_classes[0]}")
                         self.current_page = 0
                         self.class_selector.set(sorted_classes[0])
-                    
+                    else:
+                        print("[DEBUG] 경고: 발견된 클래스가 없습니다!")
+
                     # 소요 시간 표시
                     elapsed_time = time.time() - start_time
                     status_label.config(text=f"완료: {valid_files}개 유효 파일, {invalid_files}개 오류 파일, {elapsed_time:.2f}초 소요")
-                    
-                    # 닫기 버튼 추가
-                    close_button = tk.Button(progress_window, text="닫기", command=progress_window.destroy)
-                    close_button.pack(pady=10)
-                    
+
+                    # 닫기 버튼은 추가하지 않음 (finalize_ui_update에서 처리)
+                    # close_button = tk.Button(progress_window, text="닫기", command=progress_window.destroy)
+                    # close_button.pack(pady=10)
+
                     # 로깅
                     if hasattr(self, 'logger'):
                         self.logger.info(f"클래스 정보 업데이트 완료: {len(sorted_classes)}개 클래스, {valid_files}개 유효 파일, {elapsed_time:.2f}초 소요")
-                    
+
                     # 상태 메시지 업데이트
                     if hasattr(self, 'show_status_message'):
                         self.show_status_message(f"클래스 정보 업데이트 완료: {len(sorted_classes)}개 클래스")
-                    
-                    # 자동 닫기 (3초 후)
-                    self.root.after(3000, progress_window.destroy)
+
+                    # progress_window는 finalize_ui_update에서 닫음
+                    # self.root.after(3000, progress_window.destroy)
+                    print("[DEBUG] finalize_update 완료")
                 
                 except Exception as e:
                     print(f"마무리 중 오류: {e}")
