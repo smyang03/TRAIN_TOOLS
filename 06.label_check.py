@@ -1817,70 +1817,82 @@ class ImageViewer:
                     # 최대 100개 결과 처리 (UI 응답성 유지)
                     batch_size = 100
                     batch_count = 0
-                    for _ in range(batch_size):
-                        label_path, file_classes, file_labels, file_valid, status = result_queue.get(block=False)
-                        batch_count += 1
-                        
-                        # 결과 통합
-                        classes.update(file_classes)
-                        for class_idx, paths in file_labels.items():
-                            labelsdata_new[class_idx].extend(paths)
-                        
-                        # 통계 업데이트
-                        processed_files += 1
-                        if file_valid:
-                            valid_files += 1
-                        else:
-                            invalid_files += 1
-                        
-                        result_queue.task_done()
-                        
+
+                    # 배치 처리 - queue.Empty 예외는 여기서만 처리
+                    try:
+                        for _ in range(batch_size):
+                            label_path, file_classes, file_labels, file_valid, status = result_queue.get(block=False)
+                            batch_count += 1
+
+                            # 결과 통합
+                            classes.update(file_classes)
+                            for class_idx, paths in file_labels.items():
+                                labelsdata_new[class_idx].extend(paths)
+
+                            # 통계 업데이트
+                            processed_files += 1
+                            if file_valid:
+                                valid_files += 1
+                            else:
+                                invalid_files += 1
+
+                            result_queue.task_done()
+                    except queue.Empty:
+                        # 배치 처리 중 큐가 비었음 - 정상 동작
+                        pass
+
                     # 진행 상황 업데이트
-                    progress = (processed_files / total_files) * 100
-                    progress_bar["value"] = processed_files
-                    status_label.config(text=f"처리 중: {processed_files}/{total_files} 파일 ({progress:.1f}%), 유효: {valid_files}, 오류: {invalid_files}")
-                    
-                    # 작업이 완료되었는지 확인
-                    if task_queue.empty() and all(not t.is_alive() for t in threads):
+                    if processed_files > 0:
+                        progress = (processed_files / total_files) * 100
+                        progress_bar["value"] = processed_files
+                        status_label.config(text=f"처리 중: {processed_files}/{total_files} 파일 ({progress:.1f}%), 유효: {valid_files}, 오류: {invalid_files}")
+
+                    # 작업이 완료되었는지 확인 (항상 실행됨)
+                    task_queue_empty = task_queue.empty()
+                    threads_alive = sum(1 for t in threads if t.is_alive())
+
+                    print(f"[DEBUG] 완료 체크 - task_queue.empty()={task_queue_empty}, threads_alive={threads_alive}/{len(threads)}")
+
+                    if task_queue_empty and threads_alive == 0:
+                        print(f"[DEBUG] 작업 완료 감지! 최종 처리 시작...")
+
                         # 모든 결과를 최종 처리
                         try:
                             while True:
                                 label_path, file_classes, file_labels, file_valid, status = result_queue.get(block=False)
-                                
+
                                 # 결과 통합
                                 classes.update(file_classes)
                                 for class_idx, paths in file_labels.items():
                                     labelsdata_new[class_idx].extend(paths)
-                                
+
                                 # 통계 업데이트
                                 processed_files += 1
                                 if file_valid:
                                     valid_files += 1
                                 else:
                                     invalid_files += 1
-                                
+
                                 result_queue.task_done()
                         except queue.Empty:
                             pass
-                        
-                        # 클래스 처리 완료 
+
+                        print(f"[DEBUG] finalize_update 호출 준비...")
+                        # 클래스 처리 완료
                         finalize_update()
                     else:
                         # 다음 배치 처리 예약
+                        print(f"[DEBUG] 작업 계속 - 50ms 후 재시도")
                         self.root.after(50, process_results)
-                
-                except queue.Empty:
-                    # 다음 체크 예약
-                    self.root.after(50, process_results)
-                
+
                 except Exception as e:
                     print(f"결과 처리 중 오류: {e}")
                     import traceback
                     traceback.print_exc()
-                    
+
                     # 오류 상태 표시
                     status_label.config(text=f"처리 오류: {str(e)[:50]}")
-                    
+
                     # 메인 처리 완료
                     self.root.after(2000, finalize_update)
             
