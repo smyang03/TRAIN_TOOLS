@@ -468,14 +468,9 @@ class ImageViewer:
 
     def setup_caching(self):
         """캐시 시스템 설정"""
-        # 캐시 딕셔너리 생성
-        self.label_cache = {}
-        self.image_cache = {}
-        
-        # 효율적인 LRU 관리를 위한 OrderedDict 사용
-        from collections import OrderedDict
-        self.label_cache_ordered = OrderedDict()
-        self.image_cache_ordered = OrderedDict()
+        # 캐시 딕셔너리 생성 - OrderedDict로 LRU 캐시 구현
+        self.label_cache = OrderedDict()
+        self.image_cache = OrderedDict()
         
         # 캐시 통계
         self.cache_hits = {'label': 0, 'image': 0}
