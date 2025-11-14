@@ -1798,22 +1798,28 @@ class ImageViewer:
             # 작업자 스레드 시작
             num_threads = min(20, max(4, os.cpu_count() or 4))
             threads = []
-            
-            for _ in range(num_threads):
-                t = threading.Thread(target=worker)
+
+            print(f"[DEBUG] 작업자 스레드 {num_threads}개 시작 중...")
+            for i in range(num_threads):
+                t = threading.Thread(target=worker, name=f"ClassWorker-{i}")
                 t.daemon = True
                 t.start()
                 threads.append(t)
-            
+            print(f"[DEBUG] 작업자 스레드 시작 완료")
+
             # 결과 처리 함수
             def process_results():
                 nonlocal processed_files, valid_files, invalid_files
-                
+
+                print(f"[DEBUG] process_results 호출 - processed={processed_files}/{total_files}, queue_size={result_queue.qsize()}")
+
                 try:
                     # 최대 100개 결과 처리 (UI 응답성 유지)
                     batch_size = 100
+                    batch_count = 0
                     for _ in range(batch_size):
                         label_path, file_classes, file_labels, file_valid, status = result_queue.get(block=False)
+                        batch_count += 1
                         
                         # 결과 통합
                         classes.update(file_classes)
