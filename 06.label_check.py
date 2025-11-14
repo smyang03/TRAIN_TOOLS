@@ -690,45 +690,61 @@ class ImageViewer:
             # 작업 추가
             for i, line in enumerate(lines):
                 task_queue.put((i, line))
-            
+
+            print(f"작업 큐에 {task_queue.qsize()}개 작업 추가됨")
+
             # 작업자 스레드 함수 정의
             def worker():
-                while not task_queue.empty():
+                processed_count = 0
+                while True:
                     try:
-                        idx, line = task_queue.get(block=False)
+                        idx, line = task_queue.get(timeout=1)  # 1초 타임아웃
                         img_path = line
                         label_path = line.replace("\\JPEGImages\\", "\\labels\\").replace(".jpg", ".txt")
-                        
+
                         # 추가 검증 작업 (파일 존재 확인 등)
                         img_exists = os.path.isfile(img_path)
                         label_exists = os.path.isfile(label_path)
-                        
+
                         result_queue.put((idx, img_path, label_path, img_exists, label_exists))
                         task_queue.task_done()
+                        processed_count += 1
                     except queue.Empty:
+                        # 큐가 비어있으면 종료
                         break
                     except Exception as e:
                         print(f"작업자 스레드 오류: {e}")
-                        task_queue.task_done()
+                        import traceback
+                        traceback.print_exc()
+                        try:
+                            task_queue.task_done()
+                        except:
+                            pass
+                print(f"작업자 스레드 종료: {processed_count}개 처리")
             
             # 작업자 스레드 시작 (CPU 코어 수에 맞게 조정)
             import multiprocessing
             num_workers = max(1, multiprocessing.cpu_count() - 1)  # 하나는 UI 스레드용으로 남김
+            print(f"작업자 스레드 수: {num_workers}")
             threads = []
-            
-            for _ in range(num_workers):
-                t = threading.Thread(target=worker)
+
+            for i in range(num_workers):
+                t = threading.Thread(target=worker, name=f"Worker-{i}")
                 t.daemon = True  # 메인 스레드 종료 시 함께 종료
                 t.start()
                 threads.append(t)
-            
+                print(f"스레드 {i} 시작됨")
+
             # 처리된 항목 카운터 초기화
             processed = 0
+            print("update_progress 함수 스케줄링...")
             
             # 진행 상황 업데이트 및 결과 처리 함수 정의
             def update_progress():
                 nonlocal processed
-                
+
+                print(f"[DEBUG] update_progress 호출됨 - processed={processed}/{total_lines}, result_queue size={result_queue.qsize()}")
+
                 # 결과 대기열에서 데이터 가져오기 (최대 1000개씩 배치 처리)
                 results_to_process = []
                 max_batch_size = 1000
@@ -740,32 +756,42 @@ class ImageViewer:
                         batch_count += 1
                 except queue.Empty:
                     pass
-                
+
+                print(f"[DEBUG] 이번 배치에서 {len(results_to_process)}개 결과 처리")
+
                 # 결과 처리
                 for idx, img_path, label_path, img_exists, label_exists in results_to_process:
                     self.image_paths.append(img_path)
                     self.labels.append(label_path)
                     processed += 1
-                    
+
                     # 진행 상태 표시 업데이트 (매 10개 파일마다)
                     if processed % 10 == 0 or processed == total_lines:
                         detail_label.config(text=f"현재 파일: {os.path.basename(img_path)}")
-                
+
                 # UI 업데이트
-                progress = (processed / total_lines) * 100
+                progress = (processed / total_lines) * 100 if total_lines > 0 else 0
                 progress_bar['value'] = processed
                 status_label.config(text=f"진행 상황: {progress:.1f}% ({processed}/{total_lines} 파일)")
-                
+                progress_window.update()  # 강제 UI 업데이트
+
                 # 모든 작업이 완료되었는지 확인
-                if processed >= total_lines or (task_queue.empty() and result_queue.empty() and 
-                                            all(not t.is_alive() for t in threads)):
+                is_complete = processed >= total_lines
+                all_threads_done = all(not t.is_alive() for t in threads)
+                queues_empty = task_queue.empty() and result_queue.empty()
+
+                print(f"[DEBUG] 완료 상태: processed={is_complete}, threads={all_threads_done}, queues={queues_empty}")
+
+                if is_complete or (queues_empty and all_threads_done):
                     # 작업 완료 - 마무리 단계
+                    print("[DEBUG] 작업 완료, 마무리 단계 시작")
                     self.finalize_data_loading(progress_window)
                 else:
                     # 아직 진행 중 - 100ms 후 다시 확인
                     self.root.after(100, update_progress)
-            
+
             # 첫 번째 업데이트 시작
+            print("[DEBUG] 첫 번째 update_progress 스케줄링 (100ms 후)")
             self.root.after(100, update_progress)
             
         except Exception as e:
