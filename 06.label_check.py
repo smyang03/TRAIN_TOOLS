@@ -818,26 +818,20 @@ class ImageViewer:
         """데이터 로딩 완료 후 마무리 작업"""
         try:
             print("[DEBUG] finalize_data_loading 시작")
+            print("[DEBUG] update_class_dropdown 호출 (동기 방식)")
+            # 클래스 정보 업데이트 (progress_window와 완료 콜백 전달)
+            self.update_class_dropdown(
+                existing_progress_window=progress_window,
+                completion_callback=lambda: self.finalize_ui_update(progress_window)
+            )
 
-            # 클래스 정보 업데이트를 별도 스레드로 분리
-            def update_class_info():
-                print("[DEBUG] update_class_info 스레드 시작")
-                # 클래스 정보 업데이트 (이 작업은 시간이 걸릴 수 있음)
-                # progress_window를 전달하여 재사용
-                self.update_class_dropdown(existing_progress_window=progress_window)
-
-                # UI 스레드에서 실행할 작업 예약
-                print("[DEBUG] finalize_ui_update 예약")
-                self.root.after(0, lambda: self.finalize_ui_update(progress_window))
-
-            # 작업 스레드 시작
-            print("[DEBUG] update_class_info 스레드 시작 예정")
-            threading.Thread(target=update_class_info, daemon=True).start()
-            
         except Exception as e:
             print(f"데이터 로딩 마무리 오류: {e}")
+            import traceback
+            traceback.print_exc()
             self.data_loading = False  # 로딩 상태 해제
-            progress_window.destroy()
+            if progress_window and progress_window.winfo_exists():
+                progress_window.destroy()
 
     def finalize_ui_update(self, progress_window):
         """UI 업데이트 마무리 (메인 스레드에서 실행)"""
@@ -1678,7 +1672,7 @@ class ImageViewer:
                 self.preview_window.destroy()
                 self.preview_window = None
 
-    def update_class_dropdown(self, existing_progress_window=None):
+    def update_class_dropdown(self, existing_progress_window=None, completion_callback=None):
         """Update class dropdown with available classes from label files - 병렬 처리 및 오류 복구 강화"""
         # 상태 메시지 표시
         if hasattr(self, 'show_status_message'):
@@ -1687,6 +1681,7 @@ class ImageViewer:
         try:
             total_files = len(self.labels)
             print(f"[DEBUG] update_class_dropdown 시작 - 전체 라벨 파일 수: {total_files}")
+            print(f"[DEBUG] completion_callback 존재: {completion_callback is not None}")
 
             start_time = time.time()
 
@@ -1967,7 +1962,14 @@ class ImageViewer:
                     # progress_window는 finalize_ui_update에서 닫음
                     # self.root.after(3000, progress_window.destroy)
                     print("[DEBUG] finalize_update 완료")
-                
+
+                    # 완료 콜백 호출 (finalize_ui_update 실행)
+                    if completion_callback:
+                        print("[DEBUG] completion_callback 호출")
+                        self.root.after(0, completion_callback)
+                    else:
+                        print("[DEBUG] 경고: completion_callback이 None입니다")
+
                 except Exception as e:
                     print(f"마무리 중 오류: {e}")
                     import traceback
