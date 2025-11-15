@@ -4587,16 +4587,22 @@ class MainApp:
 	def on_slider_change(self, value):
     # 슬라이더 값을 정수로 변환하고 0-인덱스로 조정
 		new_index = int(float(value)) - 1
-		
+
 		if new_index != self.ci:
 			self.ci = new_index
 			if self.ci >= len(self.imlist):
 				self.ci = len(self.imlist) - 1
 			if self.ci < 0:
 				self.ci = 0
-				
+
 			self.write_bbox()
 			self.draw_image()
+
+			# 라벨 추적 모드가 활성화되어 있으면 추적 실행
+			if self.label_tracking_mode:
+				self.track_labels_in_next_frame()
+				self.write_bbox()  # 변경된 라벨 저장
+				self.draw_bbox()   # 화면 다시 그리기
 	def show_class_menu(self, event, button, current_idx):
 		"""버튼 우클릭 시 클래스 선택 메뉴 표시"""
 		menu = tk.Menu(self.master, tearoff=0)
