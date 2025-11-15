@@ -12,9 +12,38 @@ from collections import defaultdict
 # 리눅스에서 방향키, 백스페이스 등의 입력을 제대로 처리하기 위한 readline import
 try:
     import readline
+    # readline 설정 - 리눅스에서 더 나은 입력 편집 기능 제공
+    readline.parse_and_bind('set editing-mode emacs')  # Emacs 스타일 편집
+    readline.parse_and_bind('set enable-keypad on')    # 방향키 지원
 except ImportError:
     # Windows 환경에서는 readline이 없을 수 있음
     pass
+except Exception as e:
+    # readline 설정 실패 시 무시 (기본 동작 사용)
+    print(f"Warning: readline 설정 실패 - {e}")
+
+def safe_input(prompt):
+    """
+    안전한 입력 함수 - ANSI escape sequence 제거
+    리눅스에서 방향키 입력 시 발생하는 문제 해결
+    """
+    # 내장 input 함수를 직접 호출 (무한 재귀 방지)
+    import builtins
+    try:
+        user_input = builtins.input(prompt)
+        # ANSI escape sequence 제거 (방향키 등의 특수 문자)
+        # \x1b는 ESC 문자, \[는 [, A-Z는 명령어
+        ansi_escape = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
+        cleaned_input = ansi_escape.sub('', user_input)
+        return cleaned_input.strip()
+    except EOFError:
+        return ""
+    except KeyboardInterrupt:
+        raise
+
+# 전역적으로 input 함수를 safe_input으로 오버라이드
+import builtins
+builtins.input = safe_input
 
 # 로깅 설정
 def setup_logging(output_path):
