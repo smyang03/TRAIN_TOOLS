@@ -3060,12 +3060,15 @@ class MainApp:
 				removed_count += 1
 
 			print(f"추적 결과: {len(labels_to_keep)}개 유지, {removed_count}개 삭제")
-
-			# 선택 상태 초기화
-			self.selid = -1
-			self.multi_selected.clear()
 		else:
-			print("경고: 매칭되는 라벨이 없습니다.")
+			# 매칭되는 라벨이 없으면 모든 라벨 삭제
+			removed_count = len(self.bbox)
+			self.bbox.clear()
+			print(f"경고: 매칭되는 라벨이 없습니다. 모든 라벨 삭제({removed_count}개)")
+
+		# 선택 상태 초기화
+		self.selid = -1
+		self.multi_selected.clear()
 
 		# 새로 라벨링한 것을 추적 대상에 추가하려면 사용자가 다시 선택하도록 안내
 		# (자동으로 추가하지 않고 사용자가 선택한 후 추적 모드를 다시 토글하도록)
