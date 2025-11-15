@@ -2264,7 +2264,7 @@ class MainApp:
 		if to_remove and self.selid >= 0:
 			if self.selid in to_remove:
 				# 선택된 박스가 삭제된 경우
-				self.selid = min(len(self.bbox) - 1, 0)
+				self.selid = max(0, len(self.bbox) - 1) if self.bbox else -1
 			else:
 				# 선택된 박스의 인덱스 갱신
 				new_selid = self.selid

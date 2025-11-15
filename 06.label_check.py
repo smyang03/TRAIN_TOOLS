@@ -3689,8 +3689,8 @@ class ImageViewer:
             
             label.bind("<Button-1>", lambda event, l=label, p=label_path, ln_idx=bind_line_idx:
                     self.on_image_click(l, p, event, img_path, ln_idx))
-            label.bind("<Button-3>", lambda event, img_p=img_path, lbl_p=label_path: 
-                    self.show_full_image(img_p, lbl_p))
+            label.bind("<Button-3>", lambda event, img_p=img_path, lbl_p=label_path, ln_idx=bind_line_idx:
+                    self.show_full_image(img_p, lbl_p, ln_idx))
             label.bind("<Enter>", lambda event, l=label: 
                     self.show_box_tooltip(l, label_path, bind_line_idx))
             label.bind("<Leave>", lambda event: 
@@ -5309,7 +5309,7 @@ class ImageViewer:
         # 오른쪽 클릭 - 전체 이미지 보기
         label.bind("<Button-3>", lambda event,
                 img_path=img_path,
-                label_path=label_path: self.show_full_image(img_path, label_path))
+                label_path=label_path: self.show_full_image(img_path, label_path, None))
         
         return label
     def get_image_path_from_label(self, label_path):
@@ -5348,13 +5348,13 @@ class ImageViewer:
             return jpg_path
         
         return img_path
-    def show_full_image(self, img_path, label_path):
+    def show_full_image(self, img_path, label_path, selected_line_idx=None):
         """Show full image with bounding boxes in a new window"""
         try:
             # Create new window
             detail_window = tk.Toplevel(self.root)
             detail_window.title("Full Image View")
-            
+
             # Center window on screen
             window_width = 900  # 더 넓게 조정
             window_height = 700  # 더 높게 조정
@@ -5363,67 +5363,117 @@ class ImageViewer:
             x = (screen_width - window_width) // 2
             y = (screen_height - window_height) // 2
             detail_window.geometry(f"{window_width}x{window_height}+{x}+{y}")
-            
+
             # 상단 정보 프레임
             info_frame = tk.Frame(detail_window)
             info_frame.pack(fill="x", padx=10, pady=5)
-            
+
             # 파일 경로 표시
             file_label = tk.Label(info_frame, text=f"이미지: {os.path.basename(img_path)}", anchor="w")
             file_label.pack(side="left", padx=5)
-            
+
             # 선택된 클래스 정보
             selected_class = self.class_selector.get()
             class_label = tk.Label(info_frame, text=f"선택 클래스: {selected_class}", anchor="w")
             class_label.pack(side="left", padx=20)
-            
+
+            # 라벨 표시 토글 변수
+            show_labels_var = tk.BooleanVar(value=True)
+
+            # 토글 버튼 추가
+            toggle_button = tk.Button(info_frame, text="라벨 숨기기",
+                                     command=lambda: None, width=10)  # command는 나중에 설정
+            toggle_button.pack(side="right", padx=10)
+
             # Create canvas for scrollable image
             canvas_frame = tk.Frame(detail_window)
             canvas_frame.pack(fill="both", expand=True, padx=5, pady=5)
-            
+
             canvas = tk.Canvas(canvas_frame)
             scrollbar_y = tk.Scrollbar(canvas_frame, orient="vertical", command=canvas.yview)
             scrollbar_x = tk.Scrollbar(detail_window, orient="horizontal", command=canvas.xview)
-            
+
             # Configure canvas
             canvas.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
-            
+
             # Layout
             canvas.pack(side="left", fill="both", expand=True)
             scrollbar_y.pack(side="right", fill="y")
             scrollbar_x.pack(fill="x")
-            
+
             # Create frame inside canvas
             frame = tk.Frame(canvas, bg="white")
             canvas_window = canvas.create_window((0, 0), window=frame, anchor="nw")
-            
-            # 원본 이미지 로드
+
+            # 원본 이미지 로드 및 정보 저장
             with Image.open(img_path) as img:
                 # 이미지 크기 정보 표시
                 size_label = tk.Label(info_frame, text=f"크기: {img.width}x{img.height}px", anchor="w")
                 size_label.pack(side="left", padx=20)
-                
-                # 원본 이미지에 바운딩 박스 그리기
+
+                # 이미지 표시 크기 계산 (화면에 맞게 조정)
+                display_width = min(img.width, window_width - 100)
+                ratio = display_width / img.width
+                display_height = int(img.height * ratio)
+
+                # 원본 이미지 복사 및 리사이즈 (토글용)
+                original_img = img.copy()
+                resized_original = original_img.resize((display_width, display_height), Image.LANCZOS)
+
+            # 이미지 레이블 위젯 저장용
+            img_label_widget = [None]  # 리스트로 감싸서 내부 함수에서 참조 가능하게
+
+            def redraw_image():
+                """이미지를 라벨 표시 여부에 따라 다시 그리기"""
                 try:
                     # 선택된 클래스와 겹침 클래스 정보 가져오기
                     class_idx = int(float(selected_class))
                     overlap_class = self.overlap_class_selector.get()
-                    
-                    # 이미지 표시 크기 계산 (화면에 맞게 조정)
-                    display_width = min(img.width, window_width - 100)
-                    ratio = display_width / img.width
-                    display_height = int(img.height * ratio)
-                    
-                    # 이미지 리사이즈
-                    resized_img = img.resize((display_width, display_height), Image.LANCZOS)
-                    
-                    # 바운딩 박스 표시를 위한 특별 함수 호출
-                    img_label = self.draw_boxes_on_full_image(resized_img, label_path, frame, class_idx, 
-                                                            overlap_class)
+
+                    # 기존 이미지 위젯 제거
+                    if img_label_widget[0]:
+                        img_label_widget[0].destroy()
+
+                    # 이미지 복사본 생성
+                    display_img = resized_original.copy()
+
+                    # 라벨 표시가 켜져있으면 박스 그리기
+                    if show_labels_var.get():
+                        img_label_widget[0] = self.draw_boxes_on_full_image(
+                            display_img, label_path, frame, class_idx,
+                            overlap_class, selected_line_idx)
+                    else:
+                        # 라벨 없이 이미지만 표시
+                        photo = ImageTk.PhotoImage(display_img)
+                        img_label_widget[0] = tk.Label(frame, image=photo)
+                        img_label_widget[0].image = photo  # 참조 유지
+                        img_label_widget[0].pack()
+
+                    # 캔버스 스크롤 영역 업데이트
+                    frame.update_idletasks()
+                    canvas.configure(scrollregion=canvas.bbox("all"))
+
                 except Exception as e:
-                    print(f"Error drawing boxes: {e}")
+                    print(f"Error redrawing image: {e}")
                     import traceback
                     traceback.print_exc()
+
+            def toggle_labels():
+                """라벨 표시 토글"""
+                show_labels_var.set(not show_labels_var.get())
+                toggle_button.config(text="라벨 보기" if not show_labels_var.get() else "라벨 숨기기")
+                redraw_image()
+
+            # 토글 버튼 command 설정
+            toggle_button.config(command=toggle_labels)
+
+            # 초기 이미지 그리기
+            try:
+                redraw_image()
+            except Exception as e:
+                print(f"Error drawing boxes: {e}")
+                import traceback
+                traceback.print_exc()
             
             # 하단 버튼 프레임
             button_frame = tk.Frame(detail_window)
@@ -5531,16 +5581,26 @@ class ImageViewer:
                 # 오른쪽 클릭 - 전체 이미지 보기
                 widget.bind("<Button-3>", lambda event,
                         img_path=img_path,
-                        label_path=widget.label_path: 
-                        self.show_full_image(img_path, label_path))
+                        label_path=widget.label_path,
+                        ln_idx=getattr(widget, 'line_idx', None):
+                        self.show_full_image(img_path, label_path, ln_idx))
                                 
                 # 드래그 관련 바인딩 추가
                 # self.setup_drag_select_events(widget, widget.label_path)
             
-    def draw_boxes_on_full_image(self, image, label_path, parent_frame, class_idx, overlap_class=None):
-        """원본 크기 이미지에 모든 바운딩 박스 표시"""
+    def draw_boxes_on_full_image(self, image, label_path, parent_frame, class_idx, overlap_class=None, selected_line_idx=None):
+        """원본 크기 이미지에 모든 바운딩 박스 표시
+
+        Args:
+            image: PIL 이미지 객체
+            label_path: 라벨 파일 경로
+            parent_frame: 부모 프레임
+            class_idx: 선택된 클래스 인덱스
+            overlap_class: 겹침 클래스
+            selected_line_idx: 선택된 라벨의 라인 인덱스 (강조 표시용)
+        """
         from PIL import ImageDraw, ImageFont
-        
+
         # 원본 이미지 복사본에 그리기
         draw = ImageDraw.Draw(image)
         
@@ -5606,37 +5666,45 @@ class ImageViewer:
             
             # 박스 그리기
             for class_id, boxes in boxes_by_class.items():
-                # 기본 색상 설정
-                color = "green"
-                thickness = 2
-                
-                # 선택된 클래스인 경우 강조
-                if class_id == class_idx:
-                    color = "red"
-                    thickness = 3
-                # 겹침 대상 클래스인 경우
-                elif overlap_class != "선택 안함" and class_id == int(float(overlap_class)):
-                    color = "blue"
-                    thickness = 3
-                
                 # 해당 클래스의 모든 박스 그리기
                 for box in boxes:
+                    # 기본 색상 및 두께 설정
+                    color = "green"
+                    thickness = 1
+
+                    # 선택된 특정 라벨인 경우 (가장 우선순위 높음)
+                    if selected_line_idx is not None and box['index'] == selected_line_idx:
+                        color = "yellow"  # 선택된 라벨은 노란색으로 강조
+                        thickness = 3
+                    # 선택된 클래스인 경우
+                    elif class_id == class_idx:
+                        color = "red"
+                        thickness = 2
+                    # 겹침 대상 클래스인 경우
+                    elif overlap_class != "선택 안함" and class_id == int(float(overlap_class)):
+                        color = "blue"
+                        thickness = 2
+
                     # 박스 좌표
                     x1, y1, x2, y2 = box["coords"]
-                    
+
                     # 박스 그리기
                     draw.rectangle([x1, y1, x2, y2], outline=color, width=thickness)
-                    
+
                     # 클래스 텍스트 표시
                     label_text = f"Class: {class_id}"
                     if class_id == class_idx:
                         # 선택된 클래스의 박스에 인덱스 정보 추가
                         label_text += f" #{box['index']}"
-                    
+
+                    # 선택된 라벨은 "SELECTED" 표시
+                    if selected_line_idx is not None and box['index'] == selected_line_idx:
+                        label_text += " [SELECTED]"
+
                     # 텍스트 배경 그리기
                     text_bbox = draw.textbbox((x1, y1-20), label_text, font=font)
                     draw.rectangle(text_bbox, fill="white")
-                    
+
                     # 텍스트 그리기
                     draw.text((x1, y1-20), label_text, fill=color, font=font)
                     
