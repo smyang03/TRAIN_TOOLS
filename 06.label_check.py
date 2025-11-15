@@ -1265,8 +1265,8 @@ class ImageViewer:
                 mask_boxes = []
                 filtered_lines = []
                 
-                # 삭제할 박스의 라인 인덱스 목록 생성
-                box_line_indices = [box['line_idx'] for box in label_info['boxes']]
+                # 삭제할 박스의 라인 인덱스 목록 생성 (중복 제거)
+                box_line_indices = list(set([box['line_idx'] for box in label_info['boxes'] if 'line_idx' in box]))
                 
                 # 각 라인 처리
                 for line_idx, line in enumerate(lines):
@@ -1350,29 +1350,35 @@ class ImageViewer:
         progress_label.config(text="라벨→마스크 변환 완료!")
         result_summary = f"총 {len(self.selected_label_info)}개 이미지 중 {converted_count}개 파일에서 바운딩 박스가 마스킹으로 변환되었습니다. 오류: {error_count}개"
         result_label.config(text=result_summary)
-        
-        # 버튼 추가하여 창 닫기
-        close_button = tk.Button(progress_window, text="닫기", 
-                            command=progress_window.destroy,
-                            width=15, height=2, 
-                            font=("Arial", 11, "bold"),
-                            bg="#e0e0e0")
-        close_button.pack(pady=15)
-        
-        # 선택 상태 초기화 및 화면 갱신
+
+        # 선택 상태 초기화
         self.deselect_all_images()
-        
-        # 클래스 정보 갱신 (라벨 개수가 변경되었으므로)
-        self.update_class_dropdown()
-        if current_class != "Select Class":
-            self.class_selector.set(current_class)
-    
-    # 페이지 번호 조정 (기존 페이지가 전체 페이지보다 크면 마지막 페이지로 조정)
-        self.current_page = min(current_page, self.total_pages - 1)
-        if self.current_page < 0:
-            self.current_page = 0
+
+        # 화면의 모든 썸네일 제거 (UI 클리어)
+        for widget in self.frame.winfo_children():
+            widget.destroy()
+
+        # 클래스 정보 갱신 완료 후 호출될 콜백 정의
+        def on_update_complete():
+            """클래스 드롭다운 업데이트 완료 후 호출"""
+            # 원래 클래스로 복원
+            if current_class != "Select Class":
+                self.class_selector.set(current_class)
+
+            # 페이지 번호 조정
+            self.current_page = min(current_page, self.total_pages - 1) if self.total_pages > 0 else 0
+            if self.current_page < 0:
+                self.current_page = 0
+
             # 화면 갱신
             self.update_display()
+
+            # progress_window 닫기
+            if progress_window and progress_window.winfo_exists():
+                progress_window.destroy()
+
+        # 클래스 정보 갱신 (비동기, 완료 후 on_update_complete 호출)
+        self.update_class_dropdown(completion_callback=on_update_complete)
 
     def convert_view_to_original(self, view_x, view_y):
         """뷰 좌표를 원본 이미지 좌표로 변환"""
@@ -6249,21 +6255,33 @@ class ImageViewer:
                 for box in label_info['boxes']:
                     if 'line_idx' in box:
                         lines_to_delete.append(box['line_idx'])
-                
-                # 인덱스 정렬 (큰 인덱스부터 삭제해야 인덱스 변화 영향 없음)
-                lines_to_delete.sort(reverse=True)
-                
+
+                # 디버깅 정보
+                print(f"\n파일: {os.path.basename(label_path)}")
+                print(f"삭제 요청된 라인 인덱스 (중복 포함): {lines_to_delete}")
+                print(f"파일 전체 라인 수: {len(lines)}")
+
+                # 중복 제거 및 정렬 (큰 인덱스부터 삭제해야 인덱스 변화 영향 없음)
+                lines_to_delete = sorted(set(lines_to_delete), reverse=True)
+
+                print(f"삭제할 라인 인덱스 (중복 제거 후): {lines_to_delete}")
+
                 # 파일 내용 수정이 필요한지 확인
                 if lines_to_delete:
                     # 유효한 라인 인덱스 필터링
                     valid_indices = [idx for idx in lines_to_delete if 0 <= idx < len(lines)]
-                    
+
+                    print(f"유효한 라인 인덱스: {valid_indices}")
+
                     # 삭제된 박스 수 기록
                     deleted_boxes_count += len(valid_indices)
-                    
+
                     # 역순으로 해당 라인 삭제
                     for idx in valid_indices:
+                        print(f"  라인 {idx} 삭제 중...")
                         del lines[idx]
+
+                    print(f"삭제 후 남은 라인 수: {len(lines)}")
 
                     # 수정된 내용으로 파일 다시 쓰기
                     with open(label_path, 'w', encoding='utf-8') as f:
@@ -6355,17 +6373,13 @@ class ImageViewer:
         if hasattr(self, 'show_status_message'):
             self.show_status_message(f"{deleted_boxes_count}개 바운딩 박스 삭제 완료", duration=3000)
         
-        # 버튼 추가하여 창 닫기
-        close_button = tk.Button(progress_window, text="닫기", 
-                            command=progress_window.destroy,
-                            width=15, height=2, 
-                            font=("Arial", 11, "bold"),
-                            bg="#e0e0e0")
-        close_button.pack(pady=15)
-        
         # 선택 상태 초기화
         self.deselect_all_images()
-        
+
+        # 화면의 모든 썸네일 제거 (UI 클리어)
+        for widget in self.frame.winfo_children():
+            widget.destroy()
+
         # 클래스 정보 갱신 (라벨 개수가 변경되었으므로)
         # 클래스 정보 완전히 재구성 (더 철저한 갱신)
         self.labelsdata = [[] for _ in range(100)]  # 클래스별 라벨 데이터 완전 초기화
@@ -6382,34 +6396,41 @@ class ImageViewer:
 
         print("모든 캐시 및 라벨 데이터 초기화 완료")
 
-        # 클래스 정보 완전히 새로 구성
-        self.update_class_dropdown()  
+        # 클래스 정보 완전히 새로 구성 - completion_callback 추가
+        def on_update_complete():
+            """클래스 드롭다운 업데이트 완료 후 호출"""
+            # 추가 검증 - 삭제된 라벨이 여전히 남아있는지 확인
+            for label_info in self.selected_label_info:
+                label_path = label_info['path']
+                if os.path.isfile(label_path):
+                    with open(label_path, 'r', encoding='utf-8') as f:
+                        lines = f.readlines()
+                        if not lines:  # 빈 파일은 클래스 데이터에서 제거
+                            for class_idx in range(len(self.labelsdata)):
+                                if label_path in self.labelsdata[class_idx]:
+                                    self.labelsdata[class_idx].remove(label_path)
+                                    print(f"빈 파일 제거: {os.path.basename(label_path)}")
 
-        # 추가 검증 - 삭제된 라벨이 여전히 남아있는지 확인
-        for label_info in self.selected_label_info:
-            label_path = label_info['path']
-            if os.path.isfile(label_path):
-                with open(label_path, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-                    if not lines:  # 빈 파일은 클래스 데이터에서 제거
-                        for class_idx in range(len(self.labelsdata)):
-                            if label_path in self.labelsdata[class_idx]:
-                                self.labelsdata[class_idx].remove(label_path)
-                                print(f"빈 파일 제거: {os.path.basename(label_path)}")
+            print("클래스 정보 재구성 완료")
 
-        print("클래스 정보 재구성 완료")
-        
-        # 원래 클래스로 복원
-        if current_class != "Select Class":
-            self.class_selector.set(current_class)
-        
-        # 페이지 번호 조정 (기존 페이지가 전체 페이지보다 크면 마지막 페이지로 조정)
-        self.current_page = min(current_page, self.total_pages - 1)
-        if self.current_page < 0:
-            self.current_page = 0
-        
-        # 디스플레이 업데이트
-        self.update_display()
+            # 원래 클래스로 복원
+            if current_class != "Select Class":
+                self.class_selector.set(current_class)
+
+            # 페이지 번호 조정 (기존 페이지가 전체 페이지보다 크면 마지막 페이지로 조정)
+            self.current_page = min(current_page, self.total_pages - 1) if self.total_pages > 0 else 0
+            if self.current_page < 0:
+                self.current_page = 0
+
+            # 디스플레이 업데이트
+            self.update_display()
+
+            # progress_window 닫기
+            if progress_window and progress_window.winfo_exists():
+                progress_window.destroy()
+
+        # 클래스 드롭다운 업데이트 (비동기, 완료 후 on_update_complete 호출)
+        self.update_class_dropdown(completion_callback=on_update_complete)
     def recalculate_indices(self, label_path, deleted_indices):
         """
         파일 수정 후 인덱스를 재계산하고 모든 참조를 업데이트합니다.
@@ -7484,25 +7505,39 @@ class ImageViewer:
                     fg="gray"
                 )
                 auto_close_label.pack(pady=(0, 10))
+            # 캐시 무효화
             for label_path in set(label_paths_to_refresh):
                 self.invalidate_caches_for_label(label_path)
 
             # 라벨 데이터 캐시도 갱신
             self.refresh_label_data_cache()
             self.deselect_all_images()
-            # 클래스 정보와 디스플레이 업데이트
-            self.update_class_dropdown()
-            if current_class != "Select Class":
-                self.class_selector.set(current_class)
-        
-            # 페이지 번호 조정 (기존 페이지가 전체 페이지보다 크면 마지막 페이지로 조정)
-            self.current_page = min(current_page, self.total_pages - 1)
-            if self.current_page < 0:
-                self.current_page = 0
-            self.changing_class = False
-            print("클래스 변경 모드 비활성화")
-            # 
-            self.update_display()
+
+            # 화면의 모든 썸네일 제거 (UI 클리어)
+            for widget in self.frame.winfo_children():
+                widget.destroy()
+
+            # 클래스 정보 업데이트 완료 후 호출될 콜백 정의
+            def on_update_complete():
+                """클래스 드롭다운 업데이트 완료 후 호출"""
+                # 원래 클래스로 복원
+                if current_class != "Select Class":
+                    self.class_selector.set(current_class)
+
+                # 페이지 번호 조정
+                self.current_page = min(current_page, self.total_pages - 1) if self.total_pages > 0 else 0
+                if self.current_page < 0:
+                    self.current_page = 0
+
+                # 클래스 변경 모드 비활성화
+                self.changing_class = False
+                print("클래스 변경 모드 비활성화")
+
+                # 화면 갱신
+                self.update_display()
+
+            # 클래스 정보와 디스플레이 업데이트 (비동기)
+            self.update_class_dropdown(completion_callback=on_update_complete)
         
         # 버튼 추가
         ttk.Button(button_frame, text="변경", command=execute_change).pack(side="left", padx=5)
