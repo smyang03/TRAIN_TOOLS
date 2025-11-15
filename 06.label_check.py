@@ -1675,21 +1675,16 @@ class ImageViewer:
 
         try:
             total_files = len(self.labels)
-            print(f"[DEBUG] update_class_dropdown 시작 - 전체 라벨 파일 수: {total_files}")
-            print(f"[DEBUG] completion_callback 존재: {completion_callback is not None}")
-
             start_time = time.time()
 
             # 프로그레스 창 생성 또는 재사용
             if existing_progress_window is not None:
-                print("[DEBUG] 기존 progress_window 재사용")
                 progress_window = existing_progress_window
                 # 기존 위젯 정리
                 for widget in progress_window.winfo_children():
                     widget.destroy()
                 progress_window.title("클래스 정보 업데이트")
             else:
-                print("[DEBUG] 새 progress_window 생성")
                 progress_window = tk.Toplevel(self.root)
                 progress_window.title("클래스 정보 업데이트")
                 progress_window.geometry("400x150")
@@ -1717,7 +1712,6 @@ class ImageViewer:
             status_label.pack(padx=20, pady=(5,10), fill='x')
 
             progress_window.update()
-            print("[DEBUG] progress_window 업데이트 완료")
             
             # 클래스 정보 초기화
             labelsdata_new = [[] for _ in range(100)]
@@ -1794,19 +1788,15 @@ class ImageViewer:
             num_threads = min(20, max(4, os.cpu_count() or 4))
             threads = []
 
-            print(f"[DEBUG] 작업자 스레드 {num_threads}개 시작 중...")
             for i in range(num_threads):
                 t = threading.Thread(target=worker, name=f"ClassWorker-{i}")
                 t.daemon = True
                 t.start()
                 threads.append(t)
-            print(f"[DEBUG] 작업자 스레드 시작 완료")
 
             # 결과 처리 함수
             def process_results():
                 nonlocal processed_files, valid_files, invalid_files
-
-                print(f"[DEBUG] process_results 호출 - processed={processed_files}/{total_files}, queue_size={result_queue.qsize()}")
 
                 try:
                     # 최대 100개 결과 처리 (UI 응답성 유지)
@@ -1846,10 +1836,7 @@ class ImageViewer:
                     task_queue_empty = task_queue.empty()
                     threads_alive = sum(1 for t in threads if t.is_alive())
 
-                    print(f"[DEBUG] 완료 체크 - task_queue.empty()={task_queue_empty}, threads_alive={threads_alive}/{len(threads)}")
-
                     if task_queue_empty and threads_alive == 0:
-                        print(f"[DEBUG] 작업 완료 감지! 최종 처리 시작...")
 
                         # 모든 결과를 최종 처리
                         try:
@@ -1872,12 +1859,10 @@ class ImageViewer:
                         except queue.Empty:
                             pass
 
-                        print(f"[DEBUG] finalize_update 호출 준비...")
                         # 클래스 처리 완료
                         finalize_update()
                     else:
                         # 다음 배치 처리 예약
-                        print(f"[DEBUG] 작업 계속 - 50ms 후 재시도")
                         self.root.after(50, process_results)
 
                 except Exception as e:
@@ -1896,25 +1881,17 @@ class ImageViewer:
                 nonlocal labelsdata_new
 
                 try:
-                    print("[DEBUG] finalize_update 시작")
                     # 최종 진행 상황 업데이트
                     progress_bar["value"] = total_files
                     status_label.config(text=f"처리 완료: {processed_files}/{total_files} 파일, 유효: {valid_files}, 오류: {invalid_files}")
 
                     # labelsdata 업데이트
                     self.labelsdata = labelsdata_new
-                    print(f"[DEBUG] labelsdata 업데이트 완료: {sum(len(x) for x in self.labelsdata)}개 항목")
 
                     # 클래스 정렬 및 메뉴 업데이트
                     sorted_classes = sorted(list(classes), key=lambda x: int(float(x)))
-                    print(f"[DEBUG] 발견된 클래스: {sorted_classes}")
-
-                    # 클래스 카운트 계산
-                    class_counts = [len(self.labelsdata[int(float(class_idx))]) for class_idx in sorted_classes]
-                    print(f"[DEBUG] 클래스별 라벨 수: {class_counts}")
 
                     # 메인 클래스 드롭다운 메뉴 업데이트
-                    print("[DEBUG] 클래스 드롭다운 업데이트 시작")
                     menu = self.class_dropdown["menu"]
                     menu.delete(0, "end")
 
@@ -1926,7 +1903,6 @@ class ImageViewer:
                             label=label_text,
                             command=lambda idx=class_index: self.class_selector.set(idx)
                         )
-                    print(f"[DEBUG] 클래스 드롭다운 업데이트 완료: {len(sorted_classes)}개 클래스")
                     
                     # 겹침 필터 드롭다운 메뉴 업데이트
                     overlap_menu = self.overlap_class_dropdown["menu"]
@@ -1950,11 +1926,8 @@ class ImageViewer:
                     
                     # 페이지 초기화 및 첫 번째 클래스 선택 (클래스가 있는 경우)
                     if sorted_classes:
-                        print(f"[DEBUG] 첫 번째 클래스 선택: {sorted_classes[0]}")
                         self.current_page = 0
                         self.class_selector.set(sorted_classes[0])
-                    else:
-                        print("[DEBUG] 경고: 발견된 클래스가 없습니다!")
 
                     # 소요 시간 표시
                     elapsed_time = time.time() - start_time
@@ -1972,16 +1945,15 @@ class ImageViewer:
                     if hasattr(self, 'show_status_message'):
                         self.show_status_message(f"클래스 정보 업데이트 완료: {len(sorted_classes)}개 클래스")
 
-                    # progress_window는 finalize_ui_update에서 닫음
-                    # self.root.after(3000, progress_window.destroy)
-                    print("[DEBUG] finalize_update 완료")
-
-                    # 완료 콜백 호출 (finalize_ui_update 실행)
+                    # 완료 콜백 호출 또는 자동 종료 처리
                     if completion_callback:
-                        print("[DEBUG] completion_callback 호출")
+                        # 콜백이 있으면 콜백에서 창 닫기 처리
                         self.root.after(0, completion_callback)
                     else:
-                        print("[DEBUG] 경고: completion_callback이 None입니다")
+                        # 콜백이 없으면 자동으로 progress_window 닫기
+                        if existing_progress_window is None:
+                            # 새로 생성된 창인 경우만 자동으로 닫기
+                            self.root.after(3000, progress_window.destroy)
 
                 except Exception as e:
                     print(f"마무리 중 오류: {e}")
