@@ -2400,6 +2400,7 @@ class MainApp:
 		self.canvas.delete("bbox")
 		self.canvas.delete("anchor")
 		self.canvas.delete("clsname")
+		self.canvas.delete("selection_info")  # 선택 정보 삭제
 
 		if self.bbox_resize_anchor != None or self.bbox_move:
 			self.draw_bbox_rc(self.bbox[self.selid])
@@ -2423,7 +2424,7 @@ class MainApp:
 					text = f'{item} = {count}'
 					# 텍스트 길이에 따라 배경 사각형 너비 계산 (약 7픽셀/글자)
 					text_width = len(text) * 7
-					
+
 					# 배경용 사각형 그리기 (약간 더 넓게 만들기 위해 패딩 추가)
 					self.canvas.create_rectangle(
 						8, 18 + (15*cnt),  # 좌상단 (x, y)
@@ -2432,19 +2433,31 @@ class MainApp:
 						outline='',  # 테두리 없음
 						tags='clsname'  # 태그 (clsname과 동일하게)
 					)
-					
+
 					# 텍스트 그리기 (기존과 동일)
 					self.canvas.create_text(
-						10, 20 +(15*cnt), 
-						font='Arial 10 bold', 
-						fill='white', 
-						text=text, 
-						anchor='nw', 
+						10, 20 +(15*cnt),
+						font='Arial 10 bold',
+						fill='white',
+						text=text,
+						anchor='nw',
 						tags='clsname'
 					)
 					cnt +=1
-			if self.selid >= 0: 
+
+			# 다중 선택된 라벨들 그리기 (단일 선택보다 먼저)
+			if self.multi_selected:
+				for idx in self.multi_selected:
+					if idx < len(self.bbox):
+						self.draw_bbox_rc(self.bbox[idx], idx)
+
+			# 단일 선택된 라벨 그리기 (맨 위에 표시)
+			if self.selid >= 0:
 				self.draw_bbox_rc(self.bbox[self.selid])
+
+			# 화면 상단에 선택 상태 표시
+			self.draw_selection_info()
+
 			if hasattr(self, 'show_label_list') and self.show_label_list.get():
 				self.update_label_list()
 				self.update_crop_preview()
@@ -2452,14 +2465,14 @@ class MainApp:
 
 	def draw_bbox_rc(self, rc, index=None):
 		# 색상과 스타일 결정
-		if rc[0]:  # 현재 선택된 라벨
+		if rc[0]:  # 현재 선택된 라벨 (단일 선택)
 			color = 'red'
-			width = 2
+			width = 3
 			dash = None
-		elif index is not None and index in self.multi_selected:  # ✅ index 매개변수 추가
-			color = 'yellow'
-			width = 2
-			dash = (5, 5)
+		elif index is not None and index in self.multi_selected:  # 다중 선택된 라벨
+			color = '#FFD700'  # 밝은 금색 (더 눈에 잘 띄는 색)
+			width = 3
+			dash = None  # 점선 제거하고 실선으로 변경
 		else:  # 일반 라벨
 			color = 'white'
 			width = 1
@@ -2517,6 +2530,65 @@ class MainApp:
 			c = 'black' if color not in anchor_color else anchor_color[color]
 			self.canvas.create_rectangle([a + b for a, b in zip(r[1], margin)], outline=c, fill=color, width=1, tags=("anchor", r[0]))
 		return
+
+	def draw_selection_info(self):
+		"""화면 우상단에 선택 상태 표시"""
+		info_lines = []
+		y_offset = 10
+
+		# 단일 선택 정보
+		if self.selid >= 0 and self.selid < len(self.bbox):
+			bbox = self.bbox[self.selid]
+			class_name_text = bbox[1]
+			info_lines.append(("단일 선택", class_name_text, "red"))
+
+		# 다중 선택 정보
+		if self.multi_selected:
+			count = len(self.multi_selected)
+			# 선택된 클래스 목록 (중복 제거하고 최대 3개만 표시)
+			selected_classes = []
+			for idx in sorted(self.multi_selected):
+				if idx < len(self.bbox):
+					selected_classes.append(self.bbox[idx][1])
+			unique_classes = list(dict.fromkeys(selected_classes))[:3]
+			class_text = ", ".join(unique_classes)
+			if len(unique_classes) < len(set(selected_classes)):
+				class_text += "..."
+
+			info_lines.append((f"다중 선택: {count}개", class_text, "#FFD700"))
+
+		# 다중 선택 모드 표시
+		if self.multi_select_mode:
+			info_lines.append(("다중선택모드", "ON", "lightblue"))
+
+		# 정보 표시
+		for i, (title, content, bg_color) in enumerate(info_lines):
+			text = f"{title}: {content}"
+			text_width = len(text) * 7 + 10
+
+			# 배경 사각형
+			x1 = self.canvas.winfo_width() - text_width - 10 if hasattr(self.canvas, 'winfo_width') else 800
+			x2 = x1 + text_width
+			y1 = y_offset + (i * 25)
+			y2 = y1 + 20
+
+			self.canvas.create_rectangle(
+				x1, y1, x2, y2,
+				fill=bg_color,
+				outline='black',
+				width=2,
+				tags='selection_info'
+			)
+
+			# 텍스트
+			self.canvas.create_text(
+				x1 + 5, y1 + 10,
+				font='Arial 9 bold',
+				fill='black',
+				text=text,
+				anchor='w',
+				tags='selection_info'
+			)
 
 	def on_autotracking(self, event):
 		fa = open("AutoTracking_A.bat", 'wt')
