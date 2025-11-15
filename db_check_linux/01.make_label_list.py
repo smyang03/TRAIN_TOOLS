@@ -9,6 +9,13 @@ import re
 import logging
 from collections import defaultdict
 
+# 리눅스에서 방향키, 백스페이스 등의 입력을 제대로 처리하기 위한 readline import
+try:
+    import readline
+except ImportError:
+    # Windows 환경에서는 readline이 없을 수 있음
+    pass
+
 # 로깅 설정
 def setup_logging(output_path):
     """로깅 설정"""
