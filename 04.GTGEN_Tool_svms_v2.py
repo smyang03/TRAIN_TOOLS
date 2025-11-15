@@ -1454,7 +1454,11 @@ class MainApp:
 			self.master.title('[%d/%d] %s' % (self.ci+1, len(self.imlist), self.im_fn))
 			if self.CLASSIFY_TPFP: self.draw_criteria()
 			self.load_bbox()
-			self.draw_bbox()
+
+			# 라벨 추적 모드일 때는 여기서 draw하지 않고, next_frame()/prev_frame()에서 처리
+			if not (self.label_tracking_mode and self.tracking_labels):
+				self.draw_bbox()
+
 			if filesize != 0:
 				if self.selid >= 0:
 					rc = self.convert_abs2rel(self.bbox[self.selid])
@@ -3486,13 +3490,20 @@ class MainApp:
 	def back_frame(self):
 		# 현재 프레임의 마스킹 저장
 		self.save_masking_if_dirty()
-		
+
 		self.ci -= 1
 		if   self.ci >= len(self.imlist) : self.ci = len(self.imlist) - 1; return
 		if   self.ci < 0                 : self.ci = 0; return
 		self.img_slider.set(self.ci + 1)
 		self.slider_info.config(text=f"{self.ci+1}/{len(self.imlist)}")
 		self.write_bbox(); self.draw_image()
+
+		# 라벨 추적 모드가 활성화되어 있으면 추적 실행
+		if self.label_tracking_mode and self.tracking_labels:
+			self.track_labels_in_next_frame()
+			self.write_bbox()  # 변경된 라벨 저장
+			self.draw_bbox()   # 화면 다시 그리기
+
 		return
 
 	def next_frame(self):
@@ -3507,7 +3518,7 @@ class MainApp:
 		self.write_bbox(); self.draw_image()
 
 		# 라벨 추적 모드가 활성화되어 있으면 추적 실행
-		if self.label_tracking_mode:
+		if self.label_tracking_mode and self.tracking_labels:
 			self.track_labels_in_next_frame()
 			self.write_bbox()  # 변경된 라벨 저장
 			self.draw_bbox()   # 화면 다시 그리기
