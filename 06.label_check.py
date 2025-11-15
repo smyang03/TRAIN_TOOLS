@@ -1265,8 +1265,8 @@ class ImageViewer:
                 mask_boxes = []
                 filtered_lines = []
                 
-                # 삭제할 박스의 라인 인덱스 목록 생성
-                box_line_indices = [box['line_idx'] for box in label_info['boxes']]
+                # 삭제할 박스의 라인 인덱스 목록 생성 (중복 제거)
+                box_line_indices = list(set([box['line_idx'] for box in label_info['boxes'] if 'line_idx' in box]))
                 
                 # 각 라인 처리
                 for line_idx, line in enumerate(lines):
@@ -6255,21 +6255,33 @@ class ImageViewer:
                 for box in label_info['boxes']:
                     if 'line_idx' in box:
                         lines_to_delete.append(box['line_idx'])
-                
-                # 인덱스 정렬 (큰 인덱스부터 삭제해야 인덱스 변화 영향 없음)
-                lines_to_delete.sort(reverse=True)
-                
+
+                # 디버깅 정보
+                print(f"\n파일: {os.path.basename(label_path)}")
+                print(f"삭제 요청된 라인 인덱스 (중복 포함): {lines_to_delete}")
+                print(f"파일 전체 라인 수: {len(lines)}")
+
+                # 중복 제거 및 정렬 (큰 인덱스부터 삭제해야 인덱스 변화 영향 없음)
+                lines_to_delete = sorted(set(lines_to_delete), reverse=True)
+
+                print(f"삭제할 라인 인덱스 (중복 제거 후): {lines_to_delete}")
+
                 # 파일 내용 수정이 필요한지 확인
                 if lines_to_delete:
                     # 유효한 라인 인덱스 필터링
                     valid_indices = [idx for idx in lines_to_delete if 0 <= idx < len(lines)]
-                    
+
+                    print(f"유효한 라인 인덱스: {valid_indices}")
+
                     # 삭제된 박스 수 기록
                     deleted_boxes_count += len(valid_indices)
-                    
+
                     # 역순으로 해당 라인 삭제
                     for idx in valid_indices:
+                        print(f"  라인 {idx} 삭제 중...")
                         del lines[idx]
+
+                    print(f"삭제 후 남은 라인 수: {len(lines)}")
 
                     # 수정된 내용으로 파일 다시 쓰기
                     with open(label_path, 'w', encoding='utf-8') as f:
