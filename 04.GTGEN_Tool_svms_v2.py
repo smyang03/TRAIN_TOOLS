@@ -148,7 +148,7 @@ class ClassConfigDialog:
 		self.class_entries = []
 
 		# 상단 설명
-		info_label = tk.Label(self.dialog, text="클래스 설정 (최대 9개까지 설정 가능)", font=("Arial", 12, "bold"))
+		info_label = tk.Label(self.dialog, text="클래스 설정 (최대 80개까지 설정 가능)", font=("Arial", 12, "bold"))
 		info_label.pack(pady=10)
 
 		# 파일명 입력 프레임
@@ -180,16 +180,21 @@ class ClassConfigDialog:
 		canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
 		canvas.configure(yscrollcommand=scrollbar.set)
 
+		# 마우스 휠 스크롤 바인딩
+		def on_mousewheel(event):
+			canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+		canvas.bind_all("<MouseWheel>", on_mousewheel)
+
 		# 헤더
 		header_frame = tk.Frame(scrollable_frame)
 		header_frame.pack(fill=tk.X, padx=10, pady=5)
 		tk.Label(header_frame, text="번호", width=5).pack(side=tk.LEFT)
 		tk.Label(header_frame, text="클래스 이름", width=20).pack(side=tk.LEFT, padx=5)
-		tk.Label(header_frame, text="단축키(1-9)", width=10).pack(side=tk.LEFT, padx=5)
+		tk.Label(header_frame, text="단축키", width=10).pack(side=tk.LEFT, padx=5)
 		tk.Label(header_frame, text="색상", width=10).pack(side=tk.LEFT, padx=5)
 
-		# 9개의 클래스 입력 필드 생성
-		for i in range(9):
+		# 80개의 클래스 입력 필드 생성
+		for i in range(80):
 			self.add_class_entry(scrollable_frame, i)
 
 		canvas.pack(side="left", fill="both", expand=True, padx=10)
