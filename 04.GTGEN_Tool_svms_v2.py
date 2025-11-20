@@ -193,21 +193,30 @@ class AutoDeleteClassManager:
 		"""해당 클래스가 자동 삭제 대상인지 확인"""
 		return class_id in self.delete_class_ids
 
-	def filter_bboxes(self, bbox_list):
+	def filter_bboxes(self, bbox_list, class_name_list):
 		"""bbox 리스트에서 자동 삭제 대상 클래스 제거
 		Args:
 			bbox_list: bbox 리스트 ([sel, clsname, info, x1, y1, x2, y2] 형태)
+			class_name_list: 클래스 이름 리스트 (전역 class_name)
 		Returns:
 			filtered_list: 필터링된 bbox 리스트
 		"""
 		if not self.delete_class_ids:
 			return bbox_list
 
-		# class_id를 추출하기 위해 clsname을 매칭
+		# bbox[1]에서 클래스 이름을 가져와서 class_id로 변환
 		filtered = []
 		for bbox in bbox_list:
-			class_id = int(bbox[2])  # info가 class_id
-			if class_id not in self.delete_class_ids:
+			class_name_str = bbox[1]  # 클래스 이름 (문자열)
+			try:
+				# 클래스 이름을 인덱스(class_id)로 변환
+				class_id = class_name_list.index(class_name_str)
+				# 삭제 대상이 아니면 유지
+				if class_id not in self.delete_class_ids:
+					filtered.append(bbox)
+			except ValueError:
+				# 클래스 이름을 찾을 수 없으면 유지
+				print(f"[WARNING] Unknown class name: {class_name_str}, keeping bbox")
 				filtered.append(bbox)
 
 		return filtered
@@ -3112,7 +3121,9 @@ class MainApp:
 		# 1. 클래스 자동 삭제 필터링
 		if self.auto_delete_manager and self.auto_delete_manager.delete_class_ids:
 			before_count = len(self.bbox)
-			self.bbox = self.auto_delete_manager.filter_bboxes(self.bbox)
+			# class_name은 전역 변수
+			global class_name
+			self.bbox = self.auto_delete_manager.filter_bboxes(self.bbox, class_name)
 			deleted_count = before_count - len(self.bbox)
 			if deleted_count > 0:
 				print(f"[AutoDelete] {deleted_count}개 라벨 자동 삭제됨")
