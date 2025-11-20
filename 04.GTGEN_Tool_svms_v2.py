@@ -781,10 +781,18 @@ class MainApp:
 		self.key_button_map = {}
 		# 클래스 버튼 동적 생성
 		self.class_buttons = []
-		button_configs = self.class_config_manager.get_button_configs()
-		for name, class_id, key in button_configs:
-			btn = self.create_class_button(name, class_id, key)
-			self.class_buttons.append(btn)
+		try:
+			button_configs = self.class_config_manager.get_button_configs()
+			print(f"[DEBUG] 버튼 생성 시작. button_configs 개수: {len(button_configs)}")
+			for i, (name, class_id, key) in enumerate(button_configs):
+				print(f"[DEBUG] 버튼 {i}: name={name}, class_id={class_id}, key={key}")
+				btn = self.create_class_button(name, class_id, key)
+				self.class_buttons.append(btn)
+			print(f"[DEBUG] 버튼 생성 완료. 총 {len(self.class_buttons)}개")
+		except Exception as e:
+			print(f"[ERROR] 버튼 생성 중 오류: {e}")
+			import traceback
+			traceback.print_exc()
 
 		# Load 관련 버튼들
 		self.loadLabel = tk.Label(self.button_frame, text="Load:", bd=0)
@@ -1034,6 +1042,12 @@ class MainApp:
 		a.withdraw()
 		a.update()
 		_dir = tk.filedialog.askopenfile()
+
+		# 사용자가 취소하거나 파일 선택이 실패한 경우 처리
+		if _dir is None:
+			print("[DEBUG] 파일 선택이 취소되었거나 실패했습니다.")
+			raise Exception("파일 선택이 취소되었습니다.")
+
 		dirname = _dir.buffer.name
 		fname, ext = os.path.splitext(_dir.buffer.name)
 		framenum = 0
