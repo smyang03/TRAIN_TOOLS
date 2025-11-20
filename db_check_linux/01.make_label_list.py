@@ -916,6 +916,7 @@ def create_class_separated_lists(list_path, output_path):
     """
     리스트 파일에서 클래스별로 이미지 리스트를 분리하여 저장하는 함수
     각 클래스가 포함된 이미지들을 class_0.txt, class_1.txt 등으로 저장
+    배경 이미지(어노테이션 없음)는 background.txt로 저장
     """
     output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -926,6 +927,7 @@ def create_class_separated_lists(list_path, output_path):
 
     # 클래스별 이미지 리스트 저장용 딕셔너리
     class_images = defaultdict(list)
+    background_images = []  # 배경 이미지 (어노테이션 없음)
 
     # 통계 변수 초기화
     stats = {
@@ -933,6 +935,7 @@ def create_class_separated_lists(list_path, output_path):
         'processed': 0,
         'no_label_count': 0,
         'empty_label_count': 0,
+        'background_count': 0,
         'error_count': 0,
         'class_counts': defaultdict(int),
         'class_image_counts': defaultdict(int),
@@ -976,34 +979,43 @@ def create_class_separated_lists(list_path, output_path):
                 with open(label_path, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
 
-                    if not lines:
-                        stats['empty_label_count'] += 1
-                        continue
-
                     # 이미지에 포함된 클래스들
                     image_classes = set()
 
-                    for line in lines:
-                        split_line = line.strip().split()
-                        if not split_line or len(split_line) < 5:
-                            continue
-
-                        try:
-                            class_id = int(float(split_line[0]))
-                            if class_id < 0 or class_id >= 89:
+                    if not lines:
+                        # 빈 라벨 파일 = 배경 이미지
+                        stats['empty_label_count'] += 1
+                        background_images.append(img_path)
+                        stats['background_count'] += 1
+                        stats['processed'] += 1
+                    else:
+                        # 라벨 파싱
+                        for line in lines:
+                            split_line = line.strip().split()
+                            if not split_line or len(split_line) < 5:
                                 continue
 
-                            image_classes.add(class_id)
-                            stats['class_counts'][class_id] += 1
-                        except (ValueError, IndexError):
-                            continue
+                            try:
+                                class_id = int(float(split_line[0]))
+                                if class_id < 0 or class_id >= 89:
+                                    continue
 
-                    # 각 클래스 리스트에 이미지 경로 추가
-                    for class_id in image_classes:
-                        class_images[class_id].append(img_path)
-                        stats['class_image_counts'][class_id] += 1
+                                image_classes.add(class_id)
+                                stats['class_counts'][class_id] += 1
+                            except (ValueError, IndexError):
+                                continue
 
-                    stats['processed'] += 1
+                        # 클래스가 하나도 없으면 배경 이미지
+                        if not image_classes:
+                            background_images.append(img_path)
+                            stats['background_count'] += 1
+                        else:
+                            # 각 클래스 리스트에 이미지 경로 추가
+                            for class_id in image_classes:
+                                class_images[class_id].append(img_path)
+                                stats['class_image_counts'][class_id] += 1
+
+                        stats['processed'] += 1
 
             except Exception as e:
                 logger.error(f"라벨 처리 오류 {label_path}: {e}")
@@ -1013,8 +1025,8 @@ def create_class_separated_lists(list_path, output_path):
             # 진행 상황 출력
             print(f"\r진행률: {progress:.1f}% ({i+1}/{total_paths}) | "
                   f"처리: {stats['processed']} | "
-                  f"라벨 없음: {stats['no_label_count']} | "
-                  f"빈 라벨: {stats['empty_label_count']}", end='')
+                  f"배경: {stats['background_count']} | "
+                  f"라벨 없음: {stats['no_label_count']}", end='')
 
         print("\n")
 
@@ -1029,6 +1041,15 @@ def create_class_separated_lists(list_path, output_path):
 
             logger.info(f"클래스 {class_id}: {len(class_images[class_id])}개 이미지 저장 -> {class_list_path}")
 
+        # 배경 이미지 리스트 저장
+        if background_images:
+            background_list_path = output_path / 'background.txt'
+            with open(background_list_path, 'w', encoding='utf-8') as f:
+                for img_path in background_images:
+                    f.write(f"{img_path}\n")
+
+            logger.info(f"배경 이미지: {len(background_images)}개 저장 -> {background_list_path}")
+
         # 통계 저장
         stats_path = output_path / 'class_separation_stats.txt'
         with open(stats_path, 'w', encoding='utf-8') as f:
@@ -1038,6 +1059,7 @@ def create_class_separated_lists(list_path, output_path):
             f.write(f"성공적으로 처리: {stats['processed']}\n")
             f.write(f"라벨 없음: {stats['no_label_count']}\n")
             f.write(f"빈 라벨: {stats['empty_label_count']}\n")
+            f.write(f"배경 이미지: {stats['background_count']}\n")
             f.write(f"에러 발생: {stats['error_count']}\n")
             f.write("\n클래스별 통계:\n")
             f.write("-" * 50 + "\n")
@@ -1047,6 +1069,10 @@ def create_class_separated_lists(list_path, output_path):
                 f.write(f"  - 포함된 이미지 수: {stats['class_image_counts'][class_id]}\n")
                 f.write(f"  - 어노테이션 총 개수: {stats['class_counts'][class_id]}\n")
 
+            if background_images:
+                f.write(f"\n배경 이미지:\n")
+                f.write(f"  - 총 개수: {len(background_images)}\n")
+
         logger.info("클래스별 리스트 분리 완료")
 
         # 결과 요약 출력
@@ -1054,6 +1080,8 @@ def create_class_separated_lists(list_path, output_path):
         print(f"총 {len(class_images)}개 클래스 발견")
         for class_id in sorted(class_images.keys()):
             print(f"클래스 {class_id}: {stats['class_image_counts'][class_id]}개 이미지")
+        if background_images:
+            print(f"배경 이미지: {len(background_images)}개")
 
     except Exception as e:
         logger.error(f"리스트 파일 처리 중 오류 발생: {e}")
@@ -1939,11 +1967,14 @@ def main():
                         print(f"전체 처리 항목: {stats['total_lines']}")
                         print(f"성공적으로 처리: {stats['processed']}")
                         print(f"라벨 없음: {stats['no_label_count']}")
-                        print(f"빈 라벨: {stats['empty_label_count']}")
+                        print(f"배경 이미지: {stats['background_count']}")
 
                         print(f"\n생성된 클래스 리스트 파일:")
                         for class_id in sorted(stats['class_image_counts'].keys()):
                             print(f"  - class_{class_id}.txt: {stats['class_image_counts'][class_id]}개 이미지")
+
+                        if stats['background_count'] > 0:
+                            print(f"  - background.txt: {stats['background_count']}개 이미지")
 
                 except Exception as e:
                     print(f"\n클래스 분리 중 오류 발생: {e}")
