@@ -34,11 +34,13 @@ _dir_goodbye = ""
 # 클래스 설정 관리 클래스
 class ClassConfigManager:
 	def __init__(self, config_file="class_config.json"):
-		self.base_dir = os.path.dirname(os.path.abspath(__file__))
+		# 현재 작업 디렉토리를 기준으로 설정 파일 저장/로드
+		self.base_dir = os.getcwd()
 		self.config_file = os.path.join(self.base_dir, config_file)
 		self.last_config_file = os.path.join(self.base_dir, ".last_class_config.txt")
 		self.classes = []
 		self.default_colors = ['magenta', 'blue', 'yellow', 'cyan', 'green', 'orange', 'white', 'red', 'purple']
+		print(f"[DEBUG] ClassConfigManager 초기화 - base_dir: {self.base_dir}")
 
 	def set_config_file(self, config_file):
 		"""설정 파일 경로 변경"""
@@ -71,9 +73,25 @@ class ClassConfigManager:
 	def get_available_configs(self):
 		"""사용 가능한 설정 파일 목록 반환"""
 		try:
-			files = [f for f in os.listdir(self.base_dir) if f.endswith('.json') and f.startswith('class_config')]
-			return sorted(files)
-		except:
+			# base_dir에서 찾기
+			search_dir = self.base_dir
+			print(f"[DEBUG] 설정 파일 검색 경로: {search_dir}")
+
+			if not os.path.exists(search_dir):
+				print(f"[DEBUG] 경로가 존재하지 않음: {search_dir}")
+				return []
+
+			all_files = os.listdir(search_dir)
+			print(f"[DEBUG] 전체 파일 개수: {len(all_files)}")
+
+			config_files = [f for f in all_files if f.endswith('.json') and f.startswith('class_config')]
+			print(f"[DEBUG] 찾은 설정 파일: {config_files}")
+
+			return sorted(config_files)
+		except Exception as e:
+			print(f"[DEBUG] get_available_configs 오류: {e}")
+			import traceback
+			traceback.print_exc()
 			return []
 
 	def config_exists(self):
