@@ -550,21 +550,26 @@ class MainApp:
 		if not config_loaded:
 			print("설정 파일이 없습니다. 설정 다이얼로그를 표시합니다.")
 
+			# 다이얼로그를 띄우기 위해 부모 윈도우를 잠깐 표시
+			self.master.deiconify()
+			self.master.update()
+
 			# 설정 파일이 없으면 설정 다이얼로그 표시
 			available_configs = self.class_config_manager.get_available_configs()
 
 			if available_configs:
 				print(f"기존 설정 파일 발견: {available_configs}")
 				# 기존 설정 파일이 있으면 선택 옵션 제공
+				self.master.attributes('-topmost', True)  # 최상위 표시
 				msg = "기존 설정 파일을 찾았습니다.\n\n새 설정을 만들려면 '예'를,\n기존 설정을 로드하려면 '아니오'를 선택하세요."
 				create_new = messagebox.askyesno("클래스 설정", msg)
+				self.master.attributes('-topmost', False)  # 최상위 해제
 
 				if not create_new:
 					# 기존 설정 로드 시도
 					print("기존 설정 로드를 시도합니다...")
 					dialog = ClassConfigDialog(self.master, self.class_config_manager)
-					dialog.dialog.lift()  # 다이얼로그를 최상위로
-					dialog.dialog.attributes('-topmost', True)  # 항상 위에 표시
+					dialog.dialog.focus_force()  # 포커스 강제 설정
 					dialog.load_existing_config()
 
 					# 로드 후 config_loaded 확인
@@ -576,8 +581,7 @@ class MainApp:
 			if not config_loaded:
 				print("새 설정을 생성합니다...")
 				dialog = ClassConfigDialog(self.master, self.class_config_manager)
-				dialog.dialog.lift()  # 다이얼로그를 최상위로
-				dialog.dialog.attributes('-topmost', True)  # 항상 위에 표시
+				dialog.dialog.focus_force()  # 포커스 강제 설정
 				classes, config_filename = dialog.show()
 
 				if classes is None:
@@ -593,6 +597,9 @@ class MainApp:
 				# 저장한 설정 로드
 				self.class_config_manager.load_config(config_filename)
 				config_loaded = True
+
+			# 다이얼로그 완료 후 부모 윈도우 다시 숨김
+			self.master.withdraw()
 
 		class_name = self.class_config_manager.get_class_names()
 		class_color = self.class_config_manager.get_class_colors()
