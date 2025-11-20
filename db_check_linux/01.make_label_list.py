@@ -22,15 +22,18 @@ except Exception as e:
     # readline 설정 실패 시 무시 (기본 동작 사용)
     print(f"Warning: readline 설정 실패 - {e}")
 
+# 원본 input 함수를 먼저 저장 (무한 재귀 방지)
+import builtins
+_original_input = builtins.input
+
 def safe_input(prompt):
     """
     안전한 입력 함수 - ANSI escape sequence 제거
     리눅스에서 방향키 입력 시 발생하는 문제 해결
     """
-    # 내장 input 함수를 직접 호출 (무한 재귀 방지)
-    import builtins
     try:
-        user_input = builtins.input(prompt)
+        # 저장된 원본 input 함수 사용
+        user_input = _original_input(prompt)
         # ANSI escape sequence 제거 (방향키 등의 특수 문자)
         # \x1b는 ESC 문자, \[는 [, A-Z는 명령어
         ansi_escape = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
@@ -42,7 +45,6 @@ def safe_input(prompt):
         raise
 
 # 전역적으로 input 함수를 safe_input으로 오버라이드
-import builtins
 builtins.input = safe_input
 
 # 로깅 설정
