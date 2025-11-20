@@ -21,14 +21,201 @@ import time
 import atexit
 import copy
 import shutil
-import numpy as np 
+import numpy as np
 import pyautogui
 from numpy import array
 from collections import Counter
+import json
 
 #BASE_DIR = "C:/S1/TrainData/"
 BASE_DIR = os.getcwd() + "\\"
 _dir_goodbye = ""
+
+# 클래스 설정 관리 클래스
+class ClassConfigManager:
+	def __init__(self, config_file="class_config.json"):
+		self.config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), config_file)
+		self.classes = []
+		self.default_colors = ['magenta', 'blue', 'yellow', 'cyan', 'green', 'orange', 'white', 'red', 'purple']
+
+	def config_exists(self):
+		return os.path.exists(self.config_file)
+
+	def load_config(self):
+		"""설정 파일 로드"""
+		if not self.config_exists():
+			return False
+
+		try:
+			with open(self.config_file, 'r', encoding='utf-8') as f:
+				data = json.load(f)
+				self.classes = data.get('classes', [])
+			return True
+		except Exception as e:
+			print(f"설정 파일 로드 실패: {e}")
+			return False
+
+	def save_config(self, classes):
+		"""설정 파일 저장"""
+		self.classes = classes
+		try:
+			with open(self.config_file, 'w', encoding='utf-8') as f:
+				json.dump({'classes': self.classes}, f, ensure_ascii=False, indent=2)
+			return True
+		except Exception as e:
+			print(f"설정 파일 저장 실패: {e}")
+			return False
+
+	def get_class_names(self):
+		"""클래스 이름 리스트 반환"""
+		# 클래스를 id 순으로 정렬
+		sorted_classes = sorted(self.classes, key=lambda x: x['id'])
+		return [c['name'] for c in sorted_classes]
+
+	def get_class_colors(self):
+		"""클래스 색상 정보 반환 (기존 class_color 형식)"""
+		sorted_classes = sorted(self.classes, key=lambda x: x['id'])
+		names = [c['name'] for c in sorted_classes]
+		colors = [c['color'] for c in sorted_classes]
+		return [names, colors]
+
+	def get_button_configs(self):
+		"""버튼 생성에 필요한 정보 반환 [(name, id, key), ...]"""
+		return [(c['name'], c['id'], c.get('key', None)) for c in self.classes]
+
+# 클래스 설정 다이얼로그
+class ClassConfigDialog:
+	def __init__(self, parent):
+		self.result = None
+		self.dialog = tk.Toplevel(parent)
+		self.dialog.title("클래스 설정")
+		self.dialog.geometry("600x500")
+		self.dialog.transient(parent)
+		self.dialog.grab_set()
+
+		# 기본 색상 리스트
+		self.default_colors = ['magenta', 'blue', 'yellow', 'cyan', 'green', 'orange', 'white', 'red', 'purple', 'pink', 'brown', 'gray']
+
+		# 클래스 엔트리 리스트
+		self.class_entries = []
+
+		# 상단 설명
+		info_label = tk.Label(self.dialog, text="클래스 설정 (최대 9개까지 설정 가능)", font=("Arial", 12, "bold"))
+		info_label.pack(pady=10)
+
+		# 스크롤 가능한 프레임
+		canvas = tk.Canvas(self.dialog)
+		scrollbar = tk.Scrollbar(self.dialog, orient="vertical", command=canvas.yview)
+		scrollable_frame = tk.Frame(canvas)
+
+		scrollable_frame.bind(
+			"<Configure>",
+			lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+		)
+
+		canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+		canvas.configure(yscrollcommand=scrollbar.set)
+
+		# 헤더
+		header_frame = tk.Frame(scrollable_frame)
+		header_frame.pack(fill=tk.X, padx=10, pady=5)
+		tk.Label(header_frame, text="번호", width=5).pack(side=tk.LEFT)
+		tk.Label(header_frame, text="클래스 이름", width=20).pack(side=tk.LEFT, padx=5)
+		tk.Label(header_frame, text="단축키(1-9)", width=10).pack(side=tk.LEFT, padx=5)
+		tk.Label(header_frame, text="색상", width=10).pack(side=tk.LEFT, padx=5)
+
+		# 9개의 클래스 입력 필드 생성
+		for i in range(9):
+			self.add_class_entry(scrollable_frame, i)
+
+		canvas.pack(side="left", fill="both", expand=True, padx=10)
+		scrollbar.pack(side="right", fill="y")
+
+		# 하단 버튼
+		button_frame = tk.Frame(self.dialog)
+		button_frame.pack(side=tk.BOTTOM, pady=10)
+
+		tk.Button(button_frame, text="저장", command=self.save, width=10).pack(side=tk.LEFT, padx=5)
+		tk.Button(button_frame, text="취소", command=self.cancel, width=10).pack(side=tk.LEFT, padx=5)
+
+		# 다이얼로그 중앙에 배치
+		self.dialog.update_idletasks()
+		x = (self.dialog.winfo_screenwidth() // 2) - (self.dialog.winfo_width() // 2)
+		y = (self.dialog.winfo_screenheight() // 2) - (self.dialog.winfo_height() // 2)
+		self.dialog.geometry(f"+{x}+{y}")
+
+	def add_class_entry(self, parent, index):
+		frame = tk.Frame(parent)
+		frame.pack(fill=tk.X, padx=10, pady=2)
+
+		# 번호 레이블
+		tk.Label(frame, text=str(index), width=5).pack(side=tk.LEFT)
+
+		# 클래스 이름 입력
+		name_entry = tk.Entry(frame, width=20)
+		name_entry.pack(side=tk.LEFT, padx=5)
+
+		# 단축키 입력
+		key_entry = tk.Entry(frame, width=10)
+		key_entry.pack(side=tk.LEFT, padx=5)
+		if index < 9:
+			key_entry.insert(0, str(index + 1))
+
+		# 색상 선택
+		color_var = tk.StringVar(value=self.default_colors[index % len(self.default_colors)])
+		color_menu = tk.OptionMenu(frame, color_var, *self.default_colors)
+		color_menu.config(width=8)
+		color_menu.pack(side=tk.LEFT, padx=5)
+
+		self.class_entries.append({
+			'name': name_entry,
+			'key': key_entry,
+			'color': color_var
+		})
+
+	def save(self):
+		classes = []
+		used_keys = set()
+
+		for i, entry in enumerate(self.class_entries):
+			name = entry['name'].get().strip()
+			key = entry['key'].get().strip()
+			color = entry['color'].get()
+
+			# 빈 이름은 건너뛰기
+			if not name:
+				continue
+
+			# 단축키 중복 체크
+			if key and key in used_keys:
+				messagebox.showwarning("경고", f"단축키 '{key}'가 중복됩니다.")
+				return
+
+			if key:
+				used_keys.add(key)
+
+			classes.append({
+				'id': i,
+				'name': name,
+				'key': key if key else None,
+				'color': color
+			})
+
+		if not classes:
+			messagebox.showwarning("경고", "최소 1개 이상의 클래스를 설정해야 합니다.")
+			return
+
+		self.result = classes
+		self.dialog.destroy()
+
+	def cancel(self):
+		self.result = None
+		self.dialog.destroy()
+
+	def show(self):
+		self.dialog.wait_window()
+		return self.result
+
 class_name = [ 'person', 'Slip', 'head', 'Helmet', 'GasMask', 'Drum', 'car', 'bus', 'truck', 'forklift', 'motorcycle','chair','backpack','bird','animal','etc']
 # // YOLO 클래스 설명
 # // 인덱스 0부터 시작하는 클래스 이름 설명
@@ -180,9 +367,42 @@ class MainApp:
 	tracking_iou_threshold = 0.3  # IoU 임계값 (30% 이상 겹치면 매칭으로 간주)
 
 	def __init__(self, _dir):
+		# 클래스 설정 관리자 초기화
+		self.class_config_manager = ClassConfigManager()
+
+		# 메인 윈도우 초기 생성 (설정 다이얼로그를 띄우기 위해)
+		self.master = tk.Tk()
+		self.master.withdraw()  # 일시적으로 숨김
+
+		# 클래스 설정 로드 또는 생성
+		global class_name, class_color
+		if not self.class_config_manager.config_exists():
+			# 설정 파일이 없으면 설정 다이얼로그 표시
+			dialog = ClassConfigDialog(self.master)
+			classes = dialog.show()
+
+			if classes is None:
+				# 사용자가 취소한 경우 프로그램 종료
+				print("클래스 설정이 취소되었습니다. 프로그램을 종료합니다.")
+				self.master.destroy()
+				sys.exit(0)
+
+			# 설정 저장
+			self.class_config_manager.save_config(classes)
+			print(f"클래스 설정이 저장되었습니다: {self.class_config_manager.config_file}")
+
+		# 설정 파일에서 클래스 정보 로드
+		self.class_config_manager.load_config()
+		class_name = self.class_config_manager.get_class_names()
+		class_color = self.class_config_manager.get_class_colors()
+
 		# 클래스 이름 출력
+		print("\n=== 로드된 클래스 설정 ===")
 		for i in range(len(class_name)):
 			print(f"{i} == {class_name[i]}")
+		print("========================\n")
+
+		self.master.deiconify()  # 윈도우 다시 표시
 
 		self.copied_label = None
 
@@ -242,10 +462,7 @@ class MainApp:
 		keysetting[36]=cfg['BasicKeySetting']['CopyLabeling']
 		keysetting[37]=cfg['SpecialKeySetting']['OnlyBox']
 		# keysetting[38]=cfg['BasicKeySetting']['ResetLabeling']  # 제거됨 - 위험한 기능
-		
-		# 메인 윈도우 생성
-		self.master = tk.Tk()
-		
+
 		# 버튼별 클래스 ID를 저장할 딕셔너리
 		self.button_class_map = {}
 		
@@ -299,16 +516,12 @@ class MainApp:
 		self.classLabel.pack(side=tk.LEFT, padx=0)
 
 		self.key_button_map = {}
-		# 클래스 버튼 생성 - 추적 가능한 방식으로 변경
-		self.btn1 = self.create_class_button("person", 0, '1')    # 1 키와 매핑
-		self.btn2 = self.create_class_button("slip", 1, '2')      # 2 키와 매핑
-		self.btn3 = self.create_class_button("head", 2, '3')      # 3 키와 매핑
-		self.btn4 = self.create_class_button("helmet", 3, '4')    # 4 키와 매핑
-		self.btn5 = self.create_class_button("sitting", 6, '5')   # 5 키와 매핑
-		self.btn6 = self.create_class_button("car", 8, '6')       # 6 키와 매핑
-		self.btn7 = self.create_class_button("truck", 13, '7')    # 7 키와 매핑
-		self.btn8 = self.create_class_button("stop sign", 17, '8')# 8 키와 매핑
-		self.btn9 = self.create_class_button("motorbike", 9, '9')  # 9 키와 매핑
+		# 클래스 버튼 동적 생성
+		self.class_buttons = []
+		button_configs = self.class_config_manager.get_button_configs()
+		for name, class_id, key in button_configs:
+			btn = self.create_class_button(name, class_id, key)
+			self.class_buttons.append(btn)
 
 		# Load 관련 버튼들
 		self.loadLabel = tk.Label(self.button_frame, text="Load:", bd=0)
@@ -322,6 +535,9 @@ class MainApp:
 		
 		self.btnHelp = tk.Button(self.button_frame, text="Help", command=self.print_help, bd=1)
 		self.btnHelp.pack(side=tk.RIGHT, padx=0)
+
+		self.btnConfigClass = tk.Button(self.button_frame, text="클래스 설정", command=self.change_class_config, bd=1)
+		self.btnConfigClass.pack(side=tk.RIGHT, padx=2)
 
 		self.show_size_info = tk.BooleanVar()
 		self.show_size_info.set(False)  # 기본값은 표시하지 않음
@@ -4597,7 +4813,31 @@ class MainApp:
 		os.popen("C:\\S1\\TrainData\\학습데이터생성툴_키보드_매뉴얼.png")
 		#os.popen("config.ini")
 		return
-	
+
+	def change_class_config(self):
+		"""클래스 설정 변경"""
+		# 현재 설정을 기반으로 다이얼로그 표시
+		dialog = ClassConfigDialog(self.master)
+
+		# 기존 설정으로 초기화
+		for i, entry in enumerate(dialog.class_entries):
+			if i < len(self.class_config_manager.classes):
+				cls = self.class_config_manager.classes[i]
+				entry['name'].delete(0, tk.END)
+				entry['name'].insert(0, cls['name'])
+				entry['key'].delete(0, tk.END)
+				if cls.get('key'):
+					entry['key'].insert(0, cls['key'])
+				entry['color'].set(cls['color'])
+
+		classes = dialog.show()
+
+		if classes is not None:
+			# 설정 저장
+			self.class_config_manager.save_config(classes)
+			messagebox.showinfo("클래스 설정 변경",
+				f"클래스 설정이 저장되었습니다.\n설정 파일: {self.class_config_manager.config_file}\n\n변경사항을 적용하려면 프로그램을 재시작해주세요.")
+
 	def on_slider_change(self, value):
     # 슬라이더 값을 정수로 변환하고 0-인덱스로 조정
 		new_index = int(float(value)) - 1
