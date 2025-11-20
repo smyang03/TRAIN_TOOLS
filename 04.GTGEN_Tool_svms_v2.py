@@ -148,7 +148,7 @@ class ClassConfigDialog:
 		self.class_entries = []
 
 		# 상단 설명
-		info_label = tk.Label(self.dialog, text="클래스 설정 (최대 9개까지 설정 가능)", font=("Arial", 12, "bold"))
+		info_label = tk.Label(self.dialog, text="클래스 설정 (최대 80개까지 설정 가능)", font=("Arial", 12, "bold"))
 		info_label.pack(pady=10)
 
 		# 파일명 입력 프레임
@@ -180,16 +180,21 @@ class ClassConfigDialog:
 		canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
 		canvas.configure(yscrollcommand=scrollbar.set)
 
+		# 마우스 휠 스크롤 바인딩
+		def on_mousewheel(event):
+			canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+		canvas.bind_all("<MouseWheel>", on_mousewheel)
+
 		# 헤더
 		header_frame = tk.Frame(scrollable_frame)
 		header_frame.pack(fill=tk.X, padx=10, pady=5)
 		tk.Label(header_frame, text="번호", width=5).pack(side=tk.LEFT)
 		tk.Label(header_frame, text="클래스 이름", width=20).pack(side=tk.LEFT, padx=5)
-		tk.Label(header_frame, text="단축키(1-9)", width=10).pack(side=tk.LEFT, padx=5)
+		tk.Label(header_frame, text="단축키", width=10).pack(side=tk.LEFT, padx=5)
 		tk.Label(header_frame, text="색상", width=10).pack(side=tk.LEFT, padx=5)
 
-		# 9개의 클래스 입력 필드 생성
-		for i in range(9):
+		# 80개의 클래스 입력 필드 생성
+		for i in range(80):
 			self.add_class_entry(scrollable_frame, i)
 
 		canvas.pack(side="left", fill="both", expand=True, padx=10)
@@ -557,6 +562,10 @@ class MainApp:
 			# 설정 파일이 없으면 설정 다이얼로그 표시
 			available_configs = self.class_config_manager.get_available_configs()
 
+			# 다이얼로그 생성
+			dialog = ClassConfigDialog(self.master, self.class_config_manager)
+			dialog.dialog.focus_force()
+
 			if available_configs:
 				print(f"기존 설정 파일 발견: {available_configs}")
 				# 기존 설정 파일이 있으면 선택 옵션 제공
@@ -568,20 +577,20 @@ class MainApp:
 				if not create_new:
 					# 기존 설정 로드 시도
 					print("기존 설정 로드를 시도합니다...")
-					dialog = ClassConfigDialog(self.master, self.class_config_manager)
-					dialog.dialog.focus_force()  # 포커스 강제 설정
 					dialog.load_existing_config()
 
 					# 로드 후 config_loaded 확인
 					if len(self.class_config_manager.classes) > 0:
 						config_loaded = True
 						print("✓ 기존 설정 로드 완료")
+						# 로드 성공 시 다이얼로그 닫기
+						dialog.dialog.destroy()
+					else:
+						print("로드된 설정이 없습니다. 새 설정을 입력하세요.")
 
-			# config_loaded가 여전히 False면 새 설정 생성
+			# config_loaded가 여전히 False면 다이얼로그에서 새 설정 입력받기
 			if not config_loaded:
-				print("새 설정을 생성합니다...")
-				dialog = ClassConfigDialog(self.master, self.class_config_manager)
-				dialog.dialog.focus_force()  # 포커스 강제 설정
+				print("새 설정을 입력하세요...")
 				classes, config_filename = dialog.show()
 
 				if classes is None:
