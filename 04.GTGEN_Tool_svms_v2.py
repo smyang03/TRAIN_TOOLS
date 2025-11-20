@@ -13,10 +13,7 @@ from tkinter import filedialog
 from functools import partial 
 import cv2
 import natsort
-
 import configparser
-#from xml.etree.ElementTree import ElementTreee
-#from xml.etree.ElementTree import Element, dump
 import time
 import atexit
 import copy
@@ -247,7 +244,12 @@ class ClassConfigManager:
 		self.config_file = os.path.join(self.base_dir, config_file)
 		self.last_config_file = os.path.join(self.base_dir, ".last_class_config.txt")
 		self.classes = []
-		self.default_colors = ['magenta', 'blue', 'yellow', 'cyan', 'green', 'orange', 'white', 'red', 'purple']
+		self.default_colors = [
+			'red', 'blue', 'green', 'yellow', 'orange', 'purple', 'cyan', 'magenta',
+			'lime', 'pink', 'teal', 'lavender', 'brown', 'beige', 'maroon', 'mint',
+			'olive', 'coral', 'navy', 'grey', 'white', 'salmon', 'gold', 'turquoise',
+			'violet', 'indigo', 'tan', 'khaki', 'plum', 'orchid', 'sienna', 'crimson'
+		]
 		print(f"[DEBUG] ClassConfigManager 초기화 - base_dir: {self.base_dir}")
 
 	def set_config_file(self, config_file):
@@ -388,7 +390,12 @@ class ClassConfigDialog:
 		self.dialog.grab_set()
 
 		# 기본 색상 리스트
-		self.default_colors = ['magenta', 'blue', 'yellow', 'cyan', 'green', 'orange', 'white', 'red', 'purple', 'pink', 'brown', 'gray']
+		self.default_colors = [
+			'red', 'blue', 'green', 'yellow', 'orange', 'purple', 'cyan', 'magenta',
+			'lime', 'pink', 'teal', 'lavender', 'brown', 'beige', 'maroon', 'mint',
+			'olive', 'coral', 'navy', 'grey', 'white', 'salmon', 'gold', 'turquoise',
+			'violet', 'indigo', 'tan', 'khaki', 'plum', 'orchid', 'sienna', 'crimson'
+		]
 
 		# 클래스 엔트리 리스트
 		self.class_entries = []
@@ -478,15 +485,36 @@ class ClassConfigDialog:
 
 		# 색상 선택
 		color_var = tk.StringVar(value=self.default_colors[index % len(self.default_colors)])
-		color_menu = tk.OptionMenu(frame, color_var, *self.default_colors)
+
+		# 색상 표시 레이블 (색상 샘플)
+		color_display = tk.Label(frame, text="  ", width=3, relief=tk.RAISED, bd=1)
+		color_display.pack(side=tk.LEFT, padx=2)
+
+		# 초기 색상 설정
+		try:
+			color_display.config(bg=color_var.get())
+		except:
+			color_display.config(bg='white')
+
+		# 색상 메뉴
+		color_menu = tk.OptionMenu(frame, color_var, *self.default_colors,
+									command=lambda c, disp=color_display: self.update_color_display(disp, c))
 		color_menu.config(width=8)
 		color_menu.pack(side=tk.LEFT, padx=5)
 
 		self.class_entries.append({
 			'name': name_entry,
 			'key': key_entry,
-			'color': color_var
+			'color': color_var,
+			'color_display': color_display
 		})
+
+	def update_color_display(self, color_display, color_name):
+		"""색상 표시 레이블 업데이트"""
+		try:
+			color_display.config(bg=color_name)
+		except:
+			color_display.config(bg='white')
 
 	def load_existing_config(self):
 		"""기존 설정 파일 로드"""
@@ -566,6 +594,11 @@ class ClassConfigDialog:
 						if cls.get('key'):
 							entry['key'].insert(0, cls['key'])
 						entry['color'].set(cls['color'])
+						# 색상 표시 업데이트
+						try:
+							entry['color_display'].config(bg=cls['color'])
+						except:
+							pass
 			else:
 				messagebox.showerror("오류", f"설정 파일 로드 실패: {selected_file[0]}")
 
@@ -624,90 +657,8 @@ class ClassConfigDialog:
 		self.dialog.wait_window()
 		return (self.result, self.config_filename)
 
+# 기본 클래스 이름 (클래스 설정 파일을 사용하지 않을 경우의 기본값)
 class_name = [ 'person', 'Slip', 'head', 'Helmet', 'GasMask', 'Drum', 'car', 'bus', 'truck', 'forklift', 'motorcycle','chair','backpack','bird','animal','etc']
-# // YOLO 클래스 설명
-# // 인덱스 0부터 시작하는 클래스 이름 설명
-# // -----------------------------------------
-# // 0: person - 사람
-# // 1: slip - 미끄러짐
-# // 2: head - 머리
-# // 3: helmet - 헬멧/안전모
-# // 4: gasmask - 방독면
-# // 5: Drum - 드럼
-# // 6: sitting - 앉아있는 상태
-# // 7: bicycle - 자전거
-# // 8: car - 자동차
-# // 9: motorbike - 오토바이
-# // 10: aeroplane - 비행기
-# // 11: bus - 버스
-# // 12: train - 기차
-# // 13: truck - 트럭
-# // 14: boat - 보트
-# // 15: trafficlight - 신호등
-# // 16: firehydrant - 소화전
-# // 17: stop sign - 정지 표지판
-# // 18: parking meter - 주차 미터기
-# // 19: bench - 벤치
-# // 20: bird - 새
-# // 21: cat - 고양이
-# // 22: dog - 개
-# // 23: horse - 말
-# // 24: sheep - 양
-# // 25: cow - 소
-# // 26: elephant - 코끼리
-# // 27: bear - 곰
-# // 28: zebra - 얼룩말
-# // 29: van - 밴
-# // 30: backpack - 배낭
-# // 31: umbrella - 우산
-# // 32: handbag - 핸드백
-# // 33: tie - 넥타이
-# // 34: suitcase - 여행 가방
-# // 35: frisbee - 프리스비
-# // 36: skis - 스키
-# // 37: snowboard - 스노우보드
-# // 38: sports ball - 스포츠 공
-# // 39: kite - 연
-# // 40: baseball bat - 야구 방망이
-# // 41: baseball glove - 야구 글러브
-# // 42: skateboard - 스케이트보드
-# // 43: surfboard - 서핑보드
-# // 44: tennis racket - 테니스 라켓
-# // 45: bottle - 병
-# // 46: wine glass - 와인 잔
-# // 47: cup - 컵
-# // 48: fork - 포크
-# // 49: knife - 나이프
-# // 50: spoon - 숟가락
-# // 51: bowl - 그릇
-# // 52: banana - 바나나
-# // 53: apple - 사과
-# // 54: sandwich - 샌드위치
-# // 55: orange - 오렌지
-# // 56: broccoli - 브로콜리
-# // 57: carrot - 당근
-# // 58: hot dog - 핫도그
-# // 59: pizza - 피자
-# // 60: donut - 도넛
-# // 61: cake - 케이크
-# // 62: chair - 의자
-# // 63: sofa - 소파
-# // 64: pottedplant - 화분
-# // 65: bed - 침대
-# // 66: diningtable - 식탁
-# // 67: toilet - 화장실
-# // 68: tvmonitor - TV/모니터
-# // 69: laptop - 노트북
-# // 70: mouse - 마우스
-# // 71: remote - 리모컨
-# // 72: keyboard - 키보드
-# // 73: cell phone - 휴대폰
-# // 74: microwave - 전자레인지
-# // 75: oven - 오븐
-# // 76: toaster - 토스터기
-# // 77: sink - 싱크대
-# // 78: refrigerator - 냉장고
-# // 79: book - 책
 
 anchor_name = ['nw','n','ne','e','se','s','sw','w']
 class_color = [
@@ -768,11 +719,6 @@ class MainApp:
 	temp_polygon_line = None
 	is_polygon_closed = False
 	show_polygon_points = True
-
-	# 프레임간 라벨 추적 기능 변수
-	label_tracking_mode = False  # 추적 모드 활성화 여부
-	tracking_labels = []  # 추적 중인 라벨 정보 [(bbox, class_name), ...]
-	tracking_iou_threshold = 0.3  # IoU 임계값 (30% 이상 겹치면 매칭으로 간주)
 
 	# 제외 영역 기능 변수
 	exclusion_zone_mode = False  # 제외 영역 그리기 모드
@@ -892,12 +838,6 @@ class MainApp:
 
 		self.copied_label = None
 
-		# 이전 실행 파일 제거
-		if os.path.isfile("autotrackingexit") == True: 
-			os.remove("autotrackingexit")
-		if os.path.isfile("autolabelingexit") == True: 
-			os.remove("autolabelingexit")
-		
 		# 설정 파일 로드
 		cfg = configparser.ConfigParser()
 		cfg.read(BASE_DIR + 'config.ini')
@@ -1096,16 +1036,27 @@ class MainApp:
 		)
 		self.chk_show_label_list.pack(side=tk.LEFT, padx=5)
 
-		# 라벨 추적 모드 체크박스
-		self.label_tracking_var = tk.BooleanVar()
-		self.label_tracking_var.set(False)
-		self.chk_label_tracking = tk.Checkbutton(
+		# 클래스 이름 표시 체크박스
+		self.show_class_name_var = tk.BooleanVar()
+		self.show_class_name_var.set(True)  # viewclass 기본값 True
+		self.chk_show_class_name = tk.Checkbutton(
 			self.button_frame,
-			text="Track Labels",
-			variable=self.label_tracking_var,
-			command=self.toggle_label_tracking
+			text="Show Class",
+			variable=self.show_class_name_var,
+			command=self.toggle_class_name_display
 		)
-		self.chk_label_tracking.pack(side=tk.LEFT, padx=5)
+		self.chk_show_class_name.pack(side=tk.LEFT, padx=5)
+
+		# 박스만 표시 체크박스
+		self.show_only_box_var = tk.BooleanVar()
+		self.show_only_box_var.set(True)  # onlybox 기본값 True
+		self.chk_show_only_box = tk.Checkbutton(
+			self.button_frame,
+			text="Only Box",
+			variable=self.show_only_box_var,
+			command=self.toggle_only_box_display
+		)
+		self.chk_show_only_box.pack(side=tk.LEFT, padx=5)
 
 		self.btnMultiClassSelect = tk.Button(
 		self.button_frame,
@@ -1424,91 +1375,48 @@ class MainApp:
 				self.CLASSIFY_TPFP=False
 				_dir = dirname
 		elif ext != '.jpg' and ext != '.png':
-			autotype = input("Type Input (0=Basic, 1=AutoTracking, 2=AutoLabeling): ")
-			if autotype=="1":
-				pathstr = os.path.splitext(dirname)
-				pathstr = os.path.split(pathstr[0])
-				f = open("AutoLabeling.bat", 'wt')  
-				f.write("test-sia.exe testEngineObjdet -p param.xml -i " + dirname + " -d " + str(pathstr[0]))
-				f.close()
-				os.startfile("AutoLabeling.bat")
-				while os.path.isfile("autolabelingexit") == False: time.sleep(0.1)
-			if autotype=="-1":
-				fa = open("AutoTracking_A.bat", 'wt')
-				fw = open("AutoTracking_W.bat", 'wt')
-				trackobjclass = -1
+			# 비디오 파일 처리 (기본 모드만 지원)
+			capture = cv2.VideoCapture(dirname)
+			pathstr = os.path.splitext(dirname)
+			pathstr = os.path.split(pathstr[0])
+			dirname = pathstr[0] + '/JPEGImages/' + pathstr[1]
+			if not(os.path.isdir(pathstr[0] + '/JPEGImages/' + pathstr[1])):
+				os.makedirs(os.path.join(pathstr[0] + '/JPEGImages/' + pathstr[1]))
+				if not(os.path.isdir(pathstr[0] + '/labels/' + pathstr[1])):
+					os.makedirs(os.path.join(pathstr[0] + '/labels/' + pathstr[1]))
+				resizeflag = False
+				if capture.get(cv2.CAP_PROP_FRAME_WIDTH) >= 1920:resizeflag = True
+				elif capture.get(cv2.CAP_PROP_FRAME_HEIGHT) >= 1080:resizeflag = True
 				while True:
-					trackobj = input("AVI Tracking Object Class : ")
-					if trackobj == "refrigerator" : trackobjclass = 72
-					elif trackobj == "chair" : trackobjclass = 56
-					elif trackobj == "tvmonitor" : trackobjclass = 62
-					elif trackobj == "diningtable" : trackobjclass = 60
-					elif trackobj == "pottedplant" : trackobjclass = 58
-					elif trackobj == "umbrella" : trackobjclass = 25
-					elif trackobj == "bowl" : trackobjclass = 45
-					elif trackobj == "clock" : trackobjclass = 74
-					elif trackobj == "sofa" : trackobjclass = 57
-					elif trackobj == "truck"  : trackobjclass = 7
-					elif trackobj == "bird" : trackobjclass = 14
-					elif trackobj == "car" : trackobjclass = 8
-					elif trackobj == "laptop" : trackobjclass = 63
-					elif trackobj == "cat" : trackobjclass = 15
-					elif trackobj == "dop" : trackobjclass = 16
-					elif trackobj == "keyboard" : trackobjclass = 66
-					elif trackobj == "cell phone" : trackobjclass = 41
-					else : print("Wrong Class Name")
-					if trackobjclass > -1 : break
-				dirname = dirname.replace('/','\\')
-				fa.write("test-siammask.exe models\SiamMask_DAVIS config_davis.json " + dirname + " " + str(trackobjclass) + " 0")
-				fa.close()
-				fw.write("test-siammask.exe models\SiamMask_DAVIS config_davis.json " + dirname + " " + str(trackobjclass) + " 1")
-				fw.close()
-				os.startfile("AutoTracking_A.bat")
-				pathstr = os.path.splitext(dirname)
-				pathstr = os.path.split(pathstr[0])
-				while os.path.isfile("autotrackingexit") == False: time.sleep(0.1)
-			if autotype == "0":
-				capture = cv2.VideoCapture(dirname)
-				pathstr = os.path.splitext(dirname)
-				pathstr = os.path.split(pathstr[0])
-				dirname = pathstr[0] + '/JPEGImages/' + pathstr[1]
-				if not(os.path.isdir(pathstr[0] + '/JPEGImages/' + pathstr[1])):
-					os.makedirs(os.path.join(pathstr[0] + '/JPEGImages/' + pathstr[1]))
-					if not(os.path.isdir(pathstr[0] + '/labels/' + pathstr[1])):
-						os.makedirs(os.path.join(pathstr[0] + '/labels/' + pathstr[1]))
-					resizeflag = False
-					if capture.get(cv2.CAP_PROP_FRAME_WIDTH) >= 1920:resizeflag = True
-					elif capture.get(cv2.CAP_PROP_FRAME_HEIGHT) >= 1080:resizeflag = True
-					while True:
-						frameskip = input("Skip Frame : ")
-						if frameskip != '' and frameskip != '0':
-							break
-						else:
-							print("input more than 1")
-					while True:
-						ret, frame = capture.read()
-						if ret == False:
-							break
-						framenum = framenum + 1
-						firsttxt = False
-						if (framenum % int(frameskip)) == 0:
-							framestr = '%07d' % (framenum)
-							imagename = pathstr[0] + '/JPEGImages/' + pathstr[1] + '/' + pathstr[1] + '_' + framestr + '.jpg'   
-							print(imagename)                     
-							if resizeflag == True:frame = cv2.resize(frame,(1280,720))
-							cv2.imwrite(imagename,frame)
-							if (firsttxt == False):
-								firsttxtfile = imagename.replace('JPEGImages','labels')
-								firsttxtfile = firsttxtfile.replace('.jpg','.txt')
-								firsttxtfile = firsttxtfile.replace('.png','.txt')
-								f = open(firsttxtfile, 'w')
-								f.close()
-								firsttxt = True
-					capture.release()
-				else:
-					print("Folder Exists.\n")
-					time.sleep(3)
-					sys.exit(0)
+					frameskip = input("Skip Frame : ")
+					if frameskip != '' and frameskip != '0':
+						break
+					else:
+						print("input more than 1")
+				while True:
+					ret, frame = capture.read()
+					if ret == False:
+						break
+					framenum = framenum + 1
+					firsttxt = False
+					if (framenum % int(frameskip)) == 0:
+						framestr = '%07d' % (framenum)
+						imagename = pathstr[0] + '/JPEGImages/' + pathstr[1] + '/' + pathstr[1] + '_' + framestr + '.jpg'
+						print(imagename)
+						if resizeflag == True:frame = cv2.resize(frame,(1280,720))
+						cv2.imwrite(imagename,frame)
+						if (firsttxt == False):
+							firsttxtfile = imagename.replace('JPEGImages','labels')
+							firsttxtfile = firsttxtfile.replace('.jpg','.txt')
+							firsttxtfile = firsttxtfile.replace('.png','.txt')
+							f = open(firsttxtfile, 'w')
+							f.close()
+							firsttxt = True
+				capture.release()
+			else:
+				print("Folder Exists.\n")
+				time.sleep(3)
+				sys.exit(0)
 			_dir = pathstr[0]+'/JPEGImages/'+pathstr[1]
 		else:
 			_dir = os.path.dirname(fname)
@@ -3325,61 +3233,11 @@ class MainApp:
 				x, y = point
 				self.canvas.create_oval(x-4, y-4, x+4, y+4, fill='cyan', outline='white', width=2, tags="exclusion_zone")
 
-	def on_autotracking(self, event):
-		fa = open("AutoTracking_A.bat", 'wt')
-		fw = open("AutoTracking_W.bat", 'wt')
-		trackdir = os.path.dirname(self.im_fn)
-		fname, ext = os.path.splitext(self.im_fn)
-		trackobjclass = -1
-		while True:
-			trackobj = input("JPG Tracking Object Class : ")
-			if trackobj == "refrigerator" : trackobjclass = 72
-			elif trackobj == "chair" : trackobjclass = 56
-			elif trackobj == "tvmonitor" : trackobjclass = 62
-			elif trackobj == "diningtable" : trackobjclass = 60
-			elif trackobj == "pottedplant" : trackobjclass = 58
-			elif trackobj == "umbrella" : trackobjclass = 25
-			elif trackobj == "bowl" : trackobjclass = 45
-			elif trackobj == "clock" : trackobjclass = 74
-			elif trackobj == "sofa" : trackobjclass = 57
-			elif trackobj == "truck"  : trackobjclass = 7
-			elif trackobj == "bird" : trackobjclass = 14
-			elif trackobj == "car" : trackobjclass = 8
-			elif trackobj == "laptop" : trackobjclass = 63
-			elif trackobj == "cat" : trackobjclass = 15
-			elif trackobj == "dop" : trackobjclass = 16
-			elif trackobj == "keyboard" : trackobjclass = 66
-			elif trackobj == "cell phone" : trackobjclass = 41
-			else : print("Wrong Class Name")
-			if trackobjclass > -1 : break
-		file_list = os.listdir(trackdir)
-		img_list = [file for file in file_list if file.endswith(ext)]
-		imgidx = 0
-		for img in img_list:
-			imgidx += 1
-			if img == os.path.basename(self.im_fn) : break
-		trackdir = trackdir.replace('/','\\')
-		fa.write("test-siammask.exe models\SiamMask_DAVIS config_davis.json " + trackdir + " " + str(trackobjclass) + " 0")
-		fa.close()
-		fw.write("test-siammask.exe models\SiamMask_DAVIS config_davis.json " + trackdir + " " + str(trackobjclass) + " 1")
-		fw.close()
-		os.startfile("AutoTracking_A.bat")
-		return
-
-	def on_autolabeling(self, event):
-		labeldir = os.path.dirname(self.im_fn)
-		f = open("AutoLabeling.bat", 'wt')
-		labelframestr = input("Labeling Frame Num : ")
-		labelframe = int(labelframestr)
-		f.write("test-sia.exe testEngineObjdet -p param.xml -i " + labeldir + " -v  " + str(self.ci+1) + " -e  " + str(labelframe))
-		f.close()
-		os.startfile("AutoLabeling.bat")
-		while os.path.isfile("autolabelingexit") == False: time.sleep(0.1)
-		return
-
 	def on_viewclass(self, event):
 		if self.viewclass is True : self.viewclass = False
 		else : self.viewclass = True
+		# UI 체크박스 동기화
+		self.show_class_name_var.set(self.viewclass)
 		pyautogui.press('ctrl')
 
 	def on_copylabeling(self, event):
@@ -3395,6 +3253,8 @@ class MainApp:
 	def on_onlybox(self, event):
 		if self.onlybox is True : self.onlybox = False
 		else : self.onlybox = True
+		# UI 체크박스 동기화
+		self.show_only_box_var.set(self.onlybox)
 		pyautogui.press('ctrl')
 
 	def on_reload_backup(self, event):
@@ -3772,110 +3632,15 @@ class MainApp:
 		# 크기 정보 표시 여부가 변경되면 현재 바운딩 박스 다시 그리기
 		self.draw_bbox()
 
-	def toggle_label_tracking(self):
-		"""라벨 추적 모드 토글"""
-		self.label_tracking_mode = self.label_tracking_var.get()
-
-		if self.label_tracking_mode:
-			# 추적 모드 활성화 - 현재 선택된 라벨들을 추적 대상으로 설정
-			self.start_label_tracking()
-			print("라벨 추적 모드 활성화")
-		else:
-			# 추적 모드 비활성화
-			self.tracking_labels = []
-			print("라벨 추적 모드 비활성화")
-
+	def toggle_class_name_display(self):
+		"""클래스 이름 표시 토글"""
+		self.viewclass = self.show_class_name_var.get()
 		self.draw_bbox()
 
-	def start_label_tracking(self):
-		"""현재 선택된 라벨들을 추적 대상으로 설정"""
-		self.tracking_labels = []
-
-		# 다중 선택된 라벨이 있으면 모두 추적 대상에 추가
-		if self.multi_selected:
-			for idx in self.multi_selected:
-				if 0 <= idx < len(self.bbox):
-					bbox = self.bbox[idx]
-					# bbox 형식: [selected, class_name, judge, x1, y1, x2, y2]
-					self.tracking_labels.append({
-						'bbox': [bbox[3], bbox[4], bbox[5], bbox[6]],  # [x1, y1, x2, y2]
-						'class_name': bbox[1],
-						'matched': False
-					})
-		# 단일 선택된 라벨이 있으면 추가
-		elif self.selid >= 0 and self.selid < len(self.bbox):
-			bbox = self.bbox[self.selid]
-			self.tracking_labels.append({
-				'bbox': [bbox[3], bbox[4], bbox[5], bbox[6]],
-				'class_name': bbox[1],
-				'matched': False
-			})
-
-		if self.tracking_labels:
-			print(f"추적 시작: {len(self.tracking_labels)}개 라벨")
-		else:
-			print("경고: 선택된 라벨이 없습니다. 라벨을 선택한 후 추적 모드를 활성화하세요.")
-
-	def track_labels_in_next_frame(self):
-		"""다음 프레임에서 추적 중인 라벨과 매칭되는 라벨만 유지"""
-		if not self.label_tracking_mode or not self.tracking_labels:
-			return
-
-		# 현재 프레임의 모든 라벨과 추적 라벨 간의 IoU 계산
-		labels_to_keep = []
-		matched_tracking_labels = set()
-
-		for bbox_idx, current_bbox in enumerate(self.bbox):
-			# current_bbox 형식: [selected, class_name, judge, x1, y1, x2, y2]
-			current_box = [current_bbox[3], current_bbox[4], current_bbox[5], current_bbox[6]]
-			current_class = current_bbox[1]
-
-			# 각 추적 라벨과 비교
-			max_iou = 0
-			best_match_idx = -1
-
-			for track_idx, track_label in enumerate(self.tracking_labels):
-				# 같은 클래스인 경우에만 매칭 시도
-				if track_label['class_name'] == current_class:
-					iou = self.get_iou(current_box, track_label['bbox'])
-
-					if iou > max_iou:
-						max_iou = iou
-						best_match_idx = track_idx
-
-			# IoU 임계값 이상이면 매칭으로 간주
-			if max_iou >= self.tracking_iou_threshold:
-				labels_to_keep.append(bbox_idx)
-				matched_tracking_labels.add(best_match_idx)
-				# 매칭된 추적 라벨의 위치를 현재 위치로 업데이트
-				if best_match_idx >= 0:
-					self.tracking_labels[best_match_idx]['bbox'] = current_box
-					self.tracking_labels[best_match_idx]['matched'] = True
-
-		# 매칭되지 않은 라벨 삭제
-		if labels_to_keep:
-			# 인덱스를 역순으로 정렬하여 삭제 (뒤에서부터 삭제해야 인덱스가 안 꼬임)
-			labels_to_remove = [i for i in range(len(self.bbox)) if i not in labels_to_keep]
-			labels_to_remove.sort(reverse=True)
-
-			removed_count = 0
-			for idx in labels_to_remove:
-				del self.bbox[idx]
-				removed_count += 1
-
-			print(f"추적 결과: {len(labels_to_keep)}개 유지, {removed_count}개 삭제")
-		else:
-			# 매칭되는 라벨이 없으면 모든 라벨 삭제
-			removed_count = len(self.bbox)
-			self.bbox.clear()
-			print(f"경고: 매칭되는 라벨이 없습니다. 모든 라벨 삭제({removed_count}개)")
-
-		# 선택 상태 초기화
-		self.selid = -1
-		self.multi_selected.clear()
-
-		# 새로 라벨링한 것을 추적 대상에 추가하려면 사용자가 다시 선택하도록 안내
-		# (자동으로 추가하지 않고 사용자가 선택한 후 추적 모드를 다시 토글하도록)
+	def toggle_only_box_display(self):
+		"""박스만 표시 토글"""
+		self.onlybox = self.show_only_box_var.get()
+		self.draw_bbox()
 
 	def goodbye():
 		fname, ext = os.path.splitext(_dir_goodbye)
