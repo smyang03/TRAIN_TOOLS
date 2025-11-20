@@ -37,33 +37,42 @@ class ExclusionZoneManager:
 
 	def __init__(self, base_dir=None):
 		self.base_dir = base_dir or os.getcwd()
-		self.zones = []  # [(polygon_points, enabled), ...]
+		self.zones = []  # 현재 이미지의 제외 영역
+		self.global_zones = []  # 모든 이미지에 적용되는 전역 제외 영역
 		self.current_zone_file = None
+		self.global_zone_file = os.path.join(self.base_dir, ".global_exclusion_zones.json")
+		self.enabled_file = os.path.join(self.base_dir, ".exclusion_zone_enabled.txt")
+		self.use_global = True  # 전역 영역 사용 여부
+		self.load_global_zones()
 
-	def add_zone(self, points):
+	def add_zone(self, points, use_global=True):
 		"""새로운 제외 영역 추가 (points는 [(x,y), ...] 형태)"""
 		if len(points) >= 3:  # 최소 3개의 점이 있어야 폴리곤 형성
-			self.zones.append({'points': points, 'enabled': True})
+			zone = {'points': points, 'enabled': True}
+			if use_global:
+				self.global_zones.append(zone)
+			else:
+				self.zones.append(zone)
 			return True
 		return False
 
 	def remove_zone(self, index):
-		"""제외 영역 삭제"""
-		if 0 <= index < len(self.zones):
-			del self.zones[index]
+		"""제외 영역 삭제 (전역 영역에서)"""
+		if 0 <= index < len(self.global_zones):
+			del self.global_zones[index]
 			return True
 		return False
 
 	def toggle_zone(self, index):
-		"""제외 영역 활성화/비활성화 토글"""
-		if 0 <= index < len(self.zones):
-			self.zones[index]['enabled'] = not self.zones[index]['enabled']
+		"""제외 영역 활성화/비활성화 토글 (전역 영역에서)"""
+		if 0 <= index < len(self.global_zones):
+			self.global_zones[index]['enabled'] = not self.global_zones[index]['enabled']
 			return True
 		return False
 
 	def clear_zones(self):
 		"""모든 제외 영역 삭제"""
-		self.zones = []
+		self.global_zones = []
 
 	def is_bbox_in_exclusion_zone(self, bbox):
 		"""bbox가 제외 영역과 겹치는지 확인
@@ -72,13 +81,14 @@ class ExclusionZoneManager:
 		Returns:
 			bool: 겹치면 True
 		"""
-		if not self.zones:
+		zones_to_check = self.global_zones if self.use_global else self.zones
+		if not zones_to_check:
 			return False
 
 		x1, y1, x2, y2 = bbox[3], bbox[4], bbox[5], bbox[6]
 		bbox_center = ((x1 + x2) / 2, (y1 + y2) / 2)
 
-		for zone in self.zones:
+		for zone in zones_to_check:
 			if zone['enabled'] and self._point_in_polygon(bbox_center, zone['points']):
 				return True
 		return False
@@ -103,37 +113,53 @@ class ExclusionZoneManager:
 
 		return inside
 
-	def save_zones(self, image_path):
-		"""현재 이미지의 제외 영역을 파일로 저장"""
-		if not self.zones:
-			return
-
-		# 이미지 경로를 기반으로 zone 파일 경로 생성
-		zone_file = image_path.replace('.jpg', '_exclusion_zones.json').replace('.png', '_exclusion_zones.json')
-		zone_file = zone_file.replace('JPEGImages', 'labels').replace('images', 'annotations')
-
+	def save_global_zones(self):
+		"""전역 제외 영역을 파일로 저장"""
 		try:
-			with open(zone_file, 'w') as f:
-				json.dump(self.zones, f, indent=2)
-			self.current_zone_file = zone_file
+			with open(self.global_zone_file, 'w') as f:
+				json.dump(self.global_zones, f, indent=2)
+			print(f"[ExclusionZone] 전역 제외 영역 저장: {len(self.global_zones)}개")
 		except Exception as e:
-			print(f"[ERROR] Failed to save exclusion zones: {e}")
+			print(f"[ERROR] Failed to save global exclusion zones: {e}")
+
+	def load_global_zones(self):
+		"""전역 제외 영역을 파일에서 로드"""
+		if os.path.exists(self.global_zone_file):
+			try:
+				with open(self.global_zone_file, 'r') as f:
+					self.global_zones = json.load(f)
+				print(f"[ExclusionZone] 전역 제외 영역 로드: {len(self.global_zones)}개")
+			except Exception as e:
+				print(f"[ERROR] Failed to load global exclusion zones: {e}")
+				self.global_zones = []
+
+	def save_enabled_state(self, enabled):
+		"""제외 영역 기능 활성화 상태 저장"""
+		try:
+			with open(self.enabled_file, 'w') as f:
+				f.write('1' if enabled else '0')
+		except Exception as e:
+			print(f"[ERROR] Failed to save enabled state: {e}")
+
+	def load_enabled_state(self):
+		"""제외 영역 기능 활성화 상태 로드"""
+		if os.path.exists(self.enabled_file):
+			try:
+				with open(self.enabled_file, 'r') as f:
+					return f.read().strip() == '1'
+			except Exception as e:
+				print(f"[ERROR] Failed to load enabled state: {e}")
+		return False
+
+	def save_zones(self, image_path):
+		"""현재 이미지의 제외 영역을 파일로 저장 (사용 안 함 - 전역만 사용)"""
+		# 전역 영역 저장
+		self.save_global_zones()
 
 	def load_zones(self, image_path):
-		"""현재 이미지의 제외 영역을 파일에서 로드"""
-		zone_file = image_path.replace('.jpg', '_exclusion_zones.json').replace('.png', '_exclusion_zones.json')
-		zone_file = zone_file.replace('JPEGImages', 'labels').replace('images', 'annotations')
-
-		self.zones = []
-		self.current_zone_file = None
-
-		if os.path.exists(zone_file):
-			try:
-				with open(zone_file, 'r') as f:
-					self.zones = json.load(f)
-				self.current_zone_file = zone_file
-			except Exception as e:
-				print(f"[ERROR] Failed to load exclusion zones: {e}")
+		"""현재 이미지의 제외 영역을 파일에서 로드 (사용 안 함 - 전역만 사용)"""
+		# 전역 영역은 이미 __init__에서 로드됨
+		pass
 
 # 클래스 자동 삭제 관리 클래스
 class AutoDeleteClassManager:
@@ -750,9 +776,13 @@ class MainApp:
 
 		# 제외 영역 관리자 초기화
 		self.exclusion_zone_manager = ExclusionZoneManager()
+		# 제외 영역 활성화 상태 로드
+		self.exclusion_zone_enabled = self.exclusion_zone_manager.load_enabled_state()
+		print(f"[ExclusionZone] 기능 활성화 상태: {self.exclusion_zone_enabled}")
 
 		# 클래스 자동 삭제 관리자 초기화
 		self.auto_delete_manager = AutoDeleteClassManager()
+		print(f"[AutoDelete] 자동 삭제 클래스: {self.auto_delete_manager.delete_class_ids}")
 
 		# 메인 윈도우 초기 생성 (설정 다이얼로그를 띄우기 위해)
 		self.master = tk.Tk()
@@ -3077,6 +3107,8 @@ class MainApp:
 			print(f"ERROR: Failed to load bbox from {self.gt_fn}: {e}")
 
 		# === 자동 필터링 적용 ===
+		total_deleted = 0
+
 		# 1. 클래스 자동 삭제 필터링
 		if self.auto_delete_manager and self.auto_delete_manager.delete_class_ids:
 			before_count = len(self.bbox)
@@ -3084,6 +3116,7 @@ class MainApp:
 			deleted_count = before_count - len(self.bbox)
 			if deleted_count > 0:
 				print(f"[AutoDelete] {deleted_count}개 라벨 자동 삭제됨")
+				total_deleted += deleted_count
 
 		# 2. 제외 영역 필터링
 		if self.exclusion_zone_enabled and self.exclusion_zone_manager:
@@ -3092,8 +3125,12 @@ class MainApp:
 			deleted_count = before_count - len(self.bbox)
 			if deleted_count > 0:
 				print(f"[ExclusionZone] {deleted_count}개 라벨 제외 영역에서 삭제됨")
-				# 제외 영역으로 삭제된 경우 파일에도 반영
-				self.write_bbox()
+				total_deleted += deleted_count
+
+		# 필터링으로 라벨이 삭제되었으면 파일에 반영
+		if total_deleted > 0:
+			self.write_bbox()
+			print(f"[Filter] 총 {total_deleted}개 라벨이 자동 삭제되어 파일에 저장됨")
 
 		if len(self.bbox) > 0:
 			self.bbox[0][0] = True
@@ -3246,8 +3283,8 @@ class MainApp:
 		if not self.exclusion_zone_manager:
 			return
 
-		# 저장된 제외 영역 표시
-		for i, zone in enumerate(self.exclusion_zone_manager.zones):
+		# 전역 제외 영역 표시
+		for i, zone in enumerate(self.exclusion_zone_manager.global_zones):
 			if zone['points']:
 				# 폴리곤 색상 (활성화 여부에 따라)
 				color = 'orange' if zone['enabled'] else 'gray'
@@ -4641,11 +4678,10 @@ class MainApp:
 
 		# 제외 영역 그리기 모드에서 우클릭 시 폴리곤 완성
 		if self.exclusion_zone_mode and len(self.exclusion_zone_points) >= 3:
-			# 폴리곤 완성
-			self.exclusion_zone_manager.add_zone(self.exclusion_zone_points)
-			if self.im_fn:
-				self.exclusion_zone_manager.save_zones(self.im_fn)
-			messagebox.showinfo("제외 영역 추가", f"제외 영역이 추가되었습니다.\n점 개수: {len(self.exclusion_zone_points)}")
+			# 폴리곤 완성 (전역 영역에 추가)
+			self.exclusion_zone_manager.add_zone(self.exclusion_zone_points, use_global=True)
+			self.exclusion_zone_manager.save_global_zones()
+			messagebox.showinfo("제외 영역 추가", f"전역 제외 영역이 추가되었습니다.\n점 개수: {len(self.exclusion_zone_points)}")
 			self.exclusion_zone_mode = False
 			self.exclusion_zone_points = []
 			self.draw_bbox()  # 화면 갱신
@@ -4661,11 +4697,10 @@ class MainApp:
 				first_point = self.exclusion_zone_points[0]
 				# 첫 점 근처 클릭 확인 (10픽셀 이내)
 				if ((x - first_point[0])**2 + (y - first_point[1])**2) <= 100:
-					# 폴리곤 완성
-					self.exclusion_zone_manager.add_zone(self.exclusion_zone_points)
-					if self.im_fn:
-						self.exclusion_zone_manager.save_zones(self.im_fn)
-					messagebox.showinfo("제외 영역 추가", f"제외 영역이 추가되었습니다.\n점 개수: {len(self.exclusion_zone_points)}")
+					# 폴리곤 완성 (전역 영역에 추가)
+					self.exclusion_zone_manager.add_zone(self.exclusion_zone_points, use_global=True)
+					self.exclusion_zone_manager.save_global_zones()
+					messagebox.showinfo("제외 영역 추가", f"전역 제외 영역이 추가되었습니다.\n점 개수: {len(self.exclusion_zone_points)}")
 					self.exclusion_zone_mode = False
 					self.exclusion_zone_points = []
 					self.draw_bbox()  # 화면 갱신
@@ -5520,12 +5555,13 @@ class MainApp:
 
 		def toggle_enabled():
 			self.exclusion_zone_enabled = enable_var.get()
+			self.exclusion_zone_manager.save_enabled_state(self.exclusion_zone_enabled)
 			print(f"[ExclusionZone] 기능 {'활성화' if self.exclusion_zone_enabled else '비활성화'}")
 
-		tk.Checkbutton(dialog, text="기능 활성화 (다음 페이지부터 적용)", variable=enable_var, command=toggle_enabled, font=("맑은 고딕", 10)).pack(pady=5)
+		tk.Checkbutton(dialog, text="기능 활성화 (모든 페이지에 적용)", variable=enable_var, command=toggle_enabled, font=("맑은 고딕", 10)).pack(pady=5)
 
 		# 영역 리스트
-		list_frame = tk.LabelFrame(dialog, text="제외 영역 목록")
+		list_frame = tk.LabelFrame(dialog, text="전역 제외 영역 목록")
 		list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
 		scrollbar = tk.Scrollbar(list_frame)
@@ -5537,7 +5573,7 @@ class MainApp:
 
 		def refresh_list():
 			listbox.delete(0, tk.END)
-			for i, zone in enumerate(self.exclusion_zone_manager.zones):
+			for i, zone in enumerate(self.exclusion_zone_manager.global_zones):
 				status = "✓" if zone['enabled'] else "✗"
 				point_count = len(zone['points'])
 				listbox.insert(tk.END, f"{status} 영역 {i+1} ({point_count}개 점)")
@@ -5561,9 +5597,8 @@ class MainApp:
 			if selection:
 				index = selection[0]
 				self.exclusion_zone_manager.remove_zone(index)
-				# 현재 이미지에 저장
-				if self.im_fn:
-					self.exclusion_zone_manager.save_zones(self.im_fn)
+				# 전역 영역 저장
+				self.exclusion_zone_manager.save_global_zones()
 				refresh_list()
 				self.draw_bbox()  # 화면 갱신
 
@@ -5573,9 +5608,8 @@ class MainApp:
 			if selection:
 				index = selection[0]
 				self.exclusion_zone_manager.toggle_zone(index)
-				# 현재 이미지에 저장
-				if self.im_fn:
-					self.exclusion_zone_manager.save_zones(self.im_fn)
+				# 전역 영역 저장
+				self.exclusion_zone_manager.save_global_zones()
 				refresh_list()
 				self.draw_bbox()  # 화면 갱신
 
@@ -5583,9 +5617,8 @@ class MainApp:
 			"""모든 영역 삭제"""
 			if messagebox.askyesno("확인", "모든 제외 영역을 삭제하시겠습니까?"):
 				self.exclusion_zone_manager.clear_zones()
-				# 현재 이미지에 저장
-				if self.im_fn:
-					self.exclusion_zone_manager.save_zones(self.im_fn)
+				# 전역 영역 저장
+				self.exclusion_zone_manager.save_global_zones()
 				refresh_list()
 				self.draw_bbox()  # 화면 갱신
 
