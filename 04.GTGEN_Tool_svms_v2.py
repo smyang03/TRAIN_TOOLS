@@ -34,15 +34,56 @@ _dir_goodbye = ""
 # 클래스 설정 관리 클래스
 class ClassConfigManager:
 	def __init__(self, config_file="class_config.json"):
-		self.config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), config_file)
+		self.base_dir = os.path.dirname(os.path.abspath(__file__))
+		self.config_file = os.path.join(self.base_dir, config_file)
+		self.last_config_file = os.path.join(self.base_dir, ".last_class_config.txt")
 		self.classes = []
 		self.default_colors = ['magenta', 'blue', 'yellow', 'cyan', 'green', 'orange', 'white', 'red', 'purple']
+
+	def set_config_file(self, config_file):
+		"""설정 파일 경로 변경"""
+		if not config_file.endswith('.json'):
+			config_file += '.json'
+		self.config_file = os.path.join(self.base_dir, config_file)
+
+	def get_config_filename(self):
+		"""현재 설정 파일명 반환 (경로 제외)"""
+		return os.path.basename(self.config_file)
+
+	def save_last_config(self):
+		"""마지막으로 사용한 설정 파일 저장"""
+		try:
+			with open(self.last_config_file, 'w') as f:
+				f.write(self.get_config_filename())
+		except:
+			pass
+
+	def load_last_config(self):
+		"""마지막으로 사용한 설정 파일명 로드"""
+		try:
+			if os.path.exists(self.last_config_file):
+				with open(self.last_config_file, 'r') as f:
+					return f.read().strip()
+		except:
+			pass
+		return None
+
+	def get_available_configs(self):
+		"""사용 가능한 설정 파일 목록 반환"""
+		try:
+			files = [f for f in os.listdir(self.base_dir) if f.endswith('.json') and f.startswith('class_config')]
+			return sorted(files)
+		except:
+			return []
 
 	def config_exists(self):
 		return os.path.exists(self.config_file)
 
-	def load_config(self):
+	def load_config(self, config_file=None):
 		"""설정 파일 로드"""
+		if config_file:
+			self.set_config_file(config_file)
+
 		if not self.config_exists():
 			return False
 
@@ -50,17 +91,22 @@ class ClassConfigManager:
 			with open(self.config_file, 'r', encoding='utf-8') as f:
 				data = json.load(f)
 				self.classes = data.get('classes', [])
+			self.save_last_config()
 			return True
 		except Exception as e:
 			print(f"설정 파일 로드 실패: {e}")
 			return False
 
-	def save_config(self, classes):
+	def save_config(self, classes, config_file=None):
 		"""설정 파일 저장"""
+		if config_file:
+			self.set_config_file(config_file)
+
 		self.classes = classes
 		try:
 			with open(self.config_file, 'w', encoding='utf-8') as f:
 				json.dump({'classes': self.classes}, f, ensure_ascii=False, indent=2)
+			self.save_last_config()
 			return True
 		except Exception as e:
 			print(f"설정 파일 저장 실패: {e}")
@@ -85,11 +131,13 @@ class ClassConfigManager:
 
 # 클래스 설정 다이얼로그
 class ClassConfigDialog:
-	def __init__(self, parent):
+	def __init__(self, parent, config_manager=None):
 		self.result = None
+		self.config_filename = None
+		self.config_manager = config_manager
 		self.dialog = tk.Toplevel(parent)
 		self.dialog.title("클래스 설정")
-		self.dialog.geometry("600x500")
+		self.dialog.geometry("650x600")
 		self.dialog.transient(parent)
 		self.dialog.grab_set()
 
@@ -102,6 +150,22 @@ class ClassConfigDialog:
 		# 상단 설명
 		info_label = tk.Label(self.dialog, text="클래스 설정 (최대 9개까지 설정 가능)", font=("Arial", 12, "bold"))
 		info_label.pack(pady=10)
+
+		# 파일명 입력 프레임
+		filename_frame = tk.Frame(self.dialog)
+		filename_frame.pack(fill=tk.X, padx=20, pady=5)
+
+		tk.Label(filename_frame, text="설정 파일명:", font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=5)
+		self.filename_entry = tk.Entry(filename_frame, width=30)
+		self.filename_entry.pack(side=tk.LEFT, padx=5)
+		self.filename_entry.insert(0, "class_config")
+
+		tk.Label(filename_frame, text=".json", font=("Arial", 10)).pack(side=tk.LEFT)
+
+		# 기존 설정 로드 버튼
+		if config_manager:
+			load_btn = tk.Button(filename_frame, text="기존 설정 로드", command=self.load_existing_config, bd=1)
+			load_btn.pack(side=tk.LEFT, padx=10)
 
 		# 스크롤 가능한 프레임
 		canvas = tk.Canvas(self.dialog)
@@ -173,9 +237,93 @@ class ClassConfigDialog:
 			'color': color_var
 		})
 
+	def load_existing_config(self):
+		"""기존 설정 파일 로드"""
+		if not self.config_manager:
+			return
+
+		available_configs = self.config_manager.get_available_configs()
+		if not available_configs:
+			messagebox.showinfo("정보", "기존 설정 파일이 없습니다.")
+			return
+
+		# 설정 파일 선택 다이얼로그
+		select_dialog = tk.Toplevel(self.dialog)
+		select_dialog.title("설정 파일 선택")
+		select_dialog.geometry("400x300")
+		select_dialog.transient(self.dialog)
+		select_dialog.grab_set()
+
+		tk.Label(select_dialog, text="로드할 설정 파일을 선택하세요:", font=("Arial", 10, "bold")).pack(pady=10)
+
+		# 리스트박스
+		listbox_frame = tk.Frame(select_dialog)
+		listbox_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+		scrollbar = tk.Scrollbar(listbox_frame)
+		scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+		listbox = tk.Listbox(listbox_frame, yscrollcommand=scrollbar.set)
+		listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+		scrollbar.config(command=listbox.yview)
+
+		for config_file in available_configs:
+			listbox.insert(tk.END, config_file)
+
+		selected_file = [None]
+
+		def on_select():
+			selection = listbox.curselection()
+			if selection:
+				selected_file[0] = listbox.get(selection[0])
+				select_dialog.destroy()
+
+		def on_cancel():
+			select_dialog.destroy()
+
+		btn_frame = tk.Frame(select_dialog)
+		btn_frame.pack(pady=10)
+		tk.Button(btn_frame, text="로드", command=on_select, width=10).pack(side=tk.LEFT, padx=5)
+		tk.Button(btn_frame, text="취소", command=on_cancel, width=10).pack(side=tk.LEFT, padx=5)
+
+		select_dialog.wait_window()
+
+		if selected_file[0]:
+			# 선택한 파일 로드
+			temp_manager = ClassConfigManager()
+			if temp_manager.load_config(selected_file[0]):
+				# 파일명 업데이트
+				filename = selected_file[0].replace('.json', '')
+				self.filename_entry.delete(0, tk.END)
+				self.filename_entry.insert(0, filename)
+
+				# 클래스 정보로 필드 채우기
+				for i, entry in enumerate(self.class_entries):
+					entry['name'].delete(0, tk.END)
+					entry['key'].delete(0, tk.END)
+
+					if i < len(temp_manager.classes):
+						cls = temp_manager.classes[i]
+						entry['name'].insert(0, cls['name'])
+						if cls.get('key'):
+							entry['key'].insert(0, cls['key'])
+						entry['color'].set(cls['color'])
+			else:
+				messagebox.showerror("오류", f"설정 파일 로드 실패: {selected_file[0]}")
+
 	def save(self):
 		classes = []
 		used_keys = set()
+
+		# 파일명 검증
+		filename = self.filename_entry.get().strip()
+		if not filename:
+			messagebox.showwarning("경고", "설정 파일명을 입력하세요.")
+			return
+
+		# .json 확장자 제거 (자동으로 추가됨)
+		if filename.endswith('.json'):
+			filename = filename[:-5]
 
 		for i, entry in enumerate(self.class_entries):
 			name = entry['name'].get().strip()
@@ -206,15 +354,17 @@ class ClassConfigDialog:
 			return
 
 		self.result = classes
+		self.config_filename = filename + '.json'
 		self.dialog.destroy()
 
 	def cancel(self):
 		self.result = None
+		self.config_filename = None
 		self.dialog.destroy()
 
 	def show(self):
 		self.dialog.wait_window()
-		return self.result
+		return (self.result, self.config_filename)
 
 class_name = [ 'person', 'Slip', 'head', 'Helmet', 'GasMask', 'Drum', 'car', 'bus', 'truck', 'forklift', 'motorcycle','chair','backpack','bird','animal','etc']
 # // YOLO 클래스 설명
@@ -376,10 +526,33 @@ class MainApp:
 
 		# 클래스 설정 로드 또는 생성
 		global class_name, class_color
-		if not self.class_config_manager.config_exists():
+
+		# 마지막으로 사용한 설정 파일 확인
+		last_config = self.class_config_manager.load_last_config()
+		config_loaded = False
+
+		if last_config and self.class_config_manager.config_exists():
+			# 마지막 설정 파일이 존재하면 로드
+			config_loaded = self.class_config_manager.load_config(last_config)
+
+		if not config_loaded:
 			# 설정 파일이 없으면 설정 다이얼로그 표시
-			dialog = ClassConfigDialog(self.master)
-			classes = dialog.show()
+			available_configs = self.class_config_manager.get_available_configs()
+
+			if available_configs:
+				# 기존 설정 파일이 있으면 선택 옵션 제공
+				msg = "기존 설정 파일을 찾았습니다.\n\n새 설정을 만들려면 '예'를,\n기존 설정을 로드하려면 '아니오'를 선택하세요."
+				create_new = messagebox.askyesno("클래스 설정", msg)
+				if not create_new:
+					# 기존 설정 로드 시도
+					dialog = ClassConfigDialog(self.master, self.class_config_manager)
+					dialog.load_existing_config()
+					# 취소하면 새 설정 생성으로 진행
+					create_new = True
+
+			# 새 설정 생성
+			dialog = ClassConfigDialog(self.master, self.class_config_manager)
+			classes, config_filename = dialog.show()
 
 			if classes is None:
 				# 사용자가 취소한 경우 프로그램 종료
@@ -388,16 +561,18 @@ class MainApp:
 				sys.exit(0)
 
 			# 설정 저장
-			self.class_config_manager.save_config(classes)
+			self.class_config_manager.save_config(classes, config_filename)
 			print(f"클래스 설정이 저장되었습니다: {self.class_config_manager.config_file}")
 
-		# 설정 파일에서 클래스 정보 로드
-		self.class_config_manager.load_config()
+			# 저장한 설정 로드
+			self.class_config_manager.load_config(config_filename)
+
 		class_name = self.class_config_manager.get_class_names()
 		class_color = self.class_config_manager.get_class_colors()
 
 		# 클래스 이름 출력
 		print("\n=== 로드된 클래스 설정 ===")
+		print(f"설정 파일: {self.class_config_manager.get_config_filename()}")
 		for i in range(len(class_name)):
 			print(f"{i} == {class_name[i]}")
 		print("========================\n")
@@ -538,6 +713,11 @@ class MainApp:
 
 		self.btnConfigClass = tk.Button(self.button_frame, text="클래스 설정", command=self.change_class_config, bd=1)
 		self.btnConfigClass.pack(side=tk.RIGHT, padx=2)
+
+		# 현재 설정 파일명 표시
+		config_filename = self.class_config_manager.get_config_filename()
+		self.configFileLabel = tk.Label(self.button_frame, text=f"[{config_filename}]", fg="blue", bd=0)
+		self.configFileLabel.pack(side=tk.RIGHT, padx=5)
 
 		self.show_size_info = tk.BooleanVar()
 		self.show_size_info.set(False)  # 기본값은 표시하지 않음
@@ -4817,7 +4997,12 @@ class MainApp:
 	def change_class_config(self):
 		"""클래스 설정 변경"""
 		# 현재 설정을 기반으로 다이얼로그 표시
-		dialog = ClassConfigDialog(self.master)
+		dialog = ClassConfigDialog(self.master, self.class_config_manager)
+
+		# 현재 파일명 설정
+		current_filename = self.class_config_manager.get_config_filename().replace('.json', '')
+		dialog.filename_entry.delete(0, tk.END)
+		dialog.filename_entry.insert(0, current_filename)
 
 		# 기존 설정으로 초기화
 		for i, entry in enumerate(dialog.class_entries):
@@ -4830,11 +5015,11 @@ class MainApp:
 					entry['key'].insert(0, cls['key'])
 				entry['color'].set(cls['color'])
 
-		classes = dialog.show()
+		classes, config_filename = dialog.show()
 
 		if classes is not None:
 			# 설정 저장
-			self.class_config_manager.save_config(classes)
+			self.class_config_manager.save_config(classes, config_filename)
 			messagebox.showinfo("클래스 설정 변경",
 				f"클래스 설정이 저장되었습니다.\n설정 파일: {self.class_config_manager.config_file}\n\n변경사항을 적용하려면 프로그램을 재시작해주세요.")
 
