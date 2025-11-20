@@ -84,8 +84,23 @@ class ClassConfigManager:
 			all_files = os.listdir(search_dir)
 			print(f"[DEBUG] 전체 파일 개수: {len(all_files)}")
 
-			config_files = [f for f in all_files if f.endswith('.json') and f.startswith('class_config')]
+			# 모든 .json 파일 출력 (디버깅)
+			json_files = [f for f in all_files if f.endswith('.json')]
+			print(f"[DEBUG] JSON 파일 목록: {json_files}")
+
+			# class_config로 시작하는 파일들만 필터링 (대소문자 무시)
+			config_files = [f for f in json_files if f.lower().startswith('class_config') or f.lower().startswith('classconfig')]
 			print(f"[DEBUG] 찾은 설정 파일: {config_files}")
+
+			# 만약 없으면 class와 config가 포함된 모든 JSON 파일 반환
+			if not config_files:
+				config_files = [f for f in json_files if 'class' in f.lower() and 'config' in f.lower()]
+				print(f"[DEBUG] 유연한 검색 결과: {config_files}")
+
+			# 그래도 없으면 모든 .json 파일 반환
+			if not config_files:
+				print(f"[DEBUG] 설정 파일 없음. 모든 JSON 파일 표시")
+				config_files = json_files
 
 			return sorted(config_files)
 		except Exception as e:
