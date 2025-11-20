@@ -562,6 +562,10 @@ class MainApp:
 			# 설정 파일이 없으면 설정 다이얼로그 표시
 			available_configs = self.class_config_manager.get_available_configs()
 
+			# 다이얼로그 생성
+			dialog = ClassConfigDialog(self.master, self.class_config_manager)
+			dialog.dialog.focus_force()
+
 			if available_configs:
 				print(f"기존 설정 파일 발견: {available_configs}")
 				# 기존 설정 파일이 있으면 선택 옵션 제공
@@ -573,20 +577,20 @@ class MainApp:
 				if not create_new:
 					# 기존 설정 로드 시도
 					print("기존 설정 로드를 시도합니다...")
-					dialog = ClassConfigDialog(self.master, self.class_config_manager)
-					dialog.dialog.focus_force()  # 포커스 강제 설정
 					dialog.load_existing_config()
 
 					# 로드 후 config_loaded 확인
 					if len(self.class_config_manager.classes) > 0:
 						config_loaded = True
 						print("✓ 기존 설정 로드 완료")
+						# 로드 성공 시 다이얼로그 닫기
+						dialog.dialog.destroy()
+					else:
+						print("로드된 설정이 없습니다. 새 설정을 입력하세요.")
 
-			# config_loaded가 여전히 False면 새 설정 생성
+			# config_loaded가 여전히 False면 다이얼로그에서 새 설정 입력받기
 			if not config_loaded:
-				print("새 설정을 생성합니다...")
-				dialog = ClassConfigDialog(self.master, self.class_config_manager)
-				dialog.dialog.focus_force()  # 포커스 강제 설정
+				print("새 설정을 입력하세요...")
 				classes, config_filename = dialog.show()
 
 				if classes is None:
