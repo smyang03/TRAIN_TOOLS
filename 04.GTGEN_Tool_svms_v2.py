@@ -31,6 +31,179 @@ import json
 BASE_DIR = os.getcwd() + "\\"
 _dir_goodbye = ""
 
+# 폴리곤 제외 영역 관리 클래스
+class ExclusionZoneManager:
+	"""폴리곤 제외 영역을 관리하는 클래스"""
+
+	def __init__(self, base_dir=None):
+		self.base_dir = base_dir or os.getcwd()
+		self.zones = []  # [(polygon_points, enabled), ...]
+		self.current_zone_file = None
+
+	def add_zone(self, points):
+		"""새로운 제외 영역 추가 (points는 [(x,y), ...] 형태)"""
+		if len(points) >= 3:  # 최소 3개의 점이 있어야 폴리곤 형성
+			self.zones.append({'points': points, 'enabled': True})
+			return True
+		return False
+
+	def remove_zone(self, index):
+		"""제외 영역 삭제"""
+		if 0 <= index < len(self.zones):
+			del self.zones[index]
+			return True
+		return False
+
+	def toggle_zone(self, index):
+		"""제외 영역 활성화/비활성화 토글"""
+		if 0 <= index < len(self.zones):
+			self.zones[index]['enabled'] = not self.zones[index]['enabled']
+			return True
+		return False
+
+	def clear_zones(self):
+		"""모든 제외 영역 삭제"""
+		self.zones = []
+
+	def is_bbox_in_exclusion_zone(self, bbox):
+		"""bbox가 제외 영역과 겹치는지 확인
+		Args:
+			bbox: [sel, clsname, info, x1, y1, x2, y2] 형태
+		Returns:
+			bool: 겹치면 True
+		"""
+		if not self.zones:
+			return False
+
+		x1, y1, x2, y2 = bbox[3], bbox[4], bbox[5], bbox[6]
+		bbox_center = ((x1 + x2) / 2, (y1 + y2) / 2)
+
+		for zone in self.zones:
+			if zone['enabled'] and self._point_in_polygon(bbox_center, zone['points']):
+				return True
+		return False
+
+	def _point_in_polygon(self, point, polygon):
+		"""점이 폴리곤 안에 있는지 확인 (Ray casting algorithm)"""
+		x, y = point
+		n = len(polygon)
+		inside = False
+
+		p1x, p1y = polygon[0]
+		for i in range(1, n + 1):
+			p2x, p2y = polygon[i % n]
+			if y > min(p1y, p2y):
+				if y <= max(p1y, p2y):
+					if x <= max(p1x, p2x):
+						if p1y != p2y:
+							xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+						if p1x == p2x or x <= xinters:
+							inside = not inside
+			p1x, p1y = p2x, p2y
+
+		return inside
+
+	def save_zones(self, image_path):
+		"""현재 이미지의 제외 영역을 파일로 저장"""
+		if not self.zones:
+			return
+
+		# 이미지 경로를 기반으로 zone 파일 경로 생성
+		zone_file = image_path.replace('.jpg', '_exclusion_zones.json').replace('.png', '_exclusion_zones.json')
+		zone_file = zone_file.replace('JPEGImages', 'labels').replace('images', 'annotations')
+
+		try:
+			with open(zone_file, 'w') as f:
+				json.dump(self.zones, f, indent=2)
+			self.current_zone_file = zone_file
+		except Exception as e:
+			print(f"[ERROR] Failed to save exclusion zones: {e}")
+
+	def load_zones(self, image_path):
+		"""현재 이미지의 제외 영역을 파일에서 로드"""
+		zone_file = image_path.replace('.jpg', '_exclusion_zones.json').replace('.png', '_exclusion_zones.json')
+		zone_file = zone_file.replace('JPEGImages', 'labels').replace('images', 'annotations')
+
+		self.zones = []
+		self.current_zone_file = None
+
+		if os.path.exists(zone_file):
+			try:
+				with open(zone_file, 'r') as f:
+					self.zones = json.load(f)
+				self.current_zone_file = zone_file
+			except Exception as e:
+				print(f"[ERROR] Failed to load exclusion zones: {e}")
+
+# 클래스 자동 삭제 관리 클래스
+class AutoDeleteClassManager:
+	"""특정 클래스를 자동으로 삭제하는 기능을 관리하는 클래스"""
+
+	def __init__(self, base_dir=None):
+		self.base_dir = base_dir or os.getcwd()
+		self.config_file = os.path.join(self.base_dir, ".auto_delete_classes.json")
+		self.delete_class_ids = set()  # 자동 삭제할 클래스 ID 집합
+		self.load_config()
+
+	def add_class(self, class_id):
+		"""자동 삭제 대상에 클래스 추가"""
+		self.delete_class_ids.add(class_id)
+		self.save_config()
+
+	def remove_class(self, class_id):
+		"""자동 삭제 대상에서 클래스 제거"""
+		self.delete_class_ids.discard(class_id)
+		self.save_config()
+
+	def toggle_class(self, class_id):
+		"""클래스 자동 삭제 토글"""
+		if class_id in self.delete_class_ids:
+			self.delete_class_ids.remove(class_id)
+		else:
+			self.delete_class_ids.add(class_id)
+		self.save_config()
+
+	def is_class_marked_for_deletion(self, class_id):
+		"""해당 클래스가 자동 삭제 대상인지 확인"""
+		return class_id in self.delete_class_ids
+
+	def filter_bboxes(self, bbox_list):
+		"""bbox 리스트에서 자동 삭제 대상 클래스 제거
+		Args:
+			bbox_list: bbox 리스트 ([sel, clsname, info, x1, y1, x2, y2] 형태)
+		Returns:
+			filtered_list: 필터링된 bbox 리스트
+		"""
+		if not self.delete_class_ids:
+			return bbox_list
+
+		# class_id를 추출하기 위해 clsname을 매칭
+		filtered = []
+		for bbox in bbox_list:
+			class_id = int(bbox[2])  # info가 class_id
+			if class_id not in self.delete_class_ids:
+				filtered.append(bbox)
+
+		return filtered
+
+	def save_config(self):
+		"""설정을 파일로 저장"""
+		try:
+			with open(self.config_file, 'w') as f:
+				json.dump(list(self.delete_class_ids), f)
+		except Exception as e:
+			print(f"[ERROR] Failed to save auto delete config: {e}")
+
+	def load_config(self):
+		"""설정을 파일에서 로드"""
+		if os.path.exists(self.config_file):
+			try:
+				with open(self.config_file, 'r') as f:
+					self.delete_class_ids = set(json.load(f))
+			except Exception as e:
+				print(f"[ERROR] Failed to load auto delete config: {e}")
+				self.delete_class_ids = set()
+
 # 클래스 설정 관리 클래스
 class ClassConfigManager:
 	def __init__(self, config_file="class_config.json"):
@@ -566,9 +739,20 @@ class MainApp:
 	tracking_labels = []  # 추적 중인 라벨 정보 [(bbox, class_name), ...]
 	tracking_iou_threshold = 0.3  # IoU 임계값 (30% 이상 겹치면 매칭으로 간주)
 
+	# 제외 영역 기능 변수
+	exclusion_zone_mode = False  # 제외 영역 그리기 모드
+	exclusion_zone_points = []  # 현재 그리고 있는 제외 영역의 점들
+	exclusion_zone_enabled = False  # 제외 영역 기능 활성화 여부
+
 	def __init__(self, _dir):
 		# 클래스 설정 관리자 초기화
 		self.class_config_manager = ClassConfigManager()
+
+		# 제외 영역 관리자 초기화
+		self.exclusion_zone_manager = ExclusionZoneManager()
+
+		# 클래스 자동 삭제 관리자 초기화
+		self.auto_delete_manager = AutoDeleteClassManager()
 
 		# 메인 윈도우 초기 생성 (설정 다이얼로그를 띄우기 위해)
 		self.master = tk.Tk()
@@ -806,6 +990,14 @@ class MainApp:
 		
 		self.btnHelp = tk.Button(self.button_frame, text="Help", command=self.print_help, bd=1)
 		self.btnHelp.pack(side=tk.RIGHT, padx=0)
+
+		# 제외 영역 관련 버튼
+		self.btnExclusionZone = tk.Button(self.button_frame, text="제외영역", command=self.manage_exclusion_zones, bd=1)
+		self.btnExclusionZone.pack(side=tk.RIGHT, padx=2)
+
+		# 클래스 자동 삭제 버튼
+		self.btnAutoDelete = tk.Button(self.button_frame, text="자동삭제", command=self.manage_auto_delete_classes, bd=1)
+		self.btnAutoDelete.pack(side=tk.RIGHT, padx=2)
 
 		self.btnConfigClass = tk.Button(self.button_frame, text="클래스 설정", command=self.change_class_config, bd=1)
 		self.btnConfigClass.pack(side=tk.RIGHT, padx=2)
@@ -1951,6 +2143,11 @@ class MainApp:
 			self.canvas.create_image(0, 0, image=self.canvas.image, anchor='nw', tags="img")
 			self.master.title('[%d/%d] %s' % (self.ci+1, len(self.imlist), self.im_fn))
 			if self.CLASSIFY_TPFP: self.draw_criteria()
+
+			# 제외 영역 로드
+			if self.exclusion_zone_manager:
+				self.exclusion_zone_manager.load_zones(self.im_fn)
+
 			self.load_bbox()
 
 			# 라벨 추적 모드일 때는 여기서 draw하지 않고, next_frame()/prev_frame()에서 처리
@@ -2879,6 +3076,25 @@ class MainApp:
 		except (IOError, PermissionError) as e:
 			print(f"ERROR: Failed to load bbox from {self.gt_fn}: {e}")
 
+		# === 자동 필터링 적용 ===
+		# 1. 클래스 자동 삭제 필터링
+		if self.auto_delete_manager and self.auto_delete_manager.delete_class_ids:
+			before_count = len(self.bbox)
+			self.bbox = self.auto_delete_manager.filter_bboxes(self.bbox)
+			deleted_count = before_count - len(self.bbox)
+			if deleted_count > 0:
+				print(f"[AutoDelete] {deleted_count}개 라벨 자동 삭제됨")
+
+		# 2. 제외 영역 필터링
+		if self.exclusion_zone_enabled and self.exclusion_zone_manager:
+			before_count = len(self.bbox)
+			self.bbox = [bbox for bbox in self.bbox if not self.exclusion_zone_manager.is_bbox_in_exclusion_zone(bbox)]
+			deleted_count = before_count - len(self.bbox)
+			if deleted_count > 0:
+				print(f"[ExclusionZone] {deleted_count}개 라벨 제외 영역에서 삭제됨")
+				# 제외 영역으로 삭제된 경우 파일에도 반영
+				self.write_bbox()
+
 		if len(self.bbox) > 0:
 			self.bbox[0][0] = True
 			self.selid = 0
@@ -2945,11 +3161,14 @@ class MainApp:
 						tags='clsname'
 					)
 					cnt +=1
-			if self.selid >= 0: 
+			if self.selid >= 0:
 				self.draw_bbox_rc(self.bbox[self.selid])
 			if hasattr(self, 'show_label_list') and self.show_label_list.get():
 				self.update_label_list()
 				self.update_crop_preview()
+
+		# 제외 영역 표시
+		self.draw_exclusion_zones()
 		return
 
 	def draw_bbox_rc(self, rc, index=None):
@@ -3019,6 +3238,44 @@ class MainApp:
 			c = 'black' if color not in anchor_color else anchor_color[color]
 			self.canvas.create_rectangle([a + b for a, b in zip(r[1], margin)], outline=c, fill=color, width=1, tags=("anchor", r[0]))
 		return
+
+	def draw_exclusion_zones(self):
+		"""제외 영역 표시"""
+		self.canvas.delete("exclusion_zone")
+
+		if not self.exclusion_zone_manager:
+			return
+
+		# 저장된 제외 영역 표시
+		for i, zone in enumerate(self.exclusion_zone_manager.zones):
+			if zone['points']:
+				# 폴리곤 색상 (활성화 여부에 따라)
+				color = 'orange' if zone['enabled'] else 'gray'
+				# 폴리곤 그리기
+				points = []
+				for point in zone['points']:
+					points.extend([point[0], point[1]])
+				self.canvas.create_polygon(points, outline=color, fill='', width=2, dash=(5, 5), tags="exclusion_zone")
+
+				# 영역 번호 표시
+				if zone['points']:
+					center_x = sum(p[0] for p in zone['points']) / len(zone['points'])
+					center_y = sum(p[1] for p in zone['points']) / len(zone['points'])
+					self.canvas.create_text(center_x, center_y, text=f"제외영역 {i+1}", fill=color, font='Arial 10 bold', tags="exclusion_zone")
+
+		# 현재 그리고 있는 제외 영역 표시
+		if self.exclusion_zone_mode and self.exclusion_zone_points:
+			# 선택한 점들 연결
+			for i in range(len(self.exclusion_zone_points)):
+				if i > 0:
+					x1, y1 = self.exclusion_zone_points[i-1]
+					x2, y2 = self.exclusion_zone_points[i]
+					self.canvas.create_line(x1, y1, x2, y2, fill='cyan', width=2, tags="exclusion_zone")
+
+			# 점 표시
+			for point in self.exclusion_zone_points:
+				x, y = point
+				self.canvas.create_oval(x-4, y-4, x+4, y+4, fill='cyan', outline='white', width=2, tags="exclusion_zone")
 
 	def on_autotracking(self, event):
 		fa = open("AutoTracking_A.bat", 'wt')
@@ -3375,6 +3632,7 @@ class MainApp:
 	def bind_event_handlers(self):
 		# 마우스 이벤트는 캔버스에만 바인딩
 		self.canvas.bind("<Button-1>", self.on_mouse_down)
+		self.canvas.bind("<Button-3>", self.on_mouse_right_click)  # 우클릭 추가
 		self.canvas.bind("<B1-Motion>", self.on_click_mouse_move)
 		self.canvas.bind("<Motion>", self.on_mouse_move)
 		self.canvas.bind("<ButtonRelease-1>", self.on_mouse_up)
@@ -4377,8 +4635,46 @@ class MainApp:
 		p = p[:index][::-1]
 		return p 
 
+	def on_mouse_right_click(self, event):
+		"""우클릭 이벤트 처리"""
+		x, y = self.get_canvas_coordinates(event)
+
+		# 제외 영역 그리기 모드에서 우클릭 시 폴리곤 완성
+		if self.exclusion_zone_mode and len(self.exclusion_zone_points) >= 3:
+			# 폴리곤 완성
+			self.exclusion_zone_manager.add_zone(self.exclusion_zone_points)
+			if self.im_fn:
+				self.exclusion_zone_manager.save_zones(self.im_fn)
+			messagebox.showinfo("제외 영역 추가", f"제외 영역이 추가되었습니다.\n점 개수: {len(self.exclusion_zone_points)}")
+			self.exclusion_zone_mode = False
+			self.exclusion_zone_points = []
+			self.draw_bbox()  # 화면 갱신
+			return
+
 	def on_mouse_down(self, event):
 		x, y = self.get_canvas_coordinates(event)
+
+		# 제외 영역 그리기 모드
+		if self.exclusion_zone_mode:
+			# 첫 점을 다시 클릭했는지 확인 (폴리곤 닫기)
+			if len(self.exclusion_zone_points) >= 3:
+				first_point = self.exclusion_zone_points[0]
+				# 첫 점 근처 클릭 확인 (10픽셀 이내)
+				if ((x - first_point[0])**2 + (y - first_point[1])**2) <= 100:
+					# 폴리곤 완성
+					self.exclusion_zone_manager.add_zone(self.exclusion_zone_points)
+					if self.im_fn:
+						self.exclusion_zone_manager.save_zones(self.im_fn)
+					messagebox.showinfo("제외 영역 추가", f"제외 영역이 추가되었습니다.\n점 개수: {len(self.exclusion_zone_points)}")
+					self.exclusion_zone_mode = False
+					self.exclusion_zone_points = []
+					self.draw_bbox()  # 화면 갱신
+					return
+
+			# 점 추가
+			self.exclusion_zone_points.append((x, y))
+			self.draw_bbox()  # 화면 갱신
+			return
 
 		if self.bbox_crop:
 			self.area = [x, y, x+10, y+10]
@@ -5092,9 +5388,300 @@ class MainApp:
 		# 라벨 파일 업데이트
 		self.write_bbox()
 	def print_help(self):
-		os.popen("C:\\S1\\TrainData\\학습데이터생성툴_키보드_매뉴얼.png")
-		#os.popen("config.ini")
+		"""도움말 텍스트 다이얼로그 표시"""
+		# 도움말 파일 경로
+		help_file = os.path.join(os.getcwd(), "help.txt")
+
+		# 기본 도움말 내용
+		default_help = """=== GTGEN Tool 도움말 ===
+
+[기본 조작]
+- 좌클릭: 객체 선택
+- 우클릭: 선택한 객체 삭제
+- Ctrl + 좌클릭: 새 객체 추가 시작
+- 드래그: 객체 이동 또는 크기 조정
+
+[키보드 단축키]
+- 1~9, 0: 클래스 선택 (설정된 클래스)
+- ←/→: 이전/다음 프레임
+- ↑/↓: 다음/이전 객체 선택
+- Shift + ←/→: 선택한 객체를 좌/우로 1픽셀 이동
+- Shift + ↑/↓: 선택한 객체를 상/하로 1픽셀 이동
+- Ctrl + ←/→: 선택한 객체 폭 1픽셀 조정
+- Ctrl + ↑/↓: 선택한 객체 높이 1픽셀 조정
+- Delete: 선택한 객체 삭제
+- Tab: 다음 객체 선택
+- Shift + Tab: 이전 객체 선택
+
+[버튼 기능]
+- Back/Next: 이전/다음 프레임
+- Add: 새 객체 추가 모드
+- Remove: 선택한 객체 삭제
+- Open Folder: 새 폴더 열기
+- Open List: 이미지 리스트 파일 열기
+- 클래스 설정: 클래스 설정 변경
+- 자동삭제: 특정 클래스 자동 삭제 설정
+- 제외영역: 폴리곤 제외 영역 관리
+- Help: 이 도움말 표시
+
+[체크박스]
+- Show Size: 객체 크기 정보 표시
+- Label→Mask: 라벨을 마스킹 영역으로 변환
+- Mask→Del Labels: 마스킹 영역과 겹치는 라벨 삭제
+- Show Poly Pts: 폴리곤 점 표시
+- Show Label List: 라벨 리스트 표시
+- Track Labels: 프레임 간 라벨 추적
+
+[제외 영역 기능]
+1. '제외영역' 버튼 클릭
+2. '영역 추가' 클릭하여 폴리곤 그리기 모드 활성화
+3. 캔버스에서 좌클릭으로 점 추가
+4. 우클릭 또는 첫 점을 다시 클릭하여 폴리곤 완성
+5. '기능 활성화' 체크 시 다음 페이지부터 해당 영역의 라벨 자동 삭제
+
+[클래스 자동 삭제 기능]
+1. '자동삭제' 버튼 클릭
+2. 삭제할 클래스 선택
+3. 다음 페이지부터 해당 클래스의 라벨이 자동으로 삭제됨
+
+====================
+이 도움말은 편집할 수 있습니다.
+"""
+
+		# 도움말 파일이 없으면 생성
+		if not os.path.exists(help_file):
+			try:
+				with open(help_file, 'w', encoding='utf-8') as f:
+					f.write(default_help)
+			except Exception as e:
+				print(f"[ERROR] Failed to create help file: {e}")
+
+		# 도움말 파일 읽기
+		help_text = default_help
+		if os.path.exists(help_file):
+			try:
+				with open(help_file, 'r', encoding='utf-8') as f:
+					help_text = f.read()
+			except Exception as e:
+				print(f"[ERROR] Failed to read help file: {e}")
+
+		# 도움말 다이얼로그 생성
+		help_dialog = tk.Toplevel(self.master)
+		help_dialog.title("도움말")
+		help_dialog.geometry("700x600")
+		help_dialog.transient(self.master)
+
+		# 텍스트 위젯 (스크롤바 포함)
+		text_frame = tk.Frame(help_dialog)
+		text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+		scrollbar = tk.Scrollbar(text_frame)
+		scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+		text_widget = tk.Text(text_frame, wrap=tk.WORD, yscrollcommand=scrollbar.set, font=("맑은 고딕", 10))
+		text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+		scrollbar.config(command=text_widget.yview)
+
+		text_widget.insert(tk.END, help_text)
+
+		# 버튼 프레임
+		button_frame = tk.Frame(help_dialog)
+		button_frame.pack(pady=5)
+
+		def save_help():
+			"""도움말 내용 저장"""
+			try:
+				content = text_widget.get("1.0", tk.END)
+				with open(help_file, 'w', encoding='utf-8') as f:
+					f.write(content)
+				messagebox.showinfo("저장 완료", "도움말이 저장되었습니다.")
+			except Exception as e:
+				messagebox.showerror("저장 실패", f"도움말 저장 실패:\n{e}")
+
+		tk.Button(button_frame, text="저장", command=save_help, width=10).pack(side=tk.LEFT, padx=5)
+		tk.Button(button_frame, text="닫기", command=help_dialog.destroy, width=10).pack(side=tk.LEFT, padx=5)
+
 		return
+
+	def manage_exclusion_zones(self):
+		"""제외 영역 관리 다이얼로그"""
+		dialog = tk.Toplevel(self.master)
+		dialog.title("제외 영역 관리")
+		dialog.geometry("400x500")
+		dialog.transient(self.master)
+		dialog.grab_set()
+
+		# 설명 레이블
+		tk.Label(dialog, text="제외 영역을 관리합니다", font=("맑은 고딕", 10, "bold")).pack(pady=10)
+
+		# 기능 활성화 체크박스
+		enable_var = tk.BooleanVar()
+		enable_var.set(self.exclusion_zone_enabled)
+
+		def toggle_enabled():
+			self.exclusion_zone_enabled = enable_var.get()
+			print(f"[ExclusionZone] 기능 {'활성화' if self.exclusion_zone_enabled else '비활성화'}")
+
+		tk.Checkbutton(dialog, text="기능 활성화 (다음 페이지부터 적용)", variable=enable_var, command=toggle_enabled, font=("맑은 고딕", 10)).pack(pady=5)
+
+		# 영역 리스트
+		list_frame = tk.LabelFrame(dialog, text="제외 영역 목록")
+		list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+		scrollbar = tk.Scrollbar(list_frame)
+		scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+		listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set)
+		listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+		scrollbar.config(command=listbox.yview)
+
+		def refresh_list():
+			listbox.delete(0, tk.END)
+			for i, zone in enumerate(self.exclusion_zone_manager.zones):
+				status = "✓" if zone['enabled'] else "✗"
+				point_count = len(zone['points'])
+				listbox.insert(tk.END, f"{status} 영역 {i+1} ({point_count}개 점)")
+
+		refresh_list()
+
+		# 버튼 프레임
+		button_frame = tk.Frame(dialog)
+		button_frame.pack(pady=10)
+
+		def add_zone():
+			"""제외 영역 추가 모드 활성화"""
+			self.exclusion_zone_mode = True
+			self.exclusion_zone_points = []
+			messagebox.showinfo("제외 영역 추가", "캔버스에서 좌클릭으로 점을 추가하세요.\n우클릭 또는 첫 점을 다시 클릭하면 완성됩니다.")
+			dialog.destroy()
+
+		def remove_zone():
+			"""선택한 영역 삭제"""
+			selection = listbox.curselection()
+			if selection:
+				index = selection[0]
+				self.exclusion_zone_manager.remove_zone(index)
+				# 현재 이미지에 저장
+				if self.im_fn:
+					self.exclusion_zone_manager.save_zones(self.im_fn)
+				refresh_list()
+				self.draw_bbox()  # 화면 갱신
+
+		def toggle_zone():
+			"""선택한 영역 활성화/비활성화"""
+			selection = listbox.curselection()
+			if selection:
+				index = selection[0]
+				self.exclusion_zone_manager.toggle_zone(index)
+				# 현재 이미지에 저장
+				if self.im_fn:
+					self.exclusion_zone_manager.save_zones(self.im_fn)
+				refresh_list()
+				self.draw_bbox()  # 화면 갱신
+
+		def clear_all():
+			"""모든 영역 삭제"""
+			if messagebox.askyesno("확인", "모든 제외 영역을 삭제하시겠습니까?"):
+				self.exclusion_zone_manager.clear_zones()
+				# 현재 이미지에 저장
+				if self.im_fn:
+					self.exclusion_zone_manager.save_zones(self.im_fn)
+				refresh_list()
+				self.draw_bbox()  # 화면 갱신
+
+		tk.Button(button_frame, text="영역 추가", command=add_zone, width=10).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="삭제", command=remove_zone, width=10).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="활성화/비활성화", command=toggle_zone, width=15).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="모두 삭제", command=clear_all, width=10).pack(side=tk.LEFT, padx=2)
+
+		tk.Button(dialog, text="닫기", command=dialog.destroy, width=10).pack(pady=5)
+
+	def manage_auto_delete_classes(self):
+		"""클래스 자동 삭제 관리 다이얼로그"""
+		dialog = tk.Toplevel(self.master)
+		dialog.title("클래스 자동 삭제 관리")
+		dialog.geometry("400x500")
+		dialog.transient(self.master)
+		dialog.grab_set()
+
+		# 설명 레이블
+		tk.Label(dialog, text="자동으로 삭제할 클래스를 선택하세요", font=("맑은 고딕", 10, "bold")).pack(pady=10)
+		tk.Label(dialog, text="(다음 페이지부터 자동 삭제됨)", fg="red").pack()
+
+		# 클래스 리스트
+		list_frame = tk.LabelFrame(dialog, text="클래스 목록")
+		list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+		# 체크박스를 위한 스크롤 가능 프레임
+		canvas = tk.Canvas(list_frame)
+		scrollbar = tk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
+		scrollable_frame = tk.Frame(canvas)
+
+		scrollable_frame.bind(
+			"<Configure>",
+			lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+		)
+
+		canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+		canvas.configure(yscrollcommand=scrollbar.set)
+
+		# 각 클래스에 대한 체크박스 생성
+		class_vars = {}
+		for cls in self.class_config_manager.classes:
+			class_id = cls['id']
+			class_name = cls['name']
+
+			var = tk.BooleanVar()
+			var.set(self.auto_delete_manager.is_class_marked_for_deletion(class_id))
+			class_vars[class_id] = var
+
+			chk = tk.Checkbutton(
+				scrollable_frame,
+				text=f"{class_name} (ID: {class_id})",
+				variable=var,
+				font=("맑은 고딕", 10)
+			)
+			chk.pack(anchor='w', padx=10, pady=2)
+
+		canvas.pack(side="left", fill="both", expand=True)
+		scrollbar.pack(side="right", fill="y")
+
+		# 버튼 프레임
+		button_frame = tk.Frame(dialog)
+		button_frame.pack(pady=10)
+
+		def save_and_close():
+			"""설정 저장하고 닫기"""
+			# 현재 선택 상태를 manager에 반영
+			self.auto_delete_manager.delete_class_ids.clear()
+			for class_id, var in class_vars.items():
+				if var.get():
+					self.auto_delete_manager.delete_class_ids.add(class_id)
+
+			self.auto_delete_manager.save_config()
+
+			deleted_classes = [self.class_config_manager.classes[i]['name'] for i in self.auto_delete_manager.delete_class_ids if i < len(self.class_config_manager.classes)]
+			if deleted_classes:
+				messagebox.showinfo("저장 완료", f"다음 클래스가 자동 삭제로 설정되었습니다:\n" + ", ".join(deleted_classes))
+			else:
+				messagebox.showinfo("저장 완료", "자동 삭제 클래스가 없습니다.")
+
+			dialog.destroy()
+
+		def select_all():
+			"""모두 선택"""
+			for var in class_vars.values():
+				var.set(True)
+
+		def deselect_all():
+			"""모두 선택 해제"""
+			for var in class_vars.values():
+				var.set(False)
+
+		tk.Button(button_frame, text="모두 선택", command=select_all, width=10).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="모두 해제", command=deselect_all, width=10).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="저장", command=save_and_close, width=10).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="취소", command=dialog.destroy, width=10).pack(side=tk.LEFT, padx=2)
 
 	def change_class_config(self):
 		"""클래스 설정 변경"""
