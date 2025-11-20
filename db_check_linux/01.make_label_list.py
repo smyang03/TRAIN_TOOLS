@@ -910,6 +910,155 @@ def filter_dataset_by_class(list_path, output_path, target_classes):
     
     return stats
 
+def create_class_separated_lists(list_path, output_path):
+    """
+    리스트 파일에서 클래스별로 이미지 리스트를 분리하여 저장하는 함수
+    각 클래스가 포함된 이미지들을 class_0.txt, class_1.txt 등으로 저장
+    """
+    output_path = Path(output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # 로깅 설정
+    logger = setup_logging(output_path)
+    logger.info(f"클래스별 리스트 분리 시작: {list_path}")
+
+    # 클래스별 이미지 리스트 저장용 딕셔너리
+    class_images = defaultdict(list)
+
+    # 통계 변수 초기화
+    stats = {
+        'total_lines': 0,
+        'processed': 0,
+        'no_label_count': 0,
+        'empty_label_count': 0,
+        'error_count': 0,
+        'class_counts': defaultdict(int),
+        'class_image_counts': defaultdict(int),
+    }
+
+    # 경로 목록 파일 읽기
+    try:
+        with open(list_path, 'r', encoding='utf-8') as f:
+            file_paths = f.readlines()
+
+        total_paths = len(file_paths)
+        stats['total_lines'] = total_paths
+        logger.info(f"총 {total_paths}개의 경로가 발견되었습니다.")
+
+        if total_paths == 0:
+            logger.error("경로 목록 파일이 비어 있습니다.")
+            return None
+
+        # 각 경로 처리
+        for i, path in enumerate(file_paths):
+            path = path.strip()
+            if not path:
+                continue
+
+            progress = ((i + 1) / total_paths) * 100
+
+            # 이미지 경로에서 라벨 경로 생성
+            if path.endswith('.jpg') or path.endswith('.jpeg'):
+                img_path = path
+                label_path = get_label_path_from_image(path)
+            else:
+                continue
+
+            # 라벨 파일 존재 확인
+            if not os.path.isfile(label_path):
+                stats['no_label_count'] += 1
+                continue
+
+            # 라벨 파일 읽기 및 클래스 수집
+            try:
+                with open(label_path, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+
+                    if not lines:
+                        stats['empty_label_count'] += 1
+                        continue
+
+                    # 이미지에 포함된 클래스들
+                    image_classes = set()
+
+                    for line in lines:
+                        split_line = line.strip().split()
+                        if not split_line or len(split_line) < 5:
+                            continue
+
+                        try:
+                            class_id = int(float(split_line[0]))
+                            if class_id < 0 or class_id >= 89:
+                                continue
+
+                            image_classes.add(class_id)
+                            stats['class_counts'][class_id] += 1
+                        except (ValueError, IndexError):
+                            continue
+
+                    # 각 클래스 리스트에 이미지 경로 추가
+                    for class_id in image_classes:
+                        class_images[class_id].append(img_path)
+                        stats['class_image_counts'][class_id] += 1
+
+                    stats['processed'] += 1
+
+            except Exception as e:
+                logger.error(f"라벨 처리 오류 {label_path}: {e}")
+                stats['error_count'] += 1
+                continue
+
+            # 진행 상황 출력
+            print(f"\r진행률: {progress:.1f}% ({i+1}/{total_paths}) | "
+                  f"처리: {stats['processed']} | "
+                  f"라벨 없음: {stats['no_label_count']} | "
+                  f"빈 라벨: {stats['empty_label_count']}", end='')
+
+        print("\n")
+
+        # 클래스별 리스트 파일 저장
+        logger.info(f"클래스별 리스트 파일 저장 중... ({len(class_images)}개 클래스)")
+
+        for class_id in sorted(class_images.keys()):
+            class_list_path = output_path / f'class_{class_id}.txt'
+            with open(class_list_path, 'w', encoding='utf-8') as f:
+                for img_path in class_images[class_id]:
+                    f.write(f"{img_path}\n")
+
+            logger.info(f"클래스 {class_id}: {len(class_images[class_id])}개 이미지 저장 -> {class_list_path}")
+
+        # 통계 저장
+        stats_path = output_path / 'class_separation_stats.txt'
+        with open(stats_path, 'w', encoding='utf-8') as f:
+            f.write("클래스별 리스트 분리 통계\n")
+            f.write("=" * 50 + "\n")
+            f.write(f"전체 처리 항목: {stats['total_lines']}\n")
+            f.write(f"성공적으로 처리: {stats['processed']}\n")
+            f.write(f"라벨 없음: {stats['no_label_count']}\n")
+            f.write(f"빈 라벨: {stats['empty_label_count']}\n")
+            f.write(f"에러 발생: {stats['error_count']}\n")
+            f.write("\n클래스별 통계:\n")
+            f.write("-" * 50 + "\n")
+
+            for class_id in sorted(class_images.keys()):
+                f.write(f"클래스 {class_id}:\n")
+                f.write(f"  - 포함된 이미지 수: {stats['class_image_counts'][class_id]}\n")
+                f.write(f"  - 어노테이션 총 개수: {stats['class_counts'][class_id]}\n")
+
+        logger.info("클래스별 리스트 분리 완료")
+
+        # 결과 요약 출력
+        print("\n클래스별 리스트 분리 완료!")
+        print(f"총 {len(class_images)}개 클래스 발견")
+        for class_id in sorted(class_images.keys()):
+            print(f"클래스 {class_id}: {stats['class_image_counts'][class_id]}개 이미지")
+
+    except Exception as e:
+        logger.error(f"리스트 파일 처리 중 오류 발생: {e}")
+        return None
+
+    return stats
+
 def validate_dataset_from_list(list_path, output_path):
     """텍스트 파일에 나열된 경로들을 기준으로 jpg 파일과 txt 파일의 존재 여부를 확인하는 함수"""
     output_path = Path(output_path)
@@ -1393,9 +1542,10 @@ def main():
             print("6. 특정 클래스 포함 이미지 필터링")
             print("7. 고급 데이터셋 처리 (필터링 옵션 포함)")
             print("8. 경로 생성 테스트")
-            print("9. 종료")
-            
-            choice = input("\n작업을 선택하세요 (1-9): ")
+            print("9. 클래스별 리스트 파일 분리 (NEW!)")
+            print("10. 종료")
+
+            choice = input("\n작업을 선택하세요 (1-10): ")
             
             if choice == '1':
                 # 데이터셋 처리 기능
@@ -1753,18 +1903,54 @@ def main():
             elif choice == '8':
                 # 경로 생성 테스트
                 test_path_generation()
-                
+
                 # 사용자 입력 테스트
                 user_path = input("\n테스트할 이미지 경로를 입력하세요 (Enter로 건너뛰기): ")
                 if user_path.strip():
                     label_path = get_label_path_from_image(user_path)
                     print(f"입력: {user_path}")
                     print(f"결과: {label_path}")
-                    
+
             elif choice == '9':
+                # 클래스별 리스트 파일 분리
+                list_path = input("분리할 리스트 파일 경로를 입력하세요: ")
+
+                if not os.path.isfile(list_path):
+                    print(f"오류: 입력한 리스트 파일이 존재하지 않습니다: {list_path}")
+                    continue
+
+                output_path = input("출력 저장 경로를 입력하세요 (기본 경로: Enter): ")
+                if not output_path:
+                    output_dir = os.path.dirname(list_path)
+                    list_name = os.path.basename(list_path).split('.')[0]
+                    output_path = os.path.join(output_dir, f"{list_name}_class_separated")
+
+                print(f"\n처리 시작...")
+                print(f"리스트 파일: {list_path}")
+                print(f"출력 경로: {output_path}")
+
+                try:
+                    stats = create_class_separated_lists(list_path, output_path)
+
+                    if stats:
+                        print("\n클래스별 리스트 분리 완료!")
+                        print(f"전체 처리 항목: {stats['total_lines']}")
+                        print(f"성공적으로 처리: {stats['processed']}")
+                        print(f"라벨 없음: {stats['no_label_count']}")
+                        print(f"빈 라벨: {stats['empty_label_count']}")
+
+                        print(f"\n생성된 클래스 리스트 파일:")
+                        for class_id in sorted(stats['class_image_counts'].keys()):
+                            print(f"  - class_{class_id}.txt: {stats['class_image_counts'][class_id]}개 이미지")
+
+                except Exception as e:
+                    print(f"\n클래스 분리 중 오류 발생: {e}")
+                    traceback.print_exc()
+
+            elif choice == '10':
                 print("프로그램을 종료합니다.")
                 return 0
-                
+
             else:
                 print("잘못된 선택입니다. 다시 선택해주세요.")
 
