@@ -84,8 +84,23 @@ class ClassConfigManager:
 			all_files = os.listdir(search_dir)
 			print(f"[DEBUG] 전체 파일 개수: {len(all_files)}")
 
-			config_files = [f for f in all_files if f.endswith('.json') and f.startswith('class_config')]
+			# 모든 .json 파일 출력 (디버깅)
+			json_files = [f for f in all_files if f.endswith('.json')]
+			print(f"[DEBUG] JSON 파일 목록: {json_files}")
+
+			# class_config로 시작하는 파일들만 필터링 (대소문자 무시)
+			config_files = [f for f in json_files if f.lower().startswith('class_config') or f.lower().startswith('classconfig')]
 			print(f"[DEBUG] 찾은 설정 파일: {config_files}")
+
+			# 만약 없으면 class와 config가 포함된 모든 JSON 파일 반환
+			if not config_files:
+				config_files = [f for f in json_files if 'class' in f.lower() and 'config' in f.lower()]
+				print(f"[DEBUG] 유연한 검색 결과: {config_files}")
+
+			# 그래도 없으면 모든 .json 파일 반환
+			if not config_files:
+				print(f"[DEBUG] 설정 파일 없음. 모든 JSON 파일 표시")
+				config_files = json_files
 
 			return sorted(config_files)
 		except Exception as e:
@@ -150,6 +165,11 @@ class ClassConfigManager:
 # 클래스 설정 다이얼로그
 class ClassConfigDialog:
 	def __init__(self, parent, config_manager=None):
+		print(f"[DEBUG] ClassConfigDialog.__init__ 호출")
+		print(f"[DEBUG] 받은 config_manager: {config_manager}")
+		if config_manager:
+			print(f"[DEBUG] config_manager.base_dir: {config_manager.base_dir}")
+
 		self.result = None
 		self.config_filename = None
 		self.config_manager = config_manager
@@ -262,10 +282,17 @@ class ClassConfigDialog:
 
 	def load_existing_config(self):
 		"""기존 설정 파일 로드"""
+		print(f"[DEBUG] load_existing_config 호출")
+		print(f"[DEBUG] self.config_manager: {self.config_manager}")
+
 		if not self.config_manager:
+			print(f"[DEBUG] config_manager가 None입니다!")
 			return
 
+		print(f"[DEBUG] config_manager.base_dir: {self.config_manager.base_dir}")
 		available_configs = self.config_manager.get_available_configs()
+		print(f"[DEBUG] load_existing_config에서 받은 available_configs: {available_configs}")
+
 		if not available_configs:
 			messagebox.showinfo("정보", "기존 설정 파일이 없습니다.")
 			return
@@ -5057,8 +5084,13 @@ class MainApp:
 
 	def change_class_config(self):
 		"""클래스 설정 변경"""
+		print(f"[DEBUG] change_class_config 호출")
+		print(f"[DEBUG] self.class_config_manager: {self.class_config_manager}")
+		print(f"[DEBUG] self.class_config_manager.base_dir: {self.class_config_manager.base_dir}")
+
 		# 현재 설정을 기반으로 다이얼로그 표시
 		dialog = ClassConfigDialog(self.master, self.class_config_manager)
+		print(f"[DEBUG] ClassConfigDialog 생성 완료")
 
 		# 현재 파일명 설정
 		current_filename = self.class_config_manager.get_config_filename().replace('.json', '')
