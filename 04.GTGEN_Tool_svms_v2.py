@@ -531,41 +531,68 @@ class MainApp:
 		last_config = self.class_config_manager.load_last_config()
 		config_loaded = False
 
-		if last_config and self.class_config_manager.config_exists():
-			# 마지막 설정 파일이 존재하면 로드
-			config_loaded = self.class_config_manager.load_config(last_config)
+		print(f"마지막 설정 파일: {last_config}")
+
+		if last_config:
+			# 파일 경로 설정 후 존재 여부 확인
+			self.class_config_manager.set_config_file(last_config)
+			if self.class_config_manager.config_exists():
+				# 마지막 설정 파일이 존재하면 로드
+				print(f"설정 파일 로드 중: {last_config}")
+				config_loaded = self.class_config_manager.load_config(last_config)
+				if config_loaded:
+					print("✓ 설정 파일 로드 성공")
+				else:
+					print("✗ 설정 파일 로드 실패")
+			else:
+				print(f"설정 파일을 찾을 수 없음: {last_config}")
 
 		if not config_loaded:
+			print("설정 파일이 없습니다. 설정 다이얼로그를 표시합니다.")
+
 			# 설정 파일이 없으면 설정 다이얼로그 표시
 			available_configs = self.class_config_manager.get_available_configs()
 
 			if available_configs:
+				print(f"기존 설정 파일 발견: {available_configs}")
 				# 기존 설정 파일이 있으면 선택 옵션 제공
 				msg = "기존 설정 파일을 찾았습니다.\n\n새 설정을 만들려면 '예'를,\n기존 설정을 로드하려면 '아니오'를 선택하세요."
 				create_new = messagebox.askyesno("클래스 설정", msg)
+
 				if not create_new:
 					# 기존 설정 로드 시도
+					print("기존 설정 로드를 시도합니다...")
 					dialog = ClassConfigDialog(self.master, self.class_config_manager)
+					dialog.dialog.lift()  # 다이얼로그를 최상위로
+					dialog.dialog.attributes('-topmost', True)  # 항상 위에 표시
 					dialog.load_existing_config()
-					# 취소하면 새 설정 생성으로 진행
-					create_new = True
 
-			# 새 설정 생성
-			dialog = ClassConfigDialog(self.master, self.class_config_manager)
-			classes, config_filename = dialog.show()
+					# 로드 후 config_loaded 확인
+					if len(self.class_config_manager.classes) > 0:
+						config_loaded = True
+						print("✓ 기존 설정 로드 완료")
 
-			if classes is None:
-				# 사용자가 취소한 경우 프로그램 종료
-				print("클래스 설정이 취소되었습니다. 프로그램을 종료합니다.")
-				self.master.destroy()
-				sys.exit(0)
+			# config_loaded가 여전히 False면 새 설정 생성
+			if not config_loaded:
+				print("새 설정을 생성합니다...")
+				dialog = ClassConfigDialog(self.master, self.class_config_manager)
+				dialog.dialog.lift()  # 다이얼로그를 최상위로
+				dialog.dialog.attributes('-topmost', True)  # 항상 위에 표시
+				classes, config_filename = dialog.show()
 
-			# 설정 저장
-			self.class_config_manager.save_config(classes, config_filename)
-			print(f"클래스 설정이 저장되었습니다: {self.class_config_manager.config_file}")
+				if classes is None:
+					# 사용자가 취소한 경우 프로그램 종료
+					print("클래스 설정이 취소되었습니다. 프로그램을 종료합니다.")
+					self.master.destroy()
+					sys.exit(0)
 
-			# 저장한 설정 로드
-			self.class_config_manager.load_config(config_filename)
+				# 설정 저장
+				self.class_config_manager.save_config(classes, config_filename)
+				print(f"클래스 설정이 저장되었습니다: {self.class_config_manager.config_file}")
+
+				# 저장한 설정 로드
+				self.class_config_manager.load_config(config_filename)
+				config_loaded = True
 
 		class_name = self.class_config_manager.get_class_names()
 		class_color = self.class_config_manager.get_class_colors()
