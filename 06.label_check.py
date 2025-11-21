@@ -5082,61 +5082,93 @@ class ImageViewer:
         )
         
     def on_drag_end(self, event):
-        """드래그 종료 처리 - 토글 선택 기능"""
+        """드래그 종료 처리 - 토글 선택 기능 (Shift + 클릭 또는 Shift + 드래그)"""
         # Shift 키가 눌려있지 않거나 드래그 시작 위치가 없으면 무시
         if not self.shift_pressed or not self.drag_start:
             return
-        
+
         # 드래그 종료 위치
         end_pos = (event.x_root, event.y_root)
-        
-        # 드래그 영역 계산
-        x1 = min(self.drag_start[0], end_pos[0])
-        y1 = min(self.drag_start[1], end_pos[1])
-        x2 = max(self.drag_start[0], end_pos[0])
-        y2 = max(self.drag_start[1], end_pos[1])
-        
+
+        # 드래그 거리 계산
+        drag_distance = ((end_pos[0] - self.drag_start[0]) ** 2 +
+                        (end_pos[1] - self.drag_start[1]) ** 2) ** 0.5
+
         # 이전에 그려진 사각형이 있으면 삭제
         if self.drag_rectangle:
             self.canvas.delete(self.drag_rectangle)
             self.drag_rectangle = None
-        
-        # 드래그 영역 내의 이미지 라벨 찾아서 토글 선택
-        for widget in self.frame.winfo_children():
-            if isinstance(widget, tk.Label) and hasattr(widget, 'label_path'):
-                # 위젯의 전역 좌표 계산
-                widget_x = widget.winfo_rootx()
-                widget_y = widget.winfo_rooty()
-                widget_width = widget.winfo_width()
-                widget_height = widget.winfo_height()
-                
-                # 위젯이 드래그 영역과 겹치는지 확인
-                if (widget_x < x2 and widget_x + widget_width > x1 and
-                    widget_y < y2 and widget_y + widget_height > y1):
-                    
-                    # 토글 동작
-                    if widget in self.checklist:
-                        # 선택 해제
-                        widget.config(highlightbackground="white", highlightthickness=2)
-                        widget.config(bg="white")
-                        if widget.label_path in self.selected_image_labels:
-                            self.selected_image_labels.remove(widget.label_path)
-                        if widget in self.checklist:
-                            self.checklist.remove(widget)
-                    else:
-                        # 선택
-                        widget.config(highlightbackground="red", highlightthickness=4)
-                        widget.config(bg="#ffdddd")  # 연한 빨간색 배경
-                        self.selected_image_labels.append(widget.label_path)
-                        if widget not in self.checklist:
-                            self.checklist.append(widget)
-        
+
+        # 드래그 거리가 10픽셀 미만이면 "클릭"으로 간주
+        if drag_distance < 10:
+            # Shift + 클릭: 클릭한 위젯만 토글
+            clicked_widget = event.widget
+
+            # 이벤트가 발생한 위젯이 Label이고 label_path 속성이 있는지 확인
+            if isinstance(clicked_widget, tk.Label) and hasattr(clicked_widget, 'label_path'):
+                self._toggle_widget_selection(clicked_widget)
+            else:
+                # 클릭 위치에서 가장 가까운 위젯 찾기
+                for widget in self.frame.winfo_children():
+                    if isinstance(widget, tk.Label) and hasattr(widget, 'label_path'):
+                        widget_x = widget.winfo_rootx()
+                        widget_y = widget.winfo_rooty()
+                        widget_width = widget.winfo_width()
+                        widget_height = widget.winfo_height()
+
+                        # 클릭 위치가 위젯 영역 내에 있는지 확인
+                        if (widget_x <= end_pos[0] <= widget_x + widget_width and
+                            widget_y <= end_pos[1] <= widget_y + widget_height):
+                            self._toggle_widget_selection(widget)
+                            break
+
+            print("Shift + Click: Single toggle")
+        else:
+            # Shift + 드래그: 드래그 영역 내의 모든 위젯 토글
+            x1 = min(self.drag_start[0], end_pos[0])
+            y1 = min(self.drag_start[1], end_pos[1])
+            x2 = max(self.drag_start[0], end_pos[0])
+            y2 = max(self.drag_start[1], end_pos[1])
+
+            # 드래그 영역 내의 이미지 라벨 찾아서 토글 선택
+            for widget in self.frame.winfo_children():
+                if isinstance(widget, tk.Label) and hasattr(widget, 'label_path'):
+                    # 위젯의 전역 좌표 계산
+                    widget_x = widget.winfo_rootx()
+                    widget_y = widget.winfo_rooty()
+                    widget_width = widget.winfo_width()
+                    widget_height = widget.winfo_height()
+
+                    # 위젯이 드래그 영역과 겹치는지 확인
+                    if (widget_x < x2 and widget_x + widget_width > x1 and
+                        widget_y < y2 and widget_y + widget_height > y1):
+                        self._toggle_widget_selection(widget)
+
+            print(f"Shift + Drag: Area selection (distance: {drag_distance:.1f}px)")
+
         # 드래그 정보 초기화
         self.drag_start = None
-        
+
         # 선택 정보 업데이트
         self.update_selection_info()
-        print("Drag selection ended")  # 디버깅용
+
+    def _toggle_widget_selection(self, widget):
+        """위젯의 선택 상태를 토글합니다."""
+        if widget in self.checklist:
+            # 선택 해제
+            widget.config(highlightbackground="white", highlightthickness=2)
+            widget.config(bg="white")
+            if widget.label_path in self.selected_image_labels:
+                self.selected_image_labels.remove(widget.label_path)
+            if widget in self.checklist:
+                self.checklist.remove(widget)
+        else:
+            # 선택
+            widget.config(highlightbackground="red", highlightthickness=4)
+            widget.config(bg="#ffdddd")  # 연한 빨간색 배경
+            self.selected_image_labels.append(widget.label_path)
+            if widget not in self.checklist:
+                self.checklist.append(widget)
     def process_full_image(self, image, label_path, row, col, idx, class_idx=None):
         """
         전체 이미지를 처리하고 바운딩 박스를 표시합니다.
