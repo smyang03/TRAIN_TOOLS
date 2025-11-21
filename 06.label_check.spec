@@ -1,21 +1,53 @@
 # -*- mode: python ; coding: utf-8 -*-
 import sys
-# RecursionError 해결 - 더 높은 제한으로 설정
-sys.setrecursionlimit(sys.getrecursionlimit() * 10)
+# RecursionError 해결 - sympy 등 복잡한 패키지로 인한 깊은 재귀 처리
+sys.setrecursionlimit(50000)
 
 block_cipher = None
 
 # 불필요한 패키지 제외 - PyInstaller 빌드 속도 향상 및 RecursionError 방지
 excludes = [
+    # TensorFlow / Keras
     'tensorflow',
     'tensorflow.python',
     'tensorflow.compat',
     'keras',
+
+    # PyTorch
     'torch',
     'torchvision',
     'torchaudio',
+    'torch.testing',
+    'torch.testing._internal',
+
+    # SciPy (RecursionError 주요 원인)
     'scipy',
+    'scipy.special',
+    'scipy.linalg',
+    'scipy.sparse',
+    'scipy.spatial',
+    'scipy.stats',
+    'scipy.optimize',
+    'scipy.integrate',
+    'scipy.interpolate',
+
+    # SymPy (RecursionError 주요 원인)
+    'sympy',
+    'sympy.core',
+    'sympy.logic',
+    'sympy.parsing',
+
+    # Matplotlib
     'matplotlib',
+    'matplotlib.backends',
+    'matplotlib.pyplot',
+
+    # Pandas
+    'pandas',
+    'pandas.plotting',
+    'pandas.io',
+
+    # Jupyter / IPython
     'IPython',
     'jupyter',
     'jupyter_client',
@@ -23,27 +55,51 @@ excludes = [
     'notebook',
     'nbconvert',
     'nbformat',
-    'pandas',
+
+    # ML Libraries
     'sklearn',
-    'sympy',
+    'scikit-learn',
+
+    # Documentation / Testing
     'sphinx',
     'pytest',
+    'docutils',
+
+    # Templates / i18n
     'babel',
     'jinja2',
-    'docutils',
+
+    # XML / Data
     'lxml',
     'openpyxl',
     'pyarrow',
+
+    # AWS / Cloud
     'botocore',
+    'boto3',
+    's3transfer',
+
+    # Security / Crypto
     'cryptography',
-    'zmq',
+    'argon2',
+
+    # Qt
     'PyQt5',
+    'PyQt5.QtCore',
+    'PyQt5.QtWidgets',
+    'PyQt5.QtGui',
+    'qtpy',
+
+    # Windows COM
     'win32com',
     'pywintypes',
     'pythoncom',
-    'argon2',
+
+    # Misc
+    'zmq',
     'cloudpickle',
     'jsonschema',
+    'expecttest',
 ]
 
 a = Analysis(
