@@ -695,7 +695,7 @@ class ImageViewer:
                     try:
                         idx, line = task_queue.get(timeout=1)  # 1초 타임아웃
                         img_path = line
-                        label_path = line.replace("\\JPEGImages\\", "\\labels\\").replace(".jpg", ".txt")
+                        label_path = self.convert_jpegimages_to_labels(line)
 
                         # 추가 검증 작업 (파일 존재 확인 등)
                         img_exists = os.path.isfile(img_path)
@@ -1326,7 +1326,7 @@ class ImageViewer:
                     continue
                 
                 # 이미지 경로 가져오기
-                img_path = label_path.replace("labels", "JPEGImages").replace(".txt", ".jpg")
+                img_path = self.convert_labels_to_jpegimages(label_path)
                 if not os.path.exists(img_path):
                     img_path = img_path.replace(".jpg", ".png")
                     if not os.path.exists(img_path):
@@ -1551,6 +1551,63 @@ class ImageViewer:
         except Exception as e:
             print(f"파일명 추출 오류: {e}")
             return os.path.basename(path) if path else ""
+
+    def convert_jpegimages_to_labels(self, img_path):
+        """
+        JPEGImages 경로를 labels 경로로 변환 (.jpg → .txt)
+        백슬래시(\)와 슬래시(/) 경로 모두 처리
+
+        Args:
+            img_path (str): JPEGImages 경로
+
+        Returns:
+            str: labels 경로
+        """
+        if not img_path:
+            return ""
+
+        # 백슬래시 경로 처리 (Windows UNC 경로 등)
+        if "\\JPEGImages\\" in img_path:
+            label_path = img_path.replace("\\JPEGImages\\", "\\labels\\")
+        # 슬래시 경로 처리 (Unix/URL 스타일)
+        elif "/JPEGImages/" in img_path:
+            label_path = img_path.replace("/JPEGImages/", "/labels/")
+        else:
+            # 경로 구분자 없이 폴더명만 있는 경우 (fallback)
+            label_path = img_path.replace("JPEGImages", "labels")
+
+        # 확장자 변환
+        label_path = label_path.replace(".jpg", ".txt")
+        return label_path
+
+    def convert_labels_to_jpegimages(self, label_path):
+        """
+        labels 경로를 JPEGImages 경로로 변환 (.txt → .jpg)
+        백슬래시(\)와 슬래시(/) 경로 모두 처리
+
+        Args:
+            label_path (str): labels 경로
+
+        Returns:
+            str: JPEGImages 경로
+        """
+        if not label_path:
+            return ""
+
+        # 백슬래시 경로 처리 (Windows UNC 경로 등)
+        if "\\labels\\" in label_path:
+            img_path = label_path.replace("\\labels\\", "\\JPEGImages\\")
+        # 슬래시 경로 처리 (Unix/URL 스타일)
+        elif "/labels/" in label_path:
+            img_path = label_path.replace("/labels/", "/JPEGImages/")
+        else:
+            # 경로 구분자 없이 폴더명만 있는 경우 (fallback)
+            img_path = label_path.replace("labels", "JPEGImages")
+
+        # 확장자 변환
+        img_path = img_path.replace(".txt", ".jpg")
+        return img_path
+
     def update_dataset_info(self):
         """전체 데이터셋 통계 정보 업데이트"""
         if not self.labelsdata or not any(len(x) > 0 for x in self.labelsdata):
@@ -4052,7 +4109,7 @@ class ImageViewer:
             progress_window.update()
             
             # 라벨 파일 경로
-            label_path = img_path.replace("\\JPEGImages\\", "\\labels\\").replace(".jpg", ".txt")
+            label_path = self.convert_jpegimages_to_labels(img_path)
             
             if not os.path.isfile(label_path):
                 continue
@@ -4995,7 +5052,7 @@ class ImageViewer:
         current_images = class_images[start_idx:end_idx]
         
         # 이미지 경로로 변환
-        image_paths = [label_path.replace("\\labels\\", "\\JPEGImages\\").replace(".txt", ".jpg") 
+        image_paths = [self.convert_labels_to_jpegimages(label_path)
                     for label_path in current_images]
         
         return image_paths
@@ -5412,24 +5469,11 @@ class ImageViewer:
         """라벨 경로로부터 이미지 경로를 안전하게 생성합니다."""
         if not label_path:
             return None
-            
-        # 경로 정규화
-        normalized_path = os.path.normpath(label_path)
-        
-        # OS에 맞는 구분자 사용
-        if "\\labels\\" in normalized_path:
-            img_path = normalized_path.replace("\\labels\\", "\\JPEGImages\\")
-        elif "/labels/" in normalized_path:
-            img_path = normalized_path.replace("/labels/", "/JPEGImages/")
-        else:
-            # 기본 경로 변환 시도
-            img_path = os.path.join(
-                os.path.dirname(os.path.dirname(normalized_path)),
-                "JPEGImages",
-                os.path.basename(normalized_path)
-            )
-        
-        # 확장자 변경
+
+        # 헬퍼 함수를 사용하여 경로 변환
+        img_path = self.convert_labels_to_jpegimages(label_path)
+
+        # 확장자 확인 및 변경
         if img_path.endswith(".txt"):
             # 먼저 jpg 확인 후 없으면 png 시도
             jpg_path = img_path.replace(".txt", ".jpg")
@@ -5665,7 +5709,7 @@ class ImageViewer:
         # 프레임의 모든 라벨 위젯에 대해 클릭 이벤트 다시 바인딩
         for widget in self.frame.winfo_children():
             if isinstance(widget, tk.Label) and hasattr(widget, 'label_path'):
-                img_path = widget.label_path.replace("\\labels\\", "\\JPEGImages\\").replace(".txt", ".jpg")
+                img_path = self.convert_labels_to_jpegimages(widget.label_path)
                 
                 # 기본 클릭 이벤트
                 widget.bind("<Button-1>", lambda event,
