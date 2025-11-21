@@ -108,7 +108,40 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=[
+        # tkinter 관련 (exe 빌드 시 필수)
+        'tkinter',
+        'tkinter.ttk',
+        'tkinter.filedialog',
+        '_tkinter',
+
+        # PIL/Pillow 이미지 처리
+        'PIL',
+        'PIL.Image',
+        'PIL.ImageTk',
+        'PIL.ImageDraw',
+        'PIL.ImageFont',
+
+        # 필수 라이브러리
+        'numpy',
+        'tqdm',
+
+        # 선택적 의존성
+        'psutil',
+
+        # 내장 모듈 (exe에서 누락될 수 있음)
+        'threading',
+        'queue',
+        'collections',
+        'copy',
+        'gc',
+        'shutil',
+        'logging',
+        'datetime',
+        'time',
+        'random',
+        'os',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

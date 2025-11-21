@@ -82,6 +82,7 @@ class ImageViewer:
         self.drag_start = None
         self.drag_rectangle = None
         self.multi_select_start = None  # 다중 선택 시작 인덱스
+        self.last_drag_update = 0  # 드래그 업데이트 throttling용
         
         self.selected_label_info = []  # 선택한 라벨의 상세 정보 저장
         self.preview_window = None
@@ -5064,25 +5065,88 @@ class ImageViewer:
         
         return image_paths
     def on_drag_motion(self, event, label):
-        """드래그 중 처리"""
+        """드래그 중 처리 - 실시간 시각적 피드백 (성능 최적화)"""
         # Shift 키가 눌려있지 않거나 드래그 시작 위치가 없으면 무시
         if not self.shift_pressed or not self.drag_start:
             return
-        
-        current_pos = (event.x_root, event.y_root)
-        
-        # 이전에 그려진 사각형이 있으면 삭제
-        if self.drag_rectangle:
-            self.canvas.delete(self.drag_rectangle)
-        
-        # 드래그 영역 사각형 그리기
-        self.drag_rectangle = self.canvas.create_rectangle(
-            self.canvas.canvasx(self.drag_start[0] - self.root.winfo_rootx()),
-            self.canvas.canvasy(self.drag_start[1] - self.root.winfo_rooty()),
-            self.canvas.canvasx(current_pos[0] - self.root.winfo_rootx()),
-            self.canvas.canvasy(current_pos[1] - self.root.winfo_rooty()),
-            outline="red", width=2, dash=(4, 4)
-        )
+
+        # Throttling: 16ms(약 60 FPS) 간격으로만 업데이트하여 성능 개선
+        current_time = time.time() * 1000  # 밀리초
+        if current_time - self.last_drag_update < 16:
+            return
+        self.last_drag_update = current_time
+
+        try:
+            current_pos = (event.x_root, event.y_root)
+
+            # 이전에 그려진 사각형이 있으면 삭제
+            if self.drag_rectangle:
+                self.canvas.delete(self.drag_rectangle)
+
+            # Canvas 상의 좌표로 변환
+            canvas_x1 = self.drag_start[0] - self.canvas.winfo_rootx()
+            canvas_y1 = self.drag_start[1] - self.canvas.winfo_rooty()
+            canvas_x2 = current_pos[0] - self.canvas.winfo_rootx()
+            canvas_y2 = current_pos[1] - self.canvas.winfo_rooty()
+
+            # 드래그 영역 사각형 그리기 (빨간 점선)
+            self.drag_rectangle = self.canvas.create_rectangle(
+                canvas_x1, canvas_y1, canvas_x2, canvas_y2,
+                outline="red", width=2, dash=(4, 4), tags="drag_selection"
+            )
+
+            # 실시간으로 선택될 위젯들을 미리 하이라이트
+            self._preview_drag_selection(current_pos)
+        except Exception as e:
+            # exe 빌드 시 발생할 수 있는 예외 무시
+            print(f"드래그 모션 에러 (무시): {e}")
+
+    def _preview_drag_selection(self, end_pos):
+        """드래그 중 선택될 위젯들을 미리 표시 (시각적 피드백)"""
+        try:
+            # 드래그 영역 계산
+            x1 = min(self.drag_start[0], end_pos[0])
+            y1 = min(self.drag_start[1], end_pos[1])
+            x2 = max(self.drag_start[0], end_pos[0])
+            y2 = max(self.drag_start[1], end_pos[1])
+
+            # 모든 위젯에 대해 미리보기 상태 초기화
+            for widget in self.frame.winfo_children():
+                if not isinstance(widget, tk.Label) or not hasattr(widget, 'label_path'):
+                    continue
+
+                try:
+                    widget_x = widget.winfo_rootx()
+                    widget_y = widget.winfo_rooty()
+                    widget_width = widget.winfo_width()
+                    widget_height = widget.winfo_height()
+
+                    # 위젯이 드래그 영역과 겹치는지 확인
+                    is_in_drag_area = (widget_x < x2 and widget_x + widget_width > x1 and
+                                       widget_y < y2 and widget_y + widget_height > y1)
+
+                    if is_in_drag_area:
+                        # 드래그 영역 내: 색상 미리보기
+                        if widget in self.checklist:
+                            # 현재 선택된 것 -> 해제될 예정: 주황색
+                            widget.config(highlightbackground="orange", highlightthickness=3)
+                        else:
+                            # 현재 미선택 -> 선택될 예정: 파란색
+                            widget.config(highlightbackground="blue", highlightthickness=3)
+                    else:
+                        # 드래그 영역 밖: 원래 상태로 복원
+                        if widget in self.checklist:
+                            # 선택된 상태 유지
+                            widget.config(highlightbackground="red", highlightthickness=4)
+                        else:
+                            # 미선택 상태 유지
+                            widget.config(highlightbackground="white", highlightthickness=2)
+                except TclError:
+                    # 위젯이 이미 삭제되었을 경우 무시
+                    continue
+        except Exception as e:
+            # 예기치 않은 에러 발생 시 무시 (exe 안정성 향상)
+            print(f"드래그 미리보기 에러 (무시): {e}")
         
     def on_drag_end(self, event):
         """드래그 종료 처리 - 토글 선택 기능 (Shift + 클릭 또는 Shift + 드래그)"""
