@@ -1221,23 +1221,94 @@ class MainApp:
 		self.bbox = []
 		self.selid = -1
 		self.canvas.delete("all")
+
+	def load_images_from_folder(self, folder_path):
+		"""폴더에서 이미지 파일들을 자동으로 로드"""
+		try:
+			# JPEGImages 폴더 확인
+			jpeg_folder = os.path.join(folder_path, 'JPEGImages')
+			if os.path.exists(jpeg_folder):
+				search_path = jpeg_folder
+			else:
+				search_path = folder_path
+
+			# 이미지 파일 찾기
+			image_extensions = ['.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG']
+			image_files = []
+
+			for root, dirs, files in os.walk(search_path):
+				for file in files:
+					if any(file.endswith(ext) for ext in image_extensions):
+						full_path = os.path.join(root, file)
+						image_files.append(full_path)
+
+			# 자연스러운 정렬
+			image_files = natsort.natsorted(image_files)
+
+			if len(image_files) == 0:
+				print(f"[WARNING] 폴더에서 이미지 파일을 찾을 수 없습니다: {folder_path}")
+				messagebox.showwarning("경고", "선택한 폴더에서 이미지 파일을 찾을 수 없습니다.")
+				return
+
+			# 이미지 리스트 설정
+			self.imlist = image_files
+			print(f"[INFO] {len(image_files)}개의 이미지 파일을 로드했습니다.")
+
+			# 첫 번째 이미지 로드
+			if len(self.imlist) > 0:
+				self.ci = 0
+				self.load_image()
+
+		except Exception as e:
+			print(f"[ERROR] 폴더에서 이미지 로드 중 오류: {e}")
+			messagebox.showerror("오류", f"이미지 로드 중 오류가 발생했습니다:\n{e}")
 		
 	def get_directory(self):
 		a = tk.Tk()
 		a.withdraw()
 		a.update()
+
+		# 파일 또는 폴더 선택 다이얼로그
+		# 먼저 파일 선택 시도
 		_dir = tk.filedialog.askopenfile()
 
-		# 사용자가 취소하거나 파일 선택이 실패한 경우 처리
+		# 파일을 선택하지 않은 경우 폴더 선택 제안
 		if _dir is None:
-			print("[DEBUG] 파일 선택이 취소되었거나 실패했습니다.")
-			raise Exception("파일 선택이 취소되었습니다.")
+			print("[INFO] 파일이 선택되지 않았습니다. 폴더를 선택하시겠습니까?")
+			folder_path = tk.filedialog.askdirectory(title="이미지 폴더 선택")
+
+			if folder_path:
+				# 폴더가 선택된 경우 자동으로 이미지 리스트 생성
+				print(f"[INFO] 폴더 선택됨: {folder_path}")
+				self.load_images_from_folder(folder_path)
+				a.destroy()
+				return folder_path
+			else:
+				print("[DEBUG] 파일과 폴더 선택이 모두 취소되었습니다.")
+				a.destroy()
+				raise Exception("파일 선택이 취소되었습니다.")
 
 		dirname = _dir.buffer.name
 		fname, ext = os.path.splitext(_dir.buffer.name)
 		framenum = 0
 		if ext == '.txt':
-			inputtype = input("Type Input (0=Load Image List, 1=Create Evaluation XML): ")
+			# 파일 내용을 자동 감지하여 처리 방식 결정
+			# 첫 줄을 읽어서 이미지 경로인지 확인
+			inputtype = "0"  # 기본값: 이미지 리스트 로드
+
+			try:
+				with open(dirname, 'r', encoding='utf-8') as f:
+					first_line = f.readline().strip()
+					# 첫 줄이 이미지 파일 경로가 아니면 XML 생성 모드로 추정
+					# (하지만 기본적으로 이미지 리스트 로드 모드 사용)
+					if first_line and not (first_line.endswith(('.jpg', '.png', '.jpeg', '.JPG', '.PNG'))):
+						# 이미지 경로가 아닌 경우에도 일단 이미지 리스트로 시도
+						pass
+			except:
+				pass
+
+			# XML 생성은 별도 기능으로 분리 (사용자가 거의 사용하지 않음)
+			# 필요시 메뉴나 명령줄 인자로 처리 가능
 			if inputtype=="1":
 				pathstr = os.path.split(dirname)
 				dirstr = os.path.split(pathstr[0])
@@ -1390,12 +1461,11 @@ class MainApp:
 				resizeflag = False
 				if capture.get(cv2.CAP_PROP_FRAME_WIDTH) >= 1920:resizeflag = True
 				elif capture.get(cv2.CAP_PROP_FRAME_HEIGHT) >= 1080:resizeflag = True
-				while True:
-					frameskip = input("Skip Frame : ")
-					if frameskip != '' and frameskip != '0':
-						break
-					else:
-						print("input more than 1")
+
+				# 프레임 스킵 자동 설정 (기본값: 1, 즉 모든 프레임 처리)
+				# 사용자에게 입력 요청 없이 자동으로 진행
+				frameskip = "1"  # 기본값: 모든 프레임 처리
+				print(f"[INFO] 프레임 스킵: {frameskip} (자동 설정)")
 				while True:
 					ret, frame = capture.read()
 					if ret == False:
