@@ -670,6 +670,45 @@ judge_criteria = ['TP', 'FP']
 judge_string = [['NA', 'black'], ['TP','blue'], ['FP','red']]
 keysetting = ['0','1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','19','20','21','22','23','24','25','26','27','28','29','30','31','32','33','34','35','36','37','38','39','40']
 
+def get_contrast_color(bg_color):
+	"""
+	배경 색상에 대비되는 텍스트 색상을 반환합니다.
+	밝은 배경에는 검정색, 어두운 배경에는 흰색을 반환합니다.
+	"""
+	# Tkinter 색상 이름을 RGB로 변환하기 위한 매핑
+	# 일반적인 색상들의 RGB 값 (근사값)
+	color_rgb_map = {
+		'red': (255, 0, 0), 'blue': (0, 0, 255), 'green': (0, 128, 0),
+		'yellow': (255, 255, 0), 'orange': (255, 165, 0), 'purple': (128, 0, 128),
+		'cyan': (0, 255, 255), 'magenta': (255, 0, 255), 'lime': (0, 255, 0),
+		'pink': (255, 192, 203), 'teal': (0, 128, 128), 'lavender': (230, 230, 250),
+		'brown': (165, 42, 42), 'beige': (245, 245, 220), 'maroon': (128, 0, 0),
+		'mint': (189, 252, 201), 'olive': (128, 128, 0), 'coral': (255, 127, 80),
+		'navy': (0, 0, 128), 'grey': (128, 128, 128), 'gray': (128, 128, 128),
+		'white': (255, 255, 255), 'black': (0, 0, 0), 'salmon': (250, 128, 114),
+		'gold': (255, 215, 0), 'turquoise': (64, 224, 208), 'violet': (238, 130, 238),
+		'indigo': (75, 0, 130), 'tan': (210, 180, 140), 'khaki': (240, 230, 140),
+		'plum': (221, 160, 221), 'orchid': (218, 112, 214), 'sienna': (160, 82, 45),
+		'crimson': (220, 20, 60)
+	}
+
+	# 색상 이름을 소문자로 변환
+	bg_color_lower = bg_color.lower()
+
+	# RGB 값 가져오기
+	if bg_color_lower in color_rgb_map:
+		r, g, b = color_rgb_map[bg_color_lower]
+	else:
+		# 알 수 없는 색상인 경우 중간 밝기로 간주
+		return 'white'
+
+	# 밝기 계산 (Relative Luminance 공식 사용)
+	# https://www.w3.org/TR/WCAG20/#relativeluminancedef
+	luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+
+	# 밝기가 0.5 이상이면 검정색, 미만이면 흰색 텍스트
+	return 'black' if luminance > 0.5 else 'white'
+
 def get_list_jpg(_dir):
 	if not os.path.exists(_dir): os.makedirs(_dir)
 	return [_dir + '/' + f for f in os.listdir(_dir) if f.find('.jpg') >= 0 or f.find('.png') >= 0 ]
@@ -3136,8 +3175,19 @@ class MainApp:
 			color = 'yellow'
 			width = 2
 			dash = (5, 5)
-		else:  # 일반 라벨
-			color = 'white'
+		else:  # 일반 라벨 - 클래스별 색상 적용
+			# 클래스 색상 가져오기
+			class_color = self.class_config_manager.get_class_colors()
+			class_names = class_color[0]
+			class_colors = class_color[1]
+
+			# 현재 라벨의 클래스 이름으로 색상 찾기
+			if rc[1] in class_names:
+				color_index = class_names.index(rc[1])
+				color = class_colors[color_index]
+			else:
+				color = 'white'  # 클래스를 찾지 못한 경우 기본 흰색
+
 			width = 1
 			dash = None
 		
@@ -3173,8 +3223,9 @@ class MainApp:
 		
 		if self.bbox_resize_anchor == None and self.bbox_move == False and self.viewclass == True:
 			self.canvas.create_rectangle([rc[3]-3,rc[4]-10,rc[3]+(len(rc[1])*6)+2,rc[4]], fill=color, outline='', tags='clsname')
-			c = 'black' if color not in anchor_color else anchor_color[color]
-			self.canvas.create_text(rc[3],rc[4]-10, font='Arial 6 bold', fill=c, text=rc[1].upper(), anchor='nw', tags='clsname')
+			# 배경색과 대비되는 텍스트 색상 자동 계산
+			text_color = get_contrast_color(color)
+			self.canvas.create_text(rc[3],rc[4]-10, font='Arial 6 bold', fill=text_color, text=rc[1].upper(), anchor='nw', tags='clsname')
 
 		if self.onlybox == True:
 			self.draw_bbox_anchor(rc, color) if rc[0] else None
