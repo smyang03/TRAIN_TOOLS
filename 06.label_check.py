@@ -1,3 +1,7 @@
+import sys
+# PyInstaller RecursionError 방지 - 빌드 프로세스에서 recursion limit 증가
+sys.setrecursionlimit(100000)
+
 import tkinter as tk
 from tkinter import TclError, filedialog, ttk
 from PIL import Image, ImageTk
