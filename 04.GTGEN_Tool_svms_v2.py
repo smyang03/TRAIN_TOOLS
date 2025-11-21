@@ -2,6 +2,9 @@
 from ast import dump
 import os
 import sys
+# PyInstaller RecursionError 방지 - 빌드 프로세스에서 recursion limit 증가
+sys.setrecursionlimit(100000)
+
 from xml.dom.minidom import Element
 from xml.etree import ElementTree
 import six
@@ -3136,8 +3139,18 @@ class MainApp:
 			color = 'yellow'
 			width = 2
 			dash = (5, 5)
-		else:  # 일반 라벨
-			color = 'white'
+		else:  # 일반 라벨 - 클래스별 색상 사용
+			# 클래스 이름으로 색상 찾기
+			try:
+				global class_name, class_color
+				class_idx = class_name.index(rc[1]) if rc[1] in class_name else -1
+				if class_idx >= 0 and class_idx < len(class_color[1]):
+					color = class_color[1][class_idx]
+				else:
+					color = 'white'  # 기본 색상
+			except (NameError, ValueError, IndexError):
+				# 전역 변수나 클래스 정보가 없을 경우 기본 색상
+				color = 'white'
 			width = 1
 			dash = None
 		
