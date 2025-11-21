@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 import sys
-sys.setrecursionlimit(5000)  # RecursionError 해결
+# RecursionError 해결 - 더 높은 제한으로 설정
+sys.setrecursionlimit(sys.getrecursionlimit() * 10)
 
 block_cipher = None
 
