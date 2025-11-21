@@ -1,7 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 import sys
 # RecursionError 해결 - sympy 등 복잡한 패키지로 인한 깊은 재귀 처리
-sys.setrecursionlimit(50000)
+# Python 최대 recursion limit 설정 (일반적으로 100000 이상 안전)
+sys.setrecursionlimit(100000)
 
 block_cipher = None
 
@@ -131,7 +132,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,  # UPX 압축 비활성화 - 빌드 속도 향상 및 메모리 사용량 감소
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,
