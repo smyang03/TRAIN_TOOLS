@@ -725,13 +725,6 @@ class MainApp:
 	exclusion_zone_points = []  # 현재 그리고 있는 제외 영역의 점들
 	exclusion_zone_enabled = False  # 제외 영역 기능 활성화 여부
 
-	# 데이터 슬라이스 기능 변수
-	slice_enabled = False  # 슬라이스 기능 활성화 여부
-	slice_size = 100  # 슬라이스 크기 (파일당 개수)
-	current_slice = 0  # 현재 슬라이스 번호 (0부터 시작)
-	total_slices = 0  # 전체 슬라이스 수
-	original_imlist = []  # 원본 전체 이미지 리스트
-
 	def __init__(self, _dir):
 		# 클래스 설정 관리자 초기화
 		self.class_config_manager = ClassConfigManager()
@@ -1135,70 +1128,6 @@ class MainApp:
 		self.update_label_copy_ui()
 		self.setup_label_list_ui()
 
-		# 데이터 슬라이스 UI 프레임
-		self.slice_frame = tk.Frame(self.master, bd=1, relief=tk.RAISED)
-		self.slice_frame.pack(side=tk.TOP, fill="x", padx=5, pady=5)
-
-		tk.Label(self.slice_frame, text="데이터 슬라이스:", bd=0, font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
-
-		# 전체 파일 개수 표시
-		self.total_files_label = tk.Label(self.slice_frame, text="전체: 0개", bd=0)
-		self.total_files_label.pack(side=tk.LEFT, padx=5)
-
-		# 슬라이스 크기 입력
-		tk.Label(self.slice_frame, text="슬라이스 크기:", bd=0).pack(side=tk.LEFT, padx=(10, 2))
-		self.slice_size_entry = tk.Entry(self.slice_frame, width=6)
-		self.slice_size_entry.insert(0, "100")
-		self.slice_size_entry.pack(side=tk.LEFT, padx=2)
-
-		# 슬라이스 적용/해제 버튼
-		self.slice_toggle_btn = tk.Button(
-			self.slice_frame,
-			text="적용",
-			command=self.toggle_slice_mode,
-			bd=1,
-			bg="lightgreen"
-		)
-		self.slice_toggle_btn.pack(side=tk.LEFT, padx=5)
-
-		# 현재 슬라이스 정보 표시
-		self.slice_info_label = tk.Label(self.slice_frame, text="슬라이스: -", bd=0)
-		self.slice_info_label.pack(side=tk.LEFT, padx=10)
-
-		# 이전 슬라이스 버튼
-		self.prev_slice_btn = tk.Button(
-			self.slice_frame,
-			text="◀ 이전",
-			command=self.prev_slice,
-			bd=1,
-			state=tk.DISABLED
-		)
-		self.prev_slice_btn.pack(side=tk.LEFT, padx=2)
-
-		# 특정 슬라이스로 이동
-		tk.Label(self.slice_frame, text="슬라이스 #:", bd=0).pack(side=tk.LEFT, padx=(5, 2))
-		self.goto_slice_entry = tk.Entry(self.slice_frame, width=5)
-		self.goto_slice_entry.pack(side=tk.LEFT, padx=2)
-
-		self.goto_slice_btn = tk.Button(
-			self.slice_frame,
-			text="이동",
-			command=self.goto_slice,
-			bd=1,
-			state=tk.DISABLED
-		)
-		self.goto_slice_btn.pack(side=tk.LEFT, padx=2)
-
-		# 다음 슬라이스 버튼
-		self.next_slice_btn = tk.Button(
-			self.slice_frame,
-			text="다음 ▶",
-			command=self.next_slice,
-			bd=1,
-			state=tk.DISABLED
-		)
-		self.next_slice_btn.pack(side=tk.LEFT, padx=2)
-
 		# 3. 캔버스 프레임 (스크롤바 포함)
 		self.canvas_frame = tk.Frame(self.master)
 		self.canvas_frame.pack(fill="both", expand=True)
@@ -1275,9 +1204,6 @@ class MainApp:
 
 			# 초기에 캔버스에 포커스 설정
 		self.canvas.focus_set()
-
-		# 전체 파일 개수 업데이트
-		self.update_total_files_label()
 
     # == UI 레이아웃 구성 시작 ==
 		self.process()
@@ -1563,7 +1489,6 @@ class MainApp:
 					self.slider_info.config(text=f"{self.ci+1}/{len(self.imlist)}")
 					self._dir = new_dir
 					self.draw_image()
-					self.update_total_files_label()
 			a.destroy()
 		except Exception as e:
 			print(f"Error loading folder: {e}")
@@ -1639,7 +1564,6 @@ class MainApp:
 					self.slider_info.config(text=f"{self.ci+1}/{len(self.imlist)}")
 					self._dir = os.path.dirname(self.imlist[0])
 					self.draw_image()
-					self.update_total_files_label()
 				else:
 					messagebox.showwarning("Warning", "No valid images found in the list")
 			a.destroy()
@@ -3716,137 +3640,6 @@ class MainApp:
 		"""박스만 표시 토글"""
 		self.onlybox = self.show_only_box_var.get()
 		self.draw_bbox()
-
-	# ===== 데이터 슬라이스 기능 =====
-	def update_total_files_label(self):
-		"""전체 파일 개수 레이블 업데이트"""
-		total = len(self.original_imlist) if self.slice_enabled else len(self.imlist)
-		self.total_files_label.config(text=f"전체: {total}개")
-
-	def toggle_slice_mode(self):
-		"""슬라이스 모드 적용/해제"""
-		if not self.slice_enabled:
-			# 슬라이스 모드 적용
-			try:
-				slice_size = int(self.slice_size_entry.get())
-				if slice_size <= 0:
-					messagebox.showerror("오류", "슬라이스 크기는 1 이상이어야 합니다.")
-					return
-			except ValueError:
-				messagebox.showerror("오류", "슬라이스 크기는 숫자여야 합니다.")
-				return
-
-			# 원본 리스트 백업
-			self.original_imlist = self.imlist.copy()
-			self.slice_size = slice_size
-			self.total_slices = (len(self.original_imlist) + slice_size - 1) // slice_size
-			self.current_slice = 0
-			self.slice_enabled = True
-
-			# 슬라이스 적용
-			self.apply_slice(0)
-
-			# UI 업데이트
-			self.slice_toggle_btn.config(text="해제", bg="salmon")
-			self.slice_size_entry.config(state=tk.DISABLED)
-			self.prev_slice_btn.config(state=tk.NORMAL)
-			self.next_slice_btn.config(state=tk.NORMAL)
-			self.goto_slice_btn.config(state=tk.NORMAL)
-
-			print(f"슬라이스 모드 활성화: 전체 {len(self.original_imlist)}개 파일을 {self.total_slices}개 슬라이스로 분할 (크기: {slice_size})")
-		else:
-			# 슬라이스 모드 해제
-			self.imlist = self.original_imlist.copy()
-			self.slice_enabled = False
-			self.current_slice = 0
-			self.total_slices = 0
-
-			# 현재 인덱스 조정
-			if self.ci >= len(self.imlist):
-				self.ci = 0
-
-			# UI 업데이트
-			self.slice_toggle_btn.config(text="적용", bg="lightgreen")
-			self.slice_size_entry.config(state=tk.NORMAL)
-			self.prev_slice_btn.config(state=tk.DISABLED)
-			self.next_slice_btn.config(state=tk.DISABLED)
-			self.goto_slice_btn.config(state=tk.DISABLED)
-			self.slice_info_label.config(text="슬라이스: -")
-
-			# 이미지 다시 로드
-			self.draw_image()
-			self.update_total_files_label()
-
-			print("슬라이스 모드 해제")
-
-	def apply_slice(self, slice_num):
-		"""특정 슬라이스 적용"""
-		if not self.slice_enabled or slice_num < 0 or slice_num >= self.total_slices:
-			return
-
-		start_idx = slice_num * self.slice_size
-		end_idx = min(start_idx + self.slice_size, len(self.original_imlist))
-
-		self.imlist = self.original_imlist[start_idx:end_idx]
-		self.current_slice = slice_num
-		self.ci = 0  # 슬라이스의 첫 번째 이미지로 이동
-
-		# UI 업데이트
-		self.update_slice_info()
-		self.update_total_files_label()
-
-		# 이미지 다시 로드
-		self.draw_image()
-
-		print(f"슬라이스 {slice_num + 1}/{self.total_slices} 적용: {len(self.imlist)}개 파일 (인덱스 {start_idx}~{end_idx-1})")
-
-	def update_slice_info(self):
-		"""슬라이스 정보 레이블 업데이트"""
-		if self.slice_enabled:
-			start_idx = self.current_slice * self.slice_size + 1
-			end_idx = min((self.current_slice + 1) * self.slice_size, len(self.original_imlist))
-			self.slice_info_label.config(
-				text=f"슬라이스: {self.current_slice + 1}/{self.total_slices} ({start_idx}~{end_idx})"
-			)
-		else:
-			self.slice_info_label.config(text="슬라이스: -")
-
-	def prev_slice(self):
-		"""이전 슬라이스로 이동"""
-		if not self.slice_enabled:
-			return
-
-		if self.current_slice > 0:
-			self.apply_slice(self.current_slice - 1)
-		else:
-			messagebox.showinfo("알림", "첫 번째 슬라이스입니다.")
-
-	def next_slice(self):
-		"""다음 슬라이스로 이동"""
-		if not self.slice_enabled:
-			return
-
-		if self.current_slice < self.total_slices - 1:
-			self.apply_slice(self.current_slice + 1)
-		else:
-			messagebox.showinfo("알림", "마지막 슬라이스입니다.")
-
-	def goto_slice(self):
-		"""특정 슬라이스로 이동"""
-		if not self.slice_enabled:
-			return
-
-		try:
-			slice_num = int(self.goto_slice_entry.get()) - 1  # 사용자는 1부터 시작
-			if slice_num < 0 or slice_num >= self.total_slices:
-				messagebox.showerror("오류", f"슬라이스 번호는 1부터 {self.total_slices} 사이여야 합니다.")
-				return
-
-			self.apply_slice(slice_num)
-		except ValueError:
-			messagebox.showerror("오류", "슬라이스 번호는 숫자여야 합니다.")
-
-	# ===== 데이터 슬라이스 기능 끝 =====
 
 	def goodbye():
 		fname, ext = os.path.splitext(_dir_goodbye)
