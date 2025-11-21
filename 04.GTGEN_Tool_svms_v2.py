@@ -2173,9 +2173,8 @@ class MainApp:
 
 			self.load_bbox()
 
-			# 라벨 추적 모드일 때는 여기서 draw하지 않고, next_frame()/prev_frame()에서 처리
-			if not (self.label_tracking_mode and self.tracking_labels):
-				self.draw_bbox()
+			# 바운딩 박스 그리기
+			self.draw_bbox()
 
 			if filesize != 0:
 				if self.selid >= 0:
@@ -4277,12 +4276,6 @@ class MainApp:
 		self.slider_info.config(text=f"{self.ci+1}/{len(self.imlist)}")
 		self.write_bbox(); self.draw_image()
 
-		# 라벨 추적 모드가 활성화되어 있으면 추적 실행
-		if self.label_tracking_mode and self.tracking_labels:
-			self.track_labels_in_next_frame()
-			self.write_bbox()  # 변경된 라벨 저장
-			self.draw_bbox()   # 화면 다시 그리기
-
 		return
 
 	def next_frame(self):
@@ -4295,12 +4288,6 @@ class MainApp:
 		self.img_slider.set(self.ci + 1)
 		self.slider_info.config(text=f"{self.ci+1}/{len(self.imlist)}")
 		self.write_bbox(); self.draw_image()
-
-		# 라벨 추적 모드가 활성화되어 있으면 추적 실행
-		if self.label_tracking_mode and self.tracking_labels:
-			self.track_labels_in_next_frame()
-			self.write_bbox()  # 변경된 라벨 저장
-			self.draw_bbox()   # 화면 다시 그리기
 
 		return
 	def on_polygon_masking_key(self, event):
@@ -4722,16 +4709,6 @@ class MainApp:
 			self.bbox.append([True, default_class_name, -1, x, y, x+10, y+10])
 			self.selid = len(self.bbox) - 1
 			self.bbox_resize_anchor = ('se', )
-
-			# 추적 모드가 활성화되어 있으면 새 라벨을 추적 대상에 추가
-			if self.label_tracking_mode:
-				new_bbox = self.bbox[-1]
-				self.tracking_labels.append({
-					'bbox': [new_bbox[3], new_bbox[4], new_bbox[5], new_bbox[6]],
-					'class_name': new_bbox[1],
-					'matched': False
-				})
-				print(f"추적 대상에 새 라벨 추가: {default_class_name}")
 
 			self.draw_bbox()
 		elif self.bbox_masking:
@@ -5747,11 +5724,6 @@ class MainApp:
 			self.write_bbox()
 			self.draw_image()
 
-			# 라벨 추적 모드가 활성화되어 있으면 추적 실행
-			if self.label_tracking_mode:
-				self.track_labels_in_next_frame()
-				self.write_bbox()  # 변경된 라벨 저장
-				self.draw_bbox()   # 화면 다시 그리기
 	def show_class_menu(self, event, button, current_idx):
 		"""버튼 우클릭 시 클래스 선택 메뉴 표시"""
 		menu = tk.Menu(self.master, tearoff=0)
