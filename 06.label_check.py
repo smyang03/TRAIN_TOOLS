@@ -1014,34 +1014,57 @@ class ImageViewer:
         # 페이지네이션 컨트롤 프레임
         self.pagination_frame = tk.Frame(self.control_panel_bottom)
         self.pagination_frame.pack(side=tk.RIGHT, padx=5)
-        
+
+        # 페이지 크기 조절 UI (왼쪽)
+        page_size_frame = tk.Frame(self.pagination_frame)
+        page_size_frame.pack(side=tk.LEFT, padx=(0, 15))
+
+        tk.Label(page_size_frame, text="전체:", font=("Arial", 9)).pack(side=tk.LEFT, padx=2)
+        self.total_files_label = tk.Label(page_size_frame, text="0개", font=("Arial", 9, "bold"))
+        self.total_files_label.pack(side=tk.LEFT, padx=2)
+
+        tk.Label(page_size_frame, text=" | 페이지 크기:", font=("Arial", 9)).pack(side=tk.LEFT, padx=(10, 2))
+        self.page_size_entry = tk.Entry(page_size_frame, width=5, justify=tk.CENTER)
+        self.page_size_entry.insert(0, str(self.page_size))
+        self.page_size_entry.pack(side=tk.LEFT, padx=2)
+
+        apply_page_size_btn = tk.Button(page_size_frame, text="적용", width=4, command=self.apply_page_size)
+        apply_page_size_btn.pack(side=tk.LEFT, padx=2)
+
+        # 구분선
+        tk.Frame(self.pagination_frame, width=2, bg="gray").pack(side=tk.LEFT, fill="y", padx=10)
+
         # 이전 버튼
         self.prev_button = tk.Button(self.pagination_frame, text="◀", width=3, command=self.prev_page)
         self.prev_button.pack(side=tk.LEFT)
-        
+
         # 페이지 입력 프레임
         page_input_frame = tk.Frame(self.pagination_frame)
         page_input_frame.pack(side=tk.LEFT, padx=3)
-        
+
         # 페이지 입력 필드 (엔트리)
         self.page_entry = tk.Entry(page_input_frame, width=5, justify=tk.CENTER)
         self.page_entry.pack(side=tk.LEFT)
-        
+
         # 페이지 구분자와 전체 페이지 레이블
         self.total_pages_label = tk.Label(page_input_frame, text="/0")
         self.total_pages_label.pack(side=tk.LEFT, padx=2)
-        
+
+        # 페이지 범위 표시 레이블
+        self.page_range_label = tk.Label(page_input_frame, text="(0-0)")
+        self.page_range_label.pack(side=tk.LEFT, padx=5)
+
         # 페이지 이동 버튼
         go_page_button = tk.Button(self.pagination_frame, text="이동", width=4, command=self.go_to_entered_page)
         go_page_button.pack(side=tk.LEFT, padx=3)
-        
+
         # 다음 버튼
         self.next_button = tk.Button(self.pagination_frame, text="▶", width=3, command=self.next_page)
         self.next_button.pack(side=tk.LEFT)
-        
+
         # 페이지 입력 필드에 엔터 키 이벤트 바인딩
         self.page_entry.bind("<Return>", lambda event: self.go_to_entered_page())
-        
+
         # 페이지네이션 상태 업데이트
         self.update_pagination_controls()
 
@@ -6678,14 +6701,55 @@ class ImageViewer:
 
     def update_pagination_controls(self):
         """페이지네이션 컨트롤 상태 업데이트"""
+        # 전체 파일 개수 업데이트
+        total_files = len(self.image_paths)
+        self.total_files_label.config(text=f"{total_files}개")
+
         # 페이지 입력 필드와 전체 페이지 레이블 업데이트
         self.page_entry.delete(0, tk.END)  # 기존 내용 삭제
         self.page_entry.insert(0, str(self.current_page + 1))  # 1부터 시작하는 페이지 번호 삽입
         self.total_pages_label.config(text=f"/{self.total_pages}")
-        
+
+        # 현재 페이지 범위 계산 및 표시
+        if total_files > 0:
+            start_idx = self.current_page * self.page_size + 1
+            end_idx = min((self.current_page + 1) * self.page_size, total_files)
+            self.page_range_label.config(text=f"({start_idx}-{end_idx})")
+        else:
+            self.page_range_label.config(text="(0-0)")
+
         # 버튼 활성화/비활성화 상태 업데이트
         self.prev_button.config(state="normal" if self.current_page > 0 else "disabled")
         self.next_button.config(state="normal" if self.current_page < self.total_pages - 1 else "disabled")
+
+    def apply_page_size(self):
+        """페이지 크기 적용"""
+        try:
+            new_page_size = int(self.page_size_entry.get())
+            if new_page_size <= 0:
+                tk.messagebox.showerror("오류", "페이지 크기는 1 이상이어야 합니다.")
+                return
+            if new_page_size > 10000:
+                tk.messagebox.showerror("오류", "페이지 크기는 10000 이하여야 합니다.")
+                return
+
+            # 페이지 크기 업데이트
+            self.page_size = new_page_size
+
+            # 전체 페이지 수 재계산
+            self.total_pages = (len(self.image_paths) + self.page_size - 1) // self.page_size
+
+            # 현재 페이지가 유효한 범위 내에 있는지 확인
+            if self.current_page >= self.total_pages:
+                self.current_page = max(0, self.total_pages - 1)
+
+            # 화면 업데이트
+            self.update_display()
+
+            print(f"페이지 크기 변경: {new_page_size}개, 전체 페이지: {self.total_pages}개")
+
+        except ValueError:
+            tk.messagebox.showerror("오류", "페이지 크기는 숫자여야 합니다.")
 
     def next_page(self):
         if self.current_page < self.total_pages - 1:
