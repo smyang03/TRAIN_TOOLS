@@ -3843,14 +3843,15 @@ class ImageViewer:
 
             # 이벤트 바인딩 - 현재 박스의 실제 라인 인덱스 또는 전달받은 인덱스
             bind_line_idx = current_box['line_idx'] if current_box else line_idx
-            
-            label.bind("<Button-1>", lambda event, l=label, p=label_path, ln_idx=bind_line_idx:
-                    self.on_image_click(l, p, event, img_path, ln_idx))
+
+            # 드래그 선택 이벤트 바인딩 (Shift + 클릭/드래그 포함)
+            self.setup_drag_select_events(label, label_path)
+
             label.bind("<Button-3>", lambda event, img_p=img_path, lbl_p=label_path, ln_idx=bind_line_idx:
                     self.show_full_image(img_p, lbl_p, ln_idx))
-            label.bind("<Enter>", lambda event, l=label: 
+            label.bind("<Enter>", lambda event, l=label:
                     self.show_box_tooltip(l, label_path, bind_line_idx))
-            label.bind("<Leave>", lambda event: 
+            label.bind("<Leave>", lambda event:
                     self.remove_tooltip())
 
             return label
@@ -4052,9 +4053,11 @@ class ImageViewer:
         """드래그 시작 처리"""
         # Shift 키가 눌려있지 않으면 일반 클릭 처리
         if not self.shift_pressed:
-            self.on_image_click(label, label_path, event)
+            img_path = self.convert_labels_to_jpegimages(label_path)
+            line_idx = getattr(label, 'line_idx', None)
+            self.on_image_click(label, label_path, event, img_path, line_idx)
             return
-        
+
         # 드래그 시작 위치 저장
         self.drag_start = (event.x_root, event.y_root)
         
@@ -5488,18 +5491,15 @@ class ImageViewer:
         label.label_path = label_path  # 라벨에 label_path 속성 추가
         label.config(relief="solid", bd=1)  # relief 타입을 명확히 지정
         label.grid(row=row, column=col, padx=10, pady=10)
-        
-        # 이벤트 바인딩 수정: 왼쪽 클릭은 선택, 오른쪽 클릭은 상세 보기
-        # 왼쪽 클릭 - 라벨 선택 기능
-        label.bind("<Button-1>", lambda event, 
-                label=label, 
-                label_path=label_path: self.on_image_click(label, label_path, event))
-        
+
+        # 드래그 선택 이벤트 바인딩 (Shift + 클릭/드래그 포함)
+        self.setup_drag_select_events(label, label_path)
+
         # 오른쪽 클릭 - 전체 이미지 보기
         label.bind("<Button-3>", lambda event,
                 img_path=img_path,
                 label_path=label_path: self.show_full_image(img_path, label_path, None))
-        
+
         return label
     def get_image_path_from_label(self, label_path):
         """라벨 경로로부터 이미지 경로를 안전하게 생성합니다."""
@@ -5746,13 +5746,9 @@ class ImageViewer:
         for widget in self.frame.winfo_children():
             if isinstance(widget, tk.Label) and hasattr(widget, 'label_path'):
                 img_path = self.convert_labels_to_jpegimages(widget.label_path)
-                
-                # 기본 클릭 이벤트
-                widget.bind("<Button-1>", lambda event,
-                        label=widget,
-                        label_path=widget.label_path,
-                        ln_idx=getattr(widget, 'line_idx', None):  # 여기가 핵심 - line_idx 속성 가져와서 전달
-                        self.on_image_click(label, label_path, event, img_path, ln_idx))
+
+                # 드래그 선택 이벤트 바인딩 (Shift + 클릭/드래그 포함)
+                self.setup_drag_select_events(widget, widget.label_path)
 
                 # 오른쪽 클릭 - 전체 이미지 보기
                 widget.bind("<Button-3>", lambda event,
@@ -5760,9 +5756,6 @@ class ImageViewer:
                         label_path=widget.label_path,
                         ln_idx=getattr(widget, 'line_idx', None):
                         self.show_full_image(img_path, label_path, ln_idx))
-                                
-                # 드래그 관련 바인딩 추가
-                # self.setup_drag_select_events(widget, widget.label_path)
             
     def draw_boxes_on_full_image(self, image, label_path, parent_frame, class_idx, overlap_class=None, selected_line_idx=None):
         """원본 크기 이미지에 모든 바운딩 박스 표시
