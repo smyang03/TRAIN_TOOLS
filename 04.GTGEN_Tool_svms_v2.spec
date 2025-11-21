@@ -1,20 +1,40 @@
 # -*- mode: python ; coding: utf-8 -*-
 import sys
-sys.setrecursionlimit(5000)  # RecursionError 해결
+# RecursionError 해결 - label_check와 동일하게 100000으로 설정
+sys.setrecursionlimit(100000)
 
 block_cipher = None
 
 # 불필요한 패키지 제외 - PyInstaller 빌드 속도 향상 및 RecursionError 방지
 excludes = [
+    # TensorFlow / Keras
     'tensorflow',
     'tensorflow.python',
     'tensorflow.compat',
     'keras',
+
+    # PyTorch
     'torch',
     'torchvision',
     'torchaudio',
+    'torch.testing',
+    'torch.testing._internal',
+
+    # SciPy
     'scipy',
+    'scipy.special',
+    'scipy.linalg',
+    'scipy.sparse',
+
+    # SymPy
+    'sympy',
+    'sympy.core',
+
+    # Matplotlib
     'matplotlib',
+    'matplotlib.backends',
+
+    # Jupyter / IPython
     'IPython',
     'jupyter',
     'jupyter_client',
@@ -22,27 +42,43 @@ excludes = [
     'notebook',
     'nbconvert',
     'nbformat',
+
+    # ML Libraries
     'pandas',
     'sklearn',
-    'sympy',
+
+    # Documentation / Testing
     'sphinx',
     'pytest',
+    'docutils',
+
+    # Templates / i18n
     'babel',
     'jinja2',
-    'docutils',
+
+    # Data
     'lxml',
     'openpyxl',
     'pyarrow',
     'botocore',
+
+    # Security
     'cryptography',
-    'zmq',
+    'argon2',
+
+    # Qt
     'PyQt5',
+
+    # Windows COM
     'win32com',
     'pywintypes',
     'pythoncom',
-    'argon2',
+
+    # Misc
+    'zmq',
     'cloudpickle',
     'jsonschema',
+    'expecttest',
 ]
 
 a = Analysis(
@@ -50,7 +86,40 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=[
+        # tkinter 관련 (exe 빌드 시 필수)
+        'tkinter',
+        'tkinter.ttk',
+        'tkinter.filedialog',
+        'tkinter.messagebox',
+        '_tkinter',
+
+        # PIL/Pillow 이미지 처리
+        'PIL',
+        'PIL.Image',
+        'PIL.ImageTk',
+        'PIL.ImageDraw',
+        'PIL.ImageFont',
+
+        # 필수 라이브러리
+        'numpy',
+        'cv2',
+
+        # 내장 모듈 (exe에서 누락될 수 있음)
+        'threading',
+        'queue',
+        'collections',
+        'copy',
+        'gc',
+        'shutil',
+        'logging',
+        'datetime',
+        'time',
+        'random',
+        'os',
+        'json',
+        'configparser',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -74,7 +143,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,  # UPX 압축 비활성화 - 빌드 속도 향상 및 안정성 개선
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,
