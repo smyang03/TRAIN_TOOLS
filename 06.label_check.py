@@ -1106,38 +1106,133 @@ class ImageViewer:
         file_path = filedialog.askopenfilename(filetypes=[("Text files", "*.txt")])
         if not file_path:
             return
-            
+
         dirpath = os.path.dirname(file_path)
         filename = os.path.basename(file_path)
-        lines_per_file = 100
         savepath = os.path.join(dirpath, "datalist")
-        
-        if not os.path.isdir(savepath):
-            os.mkdir(savepath)
-        
+
         try:
+            # 먼저 파일을 읽어서 전체 라인 개수 확인
             with open(file_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
                 total_lines = len(lines)
-                num_files = (total_lines // lines_per_file) + 1
-                
-                for i in range(num_files):
-                    current_lines = min(lines_per_file, len(lines))
-                    if current_lines == 0:
-                        break
-                        
-                    random_lines = random.sample(lines, current_lines)
-                    output_file = os.path.join(savepath, f'{filename}_{i}.txt')
-                    
-                    with open(output_file, 'w', encoding='utf-8') as out_f:
-                        out_f.writelines(random_lines)
-                    
-                    # Remove used lines from the pool
-                    for line in random_lines:
-                        lines.remove(line)
-                    
-                    print(f"Saved file: {output_file}")
-                    
+
+            # 전체 파일 개수를 표시하고 슬라이스 크기 입력받기
+            slice_dialog = tk.Toplevel(self.root)
+            slice_dialog.title("파일 슬라이스 설정")
+            slice_dialog.geometry("400x200")
+            slice_dialog.transient(self.root)
+            slice_dialog.grab_set()
+
+            # 중앙 정렬
+            slice_dialog.update_idletasks()
+            x = (slice_dialog.winfo_screenwidth() // 2) - (400 // 2)
+            y = (slice_dialog.winfo_screenheight() // 2) - (200 // 2)
+            slice_dialog.geometry(f"400x200+{x}+{y}")
+
+            # 파일 정보 표시
+            info_frame = tk.Frame(slice_dialog)
+            info_frame.pack(pady=20, padx=20, fill=tk.X)
+
+            tk.Label(info_frame, text=f"선택한 파일: {filename}",
+                    font=("Arial", 10, "bold")).pack(anchor=tk.W)
+            tk.Label(info_frame, text=f"전체 라인 개수: {total_lines}개",
+                    font=("Arial", 10), fg="blue").pack(anchor=tk.W, pady=(5, 0))
+
+            # 슬라이스 크기 입력
+            input_frame = tk.Frame(slice_dialog)
+            input_frame.pack(pady=10, padx=20, fill=tk.X)
+
+            tk.Label(input_frame, text="슬라이스 크기 (파일당 라인 개수):",
+                    font=("Arial", 9)).pack(side=tk.LEFT)
+
+            slice_size_var = tk.StringVar(value="100")
+            slice_entry = tk.Entry(input_frame, textvariable=slice_size_var, width=10)
+            slice_entry.pack(side=tk.LEFT, padx=(10, 0))
+
+            # 예상 파일 개수 표시
+            estimated_label = tk.Label(input_frame, text="", font=("Arial", 9), fg="green")
+            estimated_label.pack(side=tk.LEFT, padx=(10, 0))
+
+            def update_estimated_files(*args):
+                try:
+                    size = int(slice_size_var.get())
+                    if size > 0:
+                        num_files = (total_lines + size - 1) // size
+                        estimated_label.config(text=f"→ {num_files}개 파일 생성")
+                    else:
+                        estimated_label.config(text="")
+                except ValueError:
+                    estimated_label.config(text="")
+
+            slice_size_var.trace('w', update_estimated_files)
+            update_estimated_files()
+
+            # 결과 저장 변수
+            result = {'confirmed': False, 'size': 100}
+
+            # 버튼 프레임
+            button_frame = tk.Frame(slice_dialog)
+            button_frame.pack(pady=20)
+
+            def on_confirm():
+                try:
+                    size = int(slice_size_var.get())
+                    if size <= 0:
+                        tk.messagebox.showerror("오류", "슬라이스 크기는 1 이상이어야 합니다.")
+                        return
+                    if size > total_lines:
+                        tk.messagebox.showwarning("경고",
+                            f"슬라이스 크기({size})가 전체 라인 개수({total_lines})보다 큽니다.\n"
+                            f"전체 파일이 하나의 파일로 복사됩니다.")
+                    result['confirmed'] = True
+                    result['size'] = size
+                    slice_dialog.destroy()
+                except ValueError:
+                    tk.messagebox.showerror("오류", "유효한 숫자를 입력하세요.")
+
+            def on_cancel():
+                slice_dialog.destroy()
+
+            tk.Button(button_frame, text="확인", width=10, command=on_confirm).pack(side=tk.LEFT, padx=5)
+            tk.Button(button_frame, text="취소", width=10, command=on_cancel).pack(side=tk.LEFT, padx=5)
+
+            # 엔터 키로 확인
+            slice_entry.bind("<Return>", lambda e: on_confirm())
+            slice_entry.focus_set()
+
+            # 다이얼로그가 닫힐 때까지 대기
+            slice_dialog.wait_window()
+
+            # 취소한 경우
+            if not result['confirmed']:
+                return
+
+            lines_per_file = result['size']
+            num_files = (total_lines + lines_per_file - 1) // lines_per_file
+
+            # 저장 폴더 생성
+            if not os.path.isdir(savepath):
+                os.mkdir(savepath)
+
+            # 파일 슬라이싱 시작
+            for i in range(num_files):
+                current_lines = min(lines_per_file, len(lines))
+                if current_lines == 0:
+                    break
+
+                random_lines = random.sample(lines, current_lines)
+                output_file = os.path.join(savepath, f'{filename}_{i}.txt')
+
+                with open(output_file, 'w', encoding='utf-8') as out_f:
+                    out_f.writelines(random_lines)
+
+                # Remove used lines from the pool
+                for line in random_lines:
+                    lines.remove(line)
+
+                print(f"Saved file: {output_file}")
+
             if hasattr(self, 'show_status_message'):
                 self.show_status_message(f"데이터 슬라이스 완료: {savepath}에 {num_files}개 파일 저장됨", duration=5000)
 
