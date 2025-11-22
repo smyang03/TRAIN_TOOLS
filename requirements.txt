@@ -1,0 +1,21 @@
+# TRAIN_TOOLS 프로젝트 의존성 패키지
+# Python 3.7 이상 권장
+
+# 이미지 처리
+Pillow>=9.0.0
+opencv-python>=4.5.0
+numpy>=1.21.0
+
+# GUI (tkinter는 Python 기본 패키지로 별도 설치 불필요)
+
+# 유틸리티
+natsort>=8.0.0
+pyautogui>=0.9.50
+tqdm>=4.60.0
+six>=1.16.0
+
+# 시스템 모니터링 (선택적)
+psutil>=5.8.0
+
+# EXE 빌드
+pyinstaller>=5.0.0
