@@ -4770,7 +4770,12 @@ class MainApp:
 		# 현재 라벨 삭제
 		self.bbox.pop(self.selid)
 		self.write_bbox()
-		
+
+		# === 이미지 파일에 마스킹 저장 (중요!) ===
+		img_to_save = Image.fromarray(self.current_img_array)
+		img_to_save.save(self.im_fn)
+		print(f"마스킹이 이미지 파일에 저장되었습니다: {self.im_fn}")
+
 		# 화면 표시
 		display_img = Image.fromarray(self.current_img_array)
 		self.imsize = [(int)(i * self.zoom_ratio) for i in display_img.size]
