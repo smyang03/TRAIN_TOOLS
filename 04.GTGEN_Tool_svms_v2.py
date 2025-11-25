@@ -4817,7 +4817,16 @@ class MainApp:
 		self.current_img_array = None
 		self.original_img_array = None
 
-		print("라벨이 마스킹으로 변환되었습니다. (마스킹 정보 초기화 완료)")
+		# 마스킹 정보 파일도 삭제 (중요!)
+		mask_info_file = self.im_fn.replace('.jpg', '_mask.npz').replace('.png', '_mask.npz')
+		if os.path.exists(mask_info_file):
+			try:
+				os.remove(mask_info_file)
+				print(f"마스킹 정보 파일 삭제됨: {mask_info_file}")
+			except Exception as e:
+				print(f"마스킹 정보 파일 삭제 오류: {e}")
+
+		print("라벨이 마스킹으로 변환되었습니다. (마스킹 정보 완전히 초기화 완료)")
 	def on_mouse_up(self, event):
 		x, y = self.get_canvas_coordinates(event)
 		
