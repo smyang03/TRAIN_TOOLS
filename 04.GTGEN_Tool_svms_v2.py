@@ -2055,19 +2055,26 @@ class MainApp:
 				# 라벨 쓰기는 별도 try 블록
 				try:
 					with open(target_label_path, 'w', encoding='utf-8') as f:
-						f.writelines(existing_labels)
-						if copy_mode == "selected" and preserve_mode == "preserve":
-							# 중복 검사
-							is_duplicate = False
-							for existing_label in existing_labels:
-								if existing_label.strip() == copytext[0].strip():
-									is_duplicate = True
-									break
-							
-							# 중복이 아닌 경우 새 라벨 추가
-							if not is_duplicate:
+						if preserve_mode == "preserve":
+							# 기존 라벨 유지하고 새 라벨 추가
+							f.writelines(existing_labels)
+
+							if copy_mode == "selected":
+								# 중복 검사
+								is_duplicate = False
+								for existing_label in existing_labels:
+									if existing_label.strip() == copytext[0].strip():
+										is_duplicate = True
+										break
+
+								# 중복이 아닌 경우 새 라벨 추가
+								if not is_duplicate:
+									f.writelines(copytext)
+							else:
+								# 다중 선택 또는 전체 복사 시 중복 검사 없이 추가
 								f.writelines(copytext)
 						else:
+							# replace 모드: 기존 라벨 지우고 새 라벨만 쓰기
 							f.writelines(copytext)
 				except Exception as e:
 					print(f"라벨 쓰기 오류: {e}")
@@ -6071,6 +6078,29 @@ class MainApp:
 			messagebox.showwarning("경고", "붙여넣을 라벨이 없습니다. 먼저 라벨을 복사해주세요.")
 			return
 
+		# 자동 필터링 충돌 확인
+		warning_messages = []
+
+		# 1. 자동 삭제 클래스 확인
+		if self.auto_delete_manager and self.auto_delete_manager.delete_class_ids:
+			global class_name
+			class_id = int(self.copied_label[2])
+			if class_id in self.auto_delete_manager.delete_class_ids:
+				class_str = class_name[class_id] if class_id < len(class_name) else str(class_id)
+				warning_messages.append(f"자동 삭제 대상 클래스: {class_str}")
+
+		# 2. 제외 영역 확인
+		if self.exclusion_zone_enabled and self.exclusion_zone_manager:
+			if self.exclusion_zone_manager.is_bbox_in_exclusion_zone(self.copied_label):
+				warning_messages.append("제외 영역 내 라벨")
+
+		# 경고가 있으면 사용자에게 확인
+		if warning_messages:
+			warning_text = "\n".join(warning_messages)
+			msg = f"⚠️ 붙여넣을 라벨이 자동 필터링 대상입니다:\n\n{warning_text}\n\n다음 페이지로 이동 시 자동으로 삭제됩니다.\n계속하시겠습니까?"
+			if not messagebox.askyesno("자동 필터링 경고", msg):
+				return
+
 		# 복사된 라벨의 사본 생성
 		new_label = copy.deepcopy(self.copied_label)
 
@@ -6185,6 +6215,39 @@ class MainApp:
 		if not hasattr(self, 'copied_multi_labels') or not self.copied_multi_labels:
 			messagebox.showwarning("경고", "붙여넣을 다중 라벨이 없습니다.")
 			return
+
+		# 자동 필터링 충돌 확인
+		warning_messages = []
+
+		# 1. 자동 삭제 클래스 확인
+		if self.auto_delete_manager and self.auto_delete_manager.delete_class_ids:
+			global class_name
+			filtered_labels = []
+			for label in self.copied_multi_labels:
+				class_id = int(label[2])
+				if class_id in self.auto_delete_manager.delete_class_ids:
+					class_str = class_name[class_id] if class_id < len(class_name) else str(class_id)
+					filtered_labels.append(class_str)
+
+			if filtered_labels:
+				warning_messages.append(f"자동 삭제 대상 클래스: {', '.join(filtered_labels)}")
+
+		# 2. 제외 영역 확인
+		if self.exclusion_zone_enabled and self.exclusion_zone_manager:
+			in_exclusion_count = 0
+			for label in self.copied_multi_labels:
+				if self.exclusion_zone_manager.is_bbox_in_exclusion_zone(label):
+					in_exclusion_count += 1
+
+			if in_exclusion_count > 0:
+				warning_messages.append(f"제외 영역 내 라벨: {in_exclusion_count}개")
+
+		# 경고가 있으면 사용자에게 확인
+		if warning_messages:
+			warning_text = "\n".join(warning_messages)
+			msg = f"⚠️ 붙여넣을 라벨이 자동 필터링 대상입니다:\n\n{warning_text}\n\n다음 페이지로 이동 시 자동으로 삭제됩니다.\n계속하시겠습니까?"
+			if not messagebox.askyesno("자동 필터링 경고", msg):
+				return
 
 		# 모든 라벨 선택 해제
 		for rc in self.bbox:
