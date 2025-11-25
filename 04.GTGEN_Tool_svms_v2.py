@@ -4801,16 +4801,23 @@ class MainApp:
 		if self.bbox and self.selid >= 0:
 			for i in range(len(self.bbox)):
 				self.bbox[i][0] = (i == self.selid)
-			
+
 			# 남은 라벨들만 그리기
 			self.canvas.delete("bbox")
-			self.canvas.delete("anchor")  
+			self.canvas.delete("anchor")
 			self.canvas.delete("clsname")
-			
+
 			for i, box in enumerate(self.bbox):
 				self.draw_bbox_rc(box, i)
-		
-		print("라벨이 마스킹으로 변환되었습니다.")
+
+		# 마스킹 정보 초기화 (작업 완료 후 깔끔하게 정리)
+		self.masking = None
+		self.has_saved_masking = False
+		self.is_masking_dirty = False
+		self.current_img_array = None
+		self.original_img_array = None
+
+		print("라벨이 마스킹으로 변환되었습니다. (마스킹 정보 초기화 완료)")
 	def on_mouse_up(self, event):
 		x, y = self.get_canvas_coordinates(event)
 		
@@ -6057,27 +6064,30 @@ class MainApp:
 
 		# 복사된 라벨의 사본 생성
 		new_label = copy.deepcopy(self.copied_label)
-		
+
 		# 선택 상태 초기화 (모든 라벨 선택 해제)
 		for rc in self.bbox:
 			rc[0] = False
-		
+
 		# 새 라벨 추가하고 선택
 		new_label[0] = True  # 선택 상태로 설정
 		self.bbox.append(new_label)
 		self.selid = len(self.bbox) - 1
-		
+
+		# 파일에 저장 (중요!)
+		self.write_bbox()
+
 		# 화면 갱신
 		self.draw_bbox()
-		
+
 		# 임시 메시지 표시
 		self.canvas.delete("paste_message")
 		self.canvas.create_text(
-			self.imsize[0] // 2, 20, 
+			self.imsize[0] // 2, 20,
 			text=f"라벨 붙여넣기 완료: {new_label[1]}",
 			fill="white", font=("Arial", 12), tags="paste_message"
 		)
-		
+
 		# 잠시 후 메시지 삭제
 		self.master.after(1500, lambda: self.canvas.delete("paste_message"))
 	def get_default_class_for_new_bbox(self):
@@ -6166,24 +6176,27 @@ class MainApp:
 		if not hasattr(self, 'copied_multi_labels') or not self.copied_multi_labels:
 			messagebox.showwarning("경고", "붙여넣을 다중 라벨이 없습니다.")
 			return
-		
+
 		# 모든 라벨 선택 해제
 		for rc in self.bbox:
 			rc[0] = False
-		
+
 		# 복사된 라벨들 추가
 		for label in self.copied_multi_labels:
 			new_label = copy.deepcopy(label)
 			new_label[0] = False  # 선택 해제 상태로 추가
 			self.bbox.append(new_label)
-		
+
+		# 파일에 저장 (중요!)
+		self.write_bbox()
+
 		self.draw_bbox()
-		
+
 		# 피드백 메시지
 		count = len(self.copied_multi_labels)
 		self.canvas.delete("paste_message")
 		self.canvas.create_text(
-			self.imsize[0] // 2, 20, 
+			self.imsize[0] // 2, 20,
 			text=f"다중 라벨 붙여넣기 완료: {count}개",
 			fill="white", font=("Arial", 12), tags="paste_message"
 		)
