@@ -4669,13 +4669,13 @@ class MainApp:
 					if event.state & 0x4:  # Ctrl 키가 눌린 상태
 						for i in range(len(self.bbox)):
 							rc = self.bbox[i]
-							if x in range(int(rc[3]), int(rc[5])) and y in range(int(rc[4]), int(rc[6])):
+							if int(rc[3]) <= x <= int(rc[5]) and int(rc[4]) <= y <= int(rc[6]):
 								self.toggle_multi_selection(i)
 								return
 					else:
 						for i in range(len(self.bbox)):
 							rc = self.bbox[i]
-							if x in range(int(rc[3]), int(rc[5])) and y in range(int(rc[4]), int(rc[6])):
+							if int(rc[3]) <= x <= int(rc[5]) and int(rc[4]) <= y <= int(rc[6]):
 								# 다중 선택 모드가 아닌 경우 기존 동작
 								if not self.multi_select_mode:
 									self.bbox[self.selid][0] = False
@@ -4693,10 +4693,10 @@ class MainApp:
 
 	def on_mouse_ctrl_down(self, event):
 		x, y = self.get_canvas_coordinates(event)
-    
+
 		for i in range(len(self.bbox)):
 			rc = self.bbox[i]
-			if x in range(rc[3], rc[5]) and y in range(rc[4], rc[6]):
+			if int(rc[3]) <= x <= int(rc[5]) and int(rc[4]) <= y <= int(rc[6]):
 				self.bbox[self.selid][0] = False
 				self.selid = i
 				self.bbox[i][0] = True
