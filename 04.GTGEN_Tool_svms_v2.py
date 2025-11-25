@@ -1826,9 +1826,9 @@ class MainApp:
 
 		# 다중 선택 모드 토글 버튼 (새로 추가)
 		self.multi_mode_btn = tk.Button(
-			self.button_frame, 
-			text="다중선택모드: OFF", 
-			command=self.toggle_multi_select_mode, 
+			self.label_copy_frame,  # ✅ 수정: button_frame → label_copy_frame
+			text="다중선택모드: OFF",
+			command=self.toggle_multi_select_mode,
 			bd=1,
 			bg="lightgray"
 		)
