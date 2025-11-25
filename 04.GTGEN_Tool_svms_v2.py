@@ -3999,7 +3999,12 @@ class MainApp:
 			self.canvas.image = ImageTk.PhotoImage(resized_img)
 			self.canvas.create_image(0, 0, image=self.canvas.image, anchor='nw', tags="img")
 			self.master.title('[%d/%d] %s' % (self.ci+1, len(self.imlist), self.im_fn))
-			
+
+			# === 이미지 파일에 마스킹 저장 (중요!) ===
+			img_to_save = Image.fromarray(self.current_img_array)
+			img_to_save.save(self.im_fn)
+			print(f"마스킹이 이미지 파일에 저장되었습니다: {self.im_fn}")
+
 			# 캔버스에서 폴리곤 및 마스킹 관련 요소들 삭제
 			self.canvas.delete("polygon")
 			self.canvas.delete("polygon_point")
