@@ -4482,8 +4482,10 @@ class MainApp:
 				self.original_height = self.img.height
 		elif ckey == keysetting[31]:
 			self.s_region = True; self.get_masking()
+			return  # get_masking() 후 즉시 리턴 (draw_image 호출 방지)
 		elif ckey == keysetting[32]:
 			self.l_region = True; self.load_masking()
+			return  # load_masking() 후 즉시 리턴 (draw_image 호출 방지)
 		elif ckey == 'p':
 			self.on_polygon_masking_key(event)
 			return
