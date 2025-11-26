@@ -3754,18 +3754,21 @@ class MainApp:
 	def change_class(self, clsid):
 		if self.selid < 0:
 			return
-		
+
 		# 클래스 인덱스가 유효한지 확인
 		if 0 <= clsid < len(class_name):
 			# 선택된 바운딩 박스의 클래스 이름을 업데이트
 			self.bbox[self.selid][1] = class_name[clsid]
-			
+
 			# pre_rc가 있는 경우 업데이트
 			if self.pre_rc is not None:
 				self.pre_rc[1] = class_name[clsid]
-			
+
 			# 화면에 바운딩 박스 다시 그리기
 			self.draw_bbox()
+
+			# 파일에 저장
+			self.write_bbox()
 		return
 		# if self.selid < 0:
 		# 	return
@@ -4836,8 +4839,11 @@ class MainApp:
 		print("라벨이 마스킹으로 변환되었습니다. (마스킹 정보 완전히 초기화 완료)")
 	def on_mouse_up(self, event):
 		x, y = self.get_canvas_coordinates(event)
-		
-		if self.bbox_crop: 
+
+		# bbox 수정 여부 플래그 저장 (False로 변경하기 전에)
+		bbox_was_modified = self.bbox_add or self.bbox_resize_anchor is not None or self.bbox_move
+
+		if self.bbox_crop:
 			self.canvas.create_rectangle(self.area[0], self.area[1], self.area[2], self.area[3], tags="crop")
 			self.crop_img()
 		elif self.bbox_masking:
@@ -4856,6 +4862,10 @@ class MainApp:
 			if self.selid >= 0:
 				rc = self.convert_abs2rel(self.bbox[self.selid])
 				self.pre_rc = self.convert_rel2abs(rc)
+
+			# bbox가 추가/수정/이동되었으면 파일에 저장
+			if bbox_was_modified:
+				self.write_bbox()
 		return
 
 	def draw_cross_line(self, event):
