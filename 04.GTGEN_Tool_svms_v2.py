@@ -4811,6 +4811,8 @@ class MainApp:
 				print(f"마스킹 정보 파일 삭제 오류: {e}")
 
 		# 화면 새로고침 (이미지 파일에서 마스킹된 이미지 다시 로드)
+		# draw_image()가 강제로 실행되도록 pi 초기화
+		self.pi = -1
 		self.draw_image()
 
 		print("라벨이 마스킹으로 변환되었습니다.")
