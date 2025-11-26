@@ -3747,7 +3747,11 @@ class MainApp:
 						line = line.replace('.jpg','.jpg\n')
 						outfile.write(line)
 		print("GTGEN_Tool Exited.\n")
-		os.startfile(BASE_DIR + "RemoveDefaultdll.exe")
+		try:
+			os.startfile(BASE_DIR + "RemoveDefaultdll.exe")
+		except (OSError, PermissionError) as e:
+			# UAC 거부 또는 권한 문제 시 무시하고 계속 진행
+			print(f"RemoveDefaultdll.exe 실행 실패 (무시됨): {e}")
 		return
 	atexit.register(goodbye)
 	
@@ -6300,7 +6304,11 @@ def main():
     print("objmk version 2017-10-27")
     wdir = sys.argv[1] if len(sys.argv) == 2 else None
     # RemoveDefaultdll.exe 실행은 여기서 한 번만 실행
-    os.startfile(BASE_DIR + "RemoveDefaultdll.exe")
+    try:
+        os.startfile(BASE_DIR + "RemoveDefaultdll.exe")
+    except (OSError, PermissionError) as e:
+        # UAC 거부 또는 권한 문제 시 무시하고 계속 진행
+        print(f"RemoveDefaultdll.exe 실행 실패 (무시됨): {e}")
     app = MainApp(wdir)
     return
 
