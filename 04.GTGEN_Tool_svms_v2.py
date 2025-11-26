@@ -3754,18 +3754,21 @@ class MainApp:
 	def change_class(self, clsid):
 		if self.selid < 0:
 			return
-		
+
 		# 클래스 인덱스가 유효한지 확인
 		if 0 <= clsid < len(class_name):
 			# 선택된 바운딩 박스의 클래스 이름을 업데이트
 			self.bbox[self.selid][1] = class_name[clsid]
-			
+
 			# pre_rc가 있는 경우 업데이트
 			if self.pre_rc is not None:
 				self.pre_rc[1] = class_name[clsid]
-			
+
 			# 화면에 바운딩 박스 다시 그리기
 			self.draw_bbox()
+
+			# 파일에 저장
+			self.write_bbox()
 		return
 		# if self.selid < 0:
 		# 	return
@@ -4794,37 +4797,7 @@ class MainApp:
 			img_to_save.save(self.im_fn)
 		print(f"마스킹이 이미지 파일에 저장되었습니다: {self.im_fn}")
 
-		# 화면 표시
-		display_img = Image.fromarray(self.current_img_array)
-		self.imsize = [(int)(i * self.zoom_ratio) for i in display_img.size]
-		resized_img = display_img.resize(self.imsize, Image.LANCZOS)
-		
-		self.canvas.delete("img")
-		self.canvas.image = ImageTk.PhotoImage(resized_img)
-		self.canvas.create_image(0, 0, image=self.canvas.image, anchor='nw', tags="img")
-		
-		# 선택 상태 업데이트
-		self.selid = -1 if len(self.bbox) == 0 else 0
-		if self.bbox and self.selid >= 0:
-			for i in range(len(self.bbox)):
-				self.bbox[i][0] = (i == self.selid)
-
-			# 남은 라벨들만 그리기
-			self.canvas.delete("bbox")
-			self.canvas.delete("anchor")
-			self.canvas.delete("clsname")
-
-			for i, box in enumerate(self.bbox):
-				self.draw_bbox_rc(box, i)
-
-		# 마스킹 정보 초기화 (작업 완료 후 깔끔하게 정리)
-		self.masking = None
-		self.has_saved_masking = False
-		self.is_masking_dirty = False
-		self.current_img_array = None
-		self.original_img_array = None
-
-		# 마스킹 정보 파일도 삭제 (중요!)
+		# 마스킹 정보 파일 삭제 (중복 저장 방지)
 		mask_info_file = self.im_fn.replace('.jpg', '_mask.npz').replace('.png', '_mask.npz')
 		if os.path.exists(mask_info_file):
 			try:
@@ -4833,11 +4806,17 @@ class MainApp:
 			except Exception as e:
 				print(f"마스킹 정보 파일 삭제 오류: {e}")
 
-		print("라벨이 마스킹으로 변환되었습니다. (마스킹 정보 완전히 초기화 완료)")
+		# 화면 새로고침 (이미지 파일에서 마스킹된 이미지 다시 로드)
+		self.draw_image()
+
+		print("라벨이 마스킹으로 변환되었습니다.")
 	def on_mouse_up(self, event):
 		x, y = self.get_canvas_coordinates(event)
-		
-		if self.bbox_crop: 
+
+		# bbox 수정 여부 플래그 저장 (False로 변경하기 전에)
+		bbox_was_modified = self.bbox_add or self.bbox_resize_anchor is not None or self.bbox_move
+
+		if self.bbox_crop:
 			self.canvas.create_rectangle(self.area[0], self.area[1], self.area[2], self.area[3], tags="crop")
 			self.crop_img()
 		elif self.bbox_masking:
@@ -4856,6 +4835,10 @@ class MainApp:
 			if self.selid >= 0:
 				rc = self.convert_abs2rel(self.bbox[self.selid])
 				self.pre_rc = self.convert_rel2abs(rc)
+
+			# bbox가 추가/수정/이동되었으면 파일에 저장
+			if bbox_was_modified:
+				self.write_bbox()
 		return
 
 	def draw_cross_line(self, event):
