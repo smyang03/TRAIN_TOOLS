@@ -2139,11 +2139,12 @@ class MainApp:
 			self.is_masking_dirty = False  # 새 이미지이므로 더티 플래그 초기화
 			
 			# 기존에 저장된 마스킹이 있는지 확인하고 로드
+			has_masking = False
 			try:
 				# 현재 이미지에 이미 마스킹이 적용되어 있는지 확인
 				temp_array = array(im)
 				existing_masking = np.where((temp_array==[255,0,255]).all(axis=2))
-				
+
 				if len(existing_masking[0]) > 0:
 					# 이미 마스킹이 적용된 이미지인 경우
 					self.current_img_array = temp_array
@@ -2151,21 +2152,30 @@ class MainApp:
 					self.has_saved_masking = True
 					self.maskingframewidth = im.width
 					self.maskingframeheight = im.height
+					has_masking = True
+					print(f"마스킹 로드됨: {len(existing_masking[0])} 픽셀")
 			except Exception as e:
 				print(f"마스킹 복원 중 오류: {e}")
-						
+
 			self.imsize = im.size
 			self.imsize = [(int)(i * self.zoom_ratio) for i in im.size]
 			self.original_width = im.width
 			self.original_height = im.height
-			im = im.resize(self.imsize, Image.LANCZOS)
+
+			# 마스킹이 있으면 마스킹된 이미지 사용, 없으면 원본 이미지 사용
+			if has_masking:
+				display_img = Image.fromarray(self.current_img_array)
+				im = display_img.resize(self.imsize, Image.LANCZOS)
+			else:
+				im = im.resize(self.imsize, Image.LANCZOS)
+
 			if os.path.exists(self.gt_fn):
 				filesize = os.path.getsize(self.gt_fn)
 			else :
 				filesize=0
 
 			self.canvas.config(width=min(self.imsize[0], 1200), height=min(self.imsize[1], 800))
-			self.canvas.config(scrollregion=(0, 0, self.imsize[0], self.imsize[1]))	
+			self.canvas.config(scrollregion=(0, 0, self.imsize[0], self.imsize[1]))
 			self.canvas.image = ImageTk.PhotoImage(im)
 			self.canvas.create_image(0, 0, image=self.canvas.image, anchor='nw', tags="img")
 			self.master.title('[%d/%d] %s' % (self.ci+1, len(self.imlist), self.im_fn))
