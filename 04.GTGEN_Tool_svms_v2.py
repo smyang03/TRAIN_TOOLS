@@ -3165,15 +3165,19 @@ class MainApp:
 		self.canvas.delete("clsname")
 
 		if self.bbox_resize_anchor != None or self.bbox_move:
-			self.draw_bbox_rc(self.bbox[self.selid])
-			rc = self.bbox[self.selid]
-			s = str(rc[5]-rc[3]) + 'x' + str(rc[6]-rc[4])
-			self.canvas.create_text(rc[5]-3,rc[6]+14, font='Arial 7', fill='black', text=s, anchor='se', tags='bbox')
+			# selid 범위 체크
+			if 0 <= self.selid < len(self.bbox):
+				self.draw_bbox_rc(self.bbox[self.selid])
+				rc = self.bbox[self.selid]
+				s = str(rc[5]-rc[3]) + 'x' + str(rc[6]-rc[4])
+				self.canvas.create_text(rc[5]-3,rc[6]+14, font='Arial 7', fill='black', text=s, anchor='se', tags='bbox')
 		elif self.onlyselect is True:
-			self.draw_bbox_rc(self.bbox[self.selid])
-			rc = self.bbox[self.selid]
-			s = str(rc[5]-rc[3]) + 'x' + str(rc[6]-rc[4])
-			self.canvas.create_text(rc[5]-3,rc[6]+14, font='Arial 7', fill='black', text=s, anchor='se', tags='bbox')
+			# selid 범위 체크
+			if 0 <= self.selid < len(self.bbox):
+				self.draw_bbox_rc(self.bbox[self.selid])
+				rc = self.bbox[self.selid]
+				s = str(rc[5]-rc[3]) + 'x' + str(rc[6]-rc[4])
+				self.canvas.create_text(rc[5]-3,rc[6]+14, font='Arial 7', fill='black', text=s, anchor='se', tags='bbox')
 		else:
 			labellst = []
 			for i, rc in enumerate(self.bbox):
