@@ -4083,9 +4083,12 @@ class MainApp:
 			# 플래그 초기화
 			self.l_region = False
 			self.bbox_masking = False
-	
+
 			print("마스킹이 메모리에 로드되었습니다.")
-			
+
+			# 라벨(bbox) 다시 그리기
+			self.draw_bbox()
+
 		except Exception as e:
 			print(f"마스킹 로드 중 오류 발생: {e}")
 			messagebox.showerror("오류", f"마스킹 로드 중 오류가 발생했습니다: {e}")
