@@ -814,6 +814,10 @@ class MainApp:
 		self.auto_delete_manager = AutoDeleteClassManager()
 		print(f"[AutoDelete] 자동 삭제 클래스: {self.auto_delete_manager.delete_class_ids}")
 
+		# Pending changes 시스템 초기화 (캐시 업데이트 최적화)
+		self.pending_operation_count = 0  # 현재 페이지에서 수행된 작업 수
+		print("[CacheOptimization] Pending changes 시스템 초기화 완료")
+
 		# 메인 윈도우 초기 생성 (설정 다이얼로그를 띄우기 위해)
 		self.master = tk.Tk()
 		self.master.withdraw()  # 일시적으로 숨김
@@ -2180,14 +2184,52 @@ class MainApp:
 			messagebox.showinfo("완료", f"선택 라벨 추가가 완료되었습니다. {success_count}개의 이미지에 성공적으로 적용되었습니다.")
 		else:  # replace
 			messagebox.showinfo("완료", f"선택 라벨 복사가 완료되었습니다. {success_count}개의 이미지에 성공적으로 적용되었습니다.")
-		
+
 		# 현재 이미지 다시 표시
 		self.draw_image()
+
+	def show_temporary_status(self, message, duration=2000, bg_color='#4CAF50'):
+		"""화면 하단에 일시 상태 메시지 표시"""
+		# 기존 상태 레이블 제거
+		if hasattr(self, 'status_label') and self.status_label:
+			try:
+				self.status_label.destroy()
+			except:
+				pass
+
+		# 새 상태 레이블 생성
+		self.status_label = tk.Label(
+			self.master,
+			text=message,
+			bg=bg_color,
+			fg='white',
+			font=('Arial', 10, 'bold'),
+			padx=10,
+			pady=5
+		)
+		self.status_label.pack(side='bottom', fill='x')
+
+		# 자동으로 사라지게
+		self.master.after(duration, lambda: self.hide_status_label())
+
+	def hide_status_label(self):
+		"""상태 레이블 숨기기"""
+		if hasattr(self, 'status_label') and self.status_label:
+			try:
+				self.status_label.destroy()
+				self.status_label = None
+			except:
+				pass
+
 	def draw_image(self):
 		self.canvas.delete("all")
 		try:
 			if self.ci == self.pi: return
-			self.pi = self.ci	
+			self.pi = self.ci
+
+			# 페이지 전환 시 pending 작업 카운터 초기화
+			self.pending_operation_count = 0
+			print(f"[CacheOptimization] 페이지 전환 - pending 카운터 초기화")
 
 			if len(self.imlist) > 0:
 				self.img_slider.config(to=len(self.imlist))
@@ -2880,8 +2922,10 @@ class MainApp:
 		if total_labels_deleted > 0:
 			completion_msg += f"\n\n총 {total_labels_deleted}개의 라벨이 삭제되었습니다."
 			completion_msg += f"\n수정된 라벨 파일: {len(modified_label_files)}개"
-			completion_msg += "\n\n※ LABEL CHECK 툴에서 '데이터 리프레시' 버튼을 눌러주세요."
-			print(f"\n[MaskCopy 완료] 총 {total_labels_deleted}개 라벨 삭제, {len(modified_label_files)}개 파일 수정")
+			completion_msg += "\n\n✓ 파일에 저장 완료 (다른 페이지 방문 시 자동 반영됨)"
+			print(f"\n[CacheOptimization] 마스킹 복사 완료 - 총 {total_labels_deleted}개 라벨 삭제, {len(modified_label_files)}개 파일 수정 (캐시 업데이트 생략)")
+		else:
+			print(f"[CacheOptimization] 마스킹 복사 완료 - {success_count}개 이미지 처리 (캐시 업데이트 생략)")
 
 		messagebox.showinfo("완료", completion_msg)
 
@@ -4150,7 +4194,7 @@ class MainApp:
 	def remove_bbox_rc(self):
 		if len(self.bbox) <= 0:
 			return
-		
+
 		self.bbox_add = False;  self.cross_line = False;  bbox_crop = False
 		copyflag = False
 		self.bbox = self.bbox[:self.selid] + self.bbox[self.selid+1:]
@@ -4166,7 +4210,19 @@ class MainApp:
 		if   self.ci < 0                 : self.ci = 0
 		if   self.ci == self.pi          : self.draw_bbox()
 		elif copyflag==True              : self.write_bbox();self.draw_copy_image()
-		else                             : self.write_bbox(); self.draw_image()
+		else                             :
+			self.write_bbox()  # txt 파일에 즉시 저장
+
+			# pending 카운터 증가 및 상태 표시 (캐시 업데이트 제거로 속도 개선)
+			self.pending_operation_count += 1
+			self.show_temporary_status(
+				f"✓ 라벨 삭제 완료 (파일에 저장됨) - 현재 페이지: {self.pending_operation_count}개 작업",
+				duration=1500,
+				bg_color='#4CAF50'
+			)
+			print(f"[CacheOptimization] 라벨 삭제 - txt 파일 저장 완료 (캐시 업데이트 생략)")
+
+			self.draw_image()
 
 		if hasattr(self, 'show_label_list') and self.show_label_list.get():
 			self.update_label_list()
