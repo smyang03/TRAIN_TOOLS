@@ -2719,43 +2719,46 @@ class MainApp:
 		
 		# 지정된 범위의 이미지에 마스킹 적용
 		success_count = 0
+		total_labels_deleted = 0  # 전체 삭제된 라벨 개수 추적
+		modified_label_files = []  # 수정된 라벨 파일 목록
+
 		for i in range(start_frame - 1, end_frame):
 			# 프로그레스 바 업데이트
 			progress_bar["value"] = i - (start_frame - 1) + 1
 			progress_label.config(text=f"처리 중: {i+1}/{end_frame} ({int(progress_bar['value']/total_frames*100)}%)")
 			self.master.update()
-			
+
 			# 현재 이미지 건너뛰기
 			if i == current_idx:
 				continue
-			
+
 			try:
 				# 대상 이미지 로드
 				target_img_path = self.imlist[i]
 				target_img = Image.open(target_img_path)
-				
+
 				# 이미지 크기 확인
 				if target_img.width != mask_width or target_img.height != mask_height:
 					print(f"이미지 {i+1}의 크기가 마스킹과 일치하지 않습니다. 건너뜁니다.")
 					continue
-				
+
 				# 백업 폴더 및 파일 확인
 				d_path = 'original_backup/JPEGImages/'
 				if not(os.path.isdir(d_path)):
 					os.makedirs(os.path.join(d_path))
-				
+
 				img_path = d_path + self.make_path(target_img_path)
 				if not os.path.exists(img_path):
 					shutil.copyfile(target_img_path, img_path)
-				
+
 				# 마스킹 적용
 				target_img_array = array(target_img)
 				target_img_array[self.masking] = [255, 0, 255]
 				target_img = Image.fromarray(target_img_array)
-				
+
 				# 이미지 저장
 				target_img.save(target_img_path)
-				
+
 				# 마스킹과 겹치는 라벨 삭제 옵션이 켜져 있는 경우
 				if self.remove_overlapping_labels.get():
 					try:
@@ -2846,6 +2849,8 @@ class MainApp:
 
 						if deleted_label_count > 0:
 							print(f"[MaskCopy] 프레임 {i+1}: {original_label_count}개 라벨 중 {deleted_label_count}개 삭제됨 (면적 기반)")
+							total_labels_deleted += deleted_label_count
+							modified_label_files.append(target_label_path)
 
 					except Exception as e:
 						print(f"라벨 처리 중 오류 발생: {e}")
@@ -2857,22 +2862,29 @@ class MainApp:
 		
 		# 진행 창 닫기
 		progress_window.destroy()
-		
+
 		# 캔버스에서 폴리곤 및 마스킹 관련 요소들 삭제
 		self.canvas.delete("polygon")
 		self.canvas.delete("polygon_point")
 		self.canvas.delete("temp_line")
 		self.canvas.delete("masking")
 		self.canvas.delete("masking_m")
-		
+
 		# 폴리곤 마스킹 관련 변수 초기화
 		self.polygon_masking = False
 		self.polygon_points = []
 		self.is_polygon_closed = False
-		
-		# 완료 메시지
-		messagebox.showinfo("완료", f"마스킹 복사가 완료되었습니다. {success_count}개의 이미지에 성공적으로 적용되었습니다.")
-		
+
+		# 완료 메시지 (라벨 삭제 정보 포함)
+		completion_msg = f"마스킹 복사가 완료되었습니다.\n{success_count}개의 이미지에 성공적으로 적용되었습니다."
+		if total_labels_deleted > 0:
+			completion_msg += f"\n\n총 {total_labels_deleted}개의 라벨이 삭제되었습니다."
+			completion_msg += f"\n수정된 라벨 파일: {len(modified_label_files)}개"
+			completion_msg += "\n\n※ LABEL CHECK 툴에서 '데이터 리프레시' 버튼을 눌러주세요."
+			print(f"\n[MaskCopy 완료] 총 {total_labels_deleted}개 라벨 삭제, {len(modified_label_files)}개 파일 수정")
+
+		messagebox.showinfo("완료", completion_msg)
+
 		# 현재 이미지 다시 표시
 		self.draw_image()
 		# rel: [clsidx, cx, cy, w, h]

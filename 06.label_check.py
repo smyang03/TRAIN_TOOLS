@@ -2196,10 +2196,10 @@ class ImageViewer:
                         # 콜백이 있으면 콜백에서 창 닫기 처리
                         self.root.after(0, completion_callback)
                     else:
-                        # 콜백이 없으면 자동으로 progress_window 닫기
+                        # 콜백이 없으면 즉시 progress_window 닫기 (개선: 대기 시간 제거)
                         if existing_progress_window is None:
-                            # 새로 생성된 창인 경우만 자동으로 닫기
-                            self.root.after(3000, progress_window.destroy)
+                            # 새로 생성된 창인 경우 즉시 자동으로 닫기
+                            self.root.after(100, progress_window.destroy)
 
                 except Exception as e:
                     print(f"마무리 중 오류: {e}")
@@ -6688,38 +6688,33 @@ class ImageViewer:
         for widget in self.frame.winfo_children():
             widget.destroy()
 
-        # 클래스 정보 갱신 (라벨 개수가 변경되었으므로)
-        # 클래스 정보 완전히 재구성 (더 철저한 갱신)
-        self.labelsdata = [[] for _ in range(100)]  # 클래스별 라벨 데이터 완전 초기화
+        # 클래스 정보 갱신 - 부분 업데이트로 전환 (속도 개선)
+        print(f"부분 업데이트 시작: {len(processed_files)}개 파일 처리")
 
-        # 먼저 캐시 초기화 (중요!)
-        if hasattr(self, 'label_cache'):
-            self.label_cache.clear()
-        if hasattr(self, 'label_cache_access_order'):
-            self.label_cache_access_order.clear()
-        if hasattr(self, 'overlap_cache'):
-            self.overlap_cache.clear()
-        if hasattr(self, 'file_encoding_cache'):
-            self.file_encoding_cache.clear()
+        # 변경된 파일의 라벨 데이터 캐시만 갱신 (전체 초기화하지 않음)
+        self.refresh_label_data_cache(specific_paths=list(processed_files))
 
-        print("모든 캐시 및 라벨 데이터 초기화 완료")
+        print("라벨 데이터 캐시 갱신 완료")
 
-        # 클래스 정보 완전히 새로 구성 - completion_callback 추가
+        # 완료 후 처리
         def on_update_complete():
-            """클래스 드롭다운 업데이트 완료 후 호출"""
+            """라벨 데이터 갱신 완료 후 호출"""
             # 추가 검증 - 삭제된 라벨이 여전히 남아있는지 확인
             for label_info in self.selected_label_info:
                 label_path = label_info['path']
                 if os.path.isfile(label_path):
-                    with open(label_path, 'r', encoding='utf-8') as f:
-                        lines = f.readlines()
-                        if not lines:  # 빈 파일은 클래스 데이터에서 제거
-                            for class_idx in range(len(self.labelsdata)):
-                                if label_path in self.labelsdata[class_idx]:
-                                    self.labelsdata[class_idx].remove(label_path)
-                                    print(f"빈 파일 제거: {os.path.basename(label_path)}")
+                    try:
+                        with open(label_path, 'r', encoding='utf-8') as f:
+                            lines = f.readlines()
+                            if not lines:  # 빈 파일은 클래스 데이터에서 제거
+                                for class_idx in range(len(self.labelsdata)):
+                                    if label_path in self.labelsdata[class_idx]:
+                                        self.labelsdata[class_idx].remove(label_path)
+                                        print(f"빈 파일 제거: {os.path.basename(label_path)}")
+                    except Exception as e:
+                        print(f"빈 파일 검증 중 오류: {e}")
 
-            print("클래스 정보 재구성 완료")
+            print("라벨 데이터 갱신 완료")
 
             # 원래 클래스로 복원
             if current_class != "Select Class":
@@ -6737,8 +6732,8 @@ class ImageViewer:
             if progress_window and progress_window.winfo_exists():
                 progress_window.destroy()
 
-        # 클래스 드롭다운 업데이트 (비동기, 완료 후 on_update_complete 호출)
-        self.update_class_dropdown(completion_callback=on_update_complete)
+        # 즉시 완료 처리 (비동기 작업 없음)
+        on_update_complete()
     def recalculate_indices(self, label_path, deleted_indices):
         """
         파일 수정 후 인덱스를 재계산하고 모든 참조를 업데이트합니다.
