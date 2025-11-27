@@ -100,12 +100,16 @@ class ExclusionZoneManager:
 		Returns:
 			bool: 조금이라도 겹치면 True
 		"""
+		# bbox 좌표 정규화 (x1 < x2, y1 < y2 보장)
+		min_x, max_x = min(x1, x2), max(x1, x2)
+		min_y, max_y = min(y1, y2), max(y1, y2)
+
 		# 1. bbox의 네 모서리 중 하나라도 폴리곤 안에 있는지 확인
 		bbox_corners = [
-			(x1, y1),  # 왼쪽 위
-			(x2, y1),  # 오른쪽 위
-			(x1, y2),  # 왼쪽 아래
-			(x2, y2)   # 오른쪽 아래
+			(min_x, min_y),  # 왼쪽 위
+			(max_x, min_y),  # 오른쪽 위
+			(min_x, max_y),  # 왼쪽 아래
+			(max_x, max_y)   # 오른쪽 아래
 		]
 
 		for corner in bbox_corners:
@@ -115,15 +119,15 @@ class ExclusionZoneManager:
 		# 2. 폴리곤의 점 중 하나라도 bbox 안에 있는지 확인
 		for point in polygon:
 			px, py = point
-			if x1 <= px <= x2 and y1 <= py <= y2:
+			if min_x <= px <= max_x and min_y <= py <= max_y:
 				return True  # 폴리곤 점이 bbox 안에 있음
 
 		# 3. bbox의 변과 폴리곤의 변이 교차하는지 확인
 		bbox_edges = [
-			((x1, y1), (x2, y1)),  # 위쪽 변
-			((x2, y1), (x2, y2)),  # 오른쪽 변
-			((x2, y2), (x1, y2)),  # 아래쪽 변
-			((x1, y2), (x1, y1))   # 왼쪽 변
+			((min_x, min_y), (max_x, min_y)),  # 위쪽 변
+			((max_x, min_y), (max_x, max_y)),  # 오른쪽 변
+			((max_x, max_y), (min_x, max_y)),  # 아래쪽 변
+			((min_x, max_y), (min_x, min_y))   # 왼쪽 변
 		]
 
 		n = len(polygon)
