@@ -7852,35 +7852,33 @@ class ImageViewer:
             for label_path in set(label_paths_to_refresh):
                 self.invalidate_caches_for_label(label_path)
 
-            # 라벨 데이터 캐시도 갱신
-            self.refresh_label_data_cache()
+            # 라벨 데이터 캐시 갱신 - 부분 업데이트로 전환 (속도 개선)
+            print(f"부분 업데이트 시작: {len(label_paths_to_refresh)}개 파일 처리")
+            self.refresh_label_data_cache(specific_paths=label_paths_to_refresh)
+            print("라벨 데이터 캐시 갱신 완료")
+
             self.deselect_all_images()
 
             # 화면의 모든 썸네일 제거 (UI 클리어)
             for widget in self.frame.winfo_children():
                 widget.destroy()
 
-            # 클래스 정보 업데이트 완료 후 호출될 콜백 정의
-            def on_update_complete():
-                """클래스 드롭다운 업데이트 완료 후 호출"""
-                # 원래 클래스로 복원
-                if current_class != "Select Class":
-                    self.class_selector.set(current_class)
+            # 완료 후 처리 - 즉시 실행 (비동기 작업 제거로 속도 개선)
+            # 원래 클래스로 복원
+            if current_class != "Select Class":
+                self.class_selector.set(current_class)
 
-                # 페이지 번호 조정
-                self.current_page = min(current_page, self.total_pages - 1) if self.total_pages > 0 else 0
-                if self.current_page < 0:
-                    self.current_page = 0
+            # 페이지 번호 조정
+            self.current_page = min(current_page, self.total_pages - 1) if self.total_pages > 0 else 0
+            if self.current_page < 0:
+                self.current_page = 0
 
-                # 클래스 변경 모드 비활성화
-                self.changing_class = False
-                print("클래스 변경 모드 비활성화")
+            # 클래스 변경 모드 비활성화
+            self.changing_class = False
+            print("클래스 변경 모드 비활성화")
 
-                # 화면 갱신
-                self.update_display()
-
-            # 클래스 정보와 디스플레이 업데이트 (비동기)
-            self.update_class_dropdown(completion_callback=on_update_complete)
+            # 화면 갱신
+            self.update_display()
         
         # 버튼 추가
         ttk.Button(button_frame, text="변경", command=execute_change).pack(side="left", padx=5)
