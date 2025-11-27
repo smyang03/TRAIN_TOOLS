@@ -6491,14 +6491,7 @@ class ImageViewer:
         
         # 선택된 바운딩 박스 수 계산
         total_boxes = sum(len(info['boxes']) for info in self.selected_label_info)
-        
-        # 경고 메시지 표시
-        tk.messagebox.showinfo("알림", "참조 라벨 선택이 초기화되었습니다.")
 
-        # 수정 후
-        if hasattr(self, 'show_status_message'):
-            self.show_status_message("참조 라벨 선택 초기화 완료", duration=3000)
-        
         # 진행 상황을 보여주는 창 생성
         progress_window = tk.Toplevel(self.root)
         progress_window.title("라벨 삭제 중")
@@ -6804,10 +6797,9 @@ class ImageViewer:
                 
                 # 업데이트된 박스 목록 저장
                 info['boxes'] = updated_boxes
-                
-                # 모든 박스가 삭제된 경우 라벨 정보 자체를 제거
-                if not updated_boxes:
-                    self.selected_label_info.remove(info)
+
+                # 주의: 순회 중인 리스트는 수정하지 않음
+                # delete_selected_labels() 함수 끝에서 deselect_all_images()로 일괄 정리
         
         # 3. labelsdata 배열 업데이트 (클래스별 라벨 경로)
         # 인덱스 자체는 영향 받지 않지만, 일관성을 위해 캐시 갱신
