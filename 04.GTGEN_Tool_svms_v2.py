@@ -2763,22 +2763,22 @@ class MainApp:
 						target_label_path = target_img_path.replace('JPEGImages', 'labels')
 						target_label_path = target_label_path.replace('.jpg', '.txt')
 						target_label_path = target_label_path.replace('.png', '.txt')
-						
+
 						# 라벨 디렉토리 확인
 						label_dir = os.path.dirname(target_label_path)
 						if not os.path.exists(label_dir):
 							os.makedirs(label_dir)
-						
+
 						# 백업 생성
 						if os.path.exists(target_label_path):
 							backup_dir = 'original_backup/labels/'
 							if not os.path.isdir(backup_dir):
 								os.makedirs(backup_dir)
-							
+
 							backup_path = backup_dir + self.make_path(target_label_path)
 							if not os.path.exists(backup_path):
 								shutil.copyfile(target_label_path, backup_path)
-						
+
 						# 마스킹 영역 계산 (원본 이미지 기준)
 						if has_polygon:
 							# 폴리곤 마스킹의 경우 저장된 폴리곤 좌표 사용
@@ -2786,8 +2786,9 @@ class MainApp:
 							min_y = min(p[1] for p in self.saved_polygon_points)
 							max_x = max(p[0] for p in self.saved_polygon_points)
 							max_y = max(p[1] for p in self.saved_polygon_points)
-							
+
 							mask_area = [min_x, min_y, max_x, max_y]
+							print(f"[MaskCopy] 폴리곤 마스킹 영역: {mask_area}")
 						else:
 							# 일반 마스킹의 경우 마스킹된 픽셀 영역 계산
 							if len(self.masking[0]) > 0:  # 마스킹된 픽셀이 있는 경우
@@ -2795,47 +2796,57 @@ class MainApp:
 								mask_y2 = max(self.masking[0]) if len(self.masking[0]) > 0 else 0
 								mask_x1 = min(self.masking[1]) if len(self.masking[1]) > 0 else 0
 								mask_x2 = max(self.masking[1]) if len(self.masking[1]) > 0 else 0
-								
+
 								# 원본 이미지 좌표를 캔버스 좌표로 변환
 								view_x1, view_y1 = self.convert_original_to_view(mask_x1, mask_y1)
 								view_x2, view_y2 = self.convert_original_to_view(mask_x2, mask_y2)
-								
+
 								mask_area = [view_x1, view_y1, view_x2, view_y2]
-						
+								print(f"[MaskCopy] 일반 마스킹 영역: {mask_area}")
+
 						# 기존 라벨 로드
 						labels_to_keep = []
+						original_label_count = 0
+						deleted_label_count = 0
+
 						if os.path.exists(target_label_path):
 							with open(target_label_path, 'r') as f:
 								lines = f.readlines()
-								
+								original_label_count = len(lines)
+
 								for line in lines:
 									values = line.strip().split()
 									if len(values) >= 5:
 										cls_id, cx, cy, w, h = map(float, values)
-										
+
 										# YOLO 형식에서 절대 좌표 계산 (픽셀 단위)
 										abs_x1 = int((cx - w/2) * mask_width)
 										abs_y1 = int((cy - h/2) * mask_height)
 										abs_x2 = int((cx + w/2) * mask_width)
 										abs_y2 = int((cy + h/2) * mask_height)
-										
+
 										# 캔버스 좌표로 변환
 										view_x1, view_y1 = self.convert_original_to_view(abs_x1, abs_y1)
 										view_x2, view_y2 = self.convert_original_to_view(abs_x2, abs_y2)
-										
+
 										# 바운딩 박스 (캔버스 좌표)
 										bbox = [False, class_name[int(cls_id)], -1, view_x1, view_y1, view_x2, view_y2]
-										
-										# 바운딩 박스가 마스킹 영역과 겹치는지 확인
+
+										# 바운딩 박스가 마스킹 영역과 겹치는지 확인 (면적 기반)
 										if not self.check_bbox_mask_overlap(mask_area, bbox):
 											# 겹치지 않는 경우 (유지)
 											labels_to_keep.append(line)
-										# 겹치는 경우는 무시 (삭제)
-						
+										else:
+											# 겹치는 경우 삭제
+											deleted_label_count += 1
+
 						# 라벨 파일 다시 쓰기
 						with open(target_label_path, 'w') as f:
 							f.writelines(labels_to_keep)
-					
+
+						if deleted_label_count > 0:
+							print(f"[MaskCopy] 프레임 {i+1}: {original_label_count}개 라벨 중 {deleted_label_count}개 삭제됨 (면적 기반)")
+
 					except Exception as e:
 						print(f"라벨 처리 중 오류 발생: {e}")
 				

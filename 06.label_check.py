@@ -637,10 +637,15 @@ class ImageViewer:
         self.update_display()
     def load_data(self):
         """멀티스레딩을 활용한 이미지 및 라벨 데이터 로드"""
+        # 이미 로딩 중이면 무시 (중복 로딩 방지)
+        if self.data_loading:
+            print("[WARNING] 이미 데이터를 로딩 중입니다. 중복 로딩 무시.")
+            return
+
         file_path = filedialog.askopenfilename(filetypes=[("Text files", "*.txt")])
         if not file_path:
             return
-            
+
         self.initial_setup(file_path)
         self.data_loading = True  # 로딩 상태 설정
         
@@ -1905,11 +1910,19 @@ class ImageViewer:
             valid_files = 0
             invalid_files = 0
             processed_files = 0
-            
+
+            # 오류 종류별 카운터 추가
+            error_stats = {
+                "파일 없음": 0,
+                "빈 파일": 0,
+                "유효 라벨 없음": 0,
+                "읽기 오류": 0
+            }
+
             # 병렬 처리를 위한 설정
             import queue
             import threading
-            
+
             task_queue = queue.Queue()
             result_queue = queue.Queue()
             
@@ -1949,18 +1962,22 @@ class ImageViewer:
                                         continue
                                     class_index = parts[0]
                                     class_index_int = int(float(class_index))  # 부동 소수점으로 먼저 변환 후 정수로 변환
-                                    
+
                                     # 클래스 인덱스 유효성 검사
                                     if class_index_int < 0 or class_index_int >= 100:
                                         continue
-                                        
+
                                     file_classes.add(class_index)  # 문자열 버전 저장
                                     file_labels[class_index_int].append(label_path)
                                     file_valid = True
                                 except (IndexError, ValueError):
                                     continue
-                            
-                            result_queue.put((label_path, file_classes, file_labels, file_valid, "성공"))
+
+                            # 파일을 읽었지만 유효한 라벨이 없는 경우
+                            if file_valid:
+                                result_queue.put((label_path, file_classes, file_labels, file_valid, "성공"))
+                            else:
+                                result_queue.put((label_path, file_classes, file_labels, file_valid, "유효 라벨 없음"))
                             
                         except Exception as e:
                             result_queue.put((label_path, file_classes, file_labels, file_valid, f"오류: {str(e)}"))
@@ -2006,6 +2023,15 @@ class ImageViewer:
                                 valid_files += 1
                             else:
                                 invalid_files += 1
+                                # 오류 종류별 카운트
+                                if "파일 없음" in status:
+                                    error_stats["파일 없음"] += 1
+                                elif "빈 파일" in status:
+                                    error_stats["빈 파일"] += 1
+                                elif "유효 라벨 없음" in status:
+                                    error_stats["유효 라벨 없음"] += 1
+                                elif "오류:" in status:
+                                    error_stats["읽기 오류"] += 1
 
                             result_queue.task_done()
                     except queue.Empty:
@@ -2040,6 +2066,15 @@ class ImageViewer:
                                     valid_files += 1
                                 else:
                                     invalid_files += 1
+                                    # 오류 종류별 카운트
+                                    if "파일 없음" in status:
+                                        error_stats["파일 없음"] += 1
+                                    elif "빈 파일" in status:
+                                        error_stats["빈 파일"] += 1
+                                    elif "유효 라벨 없음" in status:
+                                        error_stats["유효 라벨 없음"] += 1
+                                    elif "오류:" in status:
+                                        error_stats["읽기 오류"] += 1
 
                                 result_queue.task_done()
                         except queue.Empty:
@@ -2117,15 +2152,40 @@ class ImageViewer:
 
                     # 소요 시간 표시
                     elapsed_time = time.time() - start_time
-                    status_label.config(text=f"완료: {valid_files}개 유효 파일, {invalid_files}개 오류 파일, {elapsed_time:.2f}초 소요")
+
+                    # 오류 종류별 상세 정보 생성
+                    error_detail = " | ".join([f"{k}: {v}개" for k, v in error_stats.items() if v > 0])
+                    if error_detail:
+                        status_text = f"완료: 유효 {valid_files}개, 오류 {invalid_files}개 ({error_detail}), {elapsed_time:.2f}초"
+                    else:
+                        status_text = f"완료: {valid_files}개 유효 파일, {invalid_files}개 오류 파일, {elapsed_time:.2f}초 소요"
+
+                    status_label.config(text=status_text)
 
                     # 닫기 버튼은 추가하지 않음 (finalize_ui_update에서 처리)
                     # close_button = tk.Button(progress_window, text="닫기", command=progress_window.destroy)
                     # close_button.pack(pady=10)
 
+                    # 콘솔 출력 (상세 오류 정보)
+                    print(f"\n{'='*60}")
+                    print(f"클래스 정보 업데이트 완료")
+                    print(f"{'='*60}")
+                    print(f"✓ 유효 파일: {valid_files}개")
+                    print(f"✗ 오류 파일: {invalid_files}개")
+                    if invalid_files > 0:
+                        print(f"\n[오류 상세]")
+                        for error_type, count in error_stats.items():
+                            if count > 0:
+                                print(f"  - {error_type}: {count}개")
+                    print(f"\n처리 시간: {elapsed_time:.2f}초")
+                    print(f"클래스 개수: {len(sorted_classes)}개")
+                    print(f"{'='*60}\n")
+
                     # 로깅
                     if hasattr(self, 'logger'):
                         self.logger.info(f"클래스 정보 업데이트 완료: {len(sorted_classes)}개 클래스, {valid_files}개 유효 파일, {elapsed_time:.2f}초 소요")
+                        if error_detail:
+                            self.logger.info(f"오류 상세: {error_detail}")
 
                     # 상태 메시지 업데이트
                     if hasattr(self, 'show_status_message'):
