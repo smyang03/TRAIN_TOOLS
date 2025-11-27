@@ -3718,7 +3718,7 @@ class ImageViewer:
             try:
                 if label in self.checklist:
                     # 선택 해제 시
-                    label.config(bd=2, highlightbackground="white", highlightthickness=4)
+                    label.config(bd=0, highlightbackground="white", highlightthickness=4)
                     label.config(bg="white")
                     if label_path in self.selected_image_labels:
                         self.selected_image_labels.remove(label_path)
@@ -3726,7 +3726,7 @@ class ImageViewer:
                         self.checklist.remove(label)
                 else:
                     # 선택 시
-                    label.config(bd=2, highlightbackground="red", highlightthickness=4)
+                    label.config(bd=0, highlightbackground="red", highlightthickness=4)
                     label.config(bg="#ffdddd")  # 연한 빨간색 배경
                     self.selected_image_labels.append(label_path)
                     if label not in self.checklist:
@@ -3897,7 +3897,7 @@ class ImageViewer:
                 # 전달받은 라인 인덱스 사용 (백업)
                 label.line_idx = line_idx
 
-            label.config(relief="solid", bd=1, highlightbackground=border_color, highlightthickness=4)
+            label.config(relief="solid", bd=0, highlightbackground=border_color, highlightthickness=4)
             label.grid(row=row, column=col, padx=10, pady=10)
 
             img_path = self.get_image_path_from_label(label_path)
@@ -5613,7 +5613,7 @@ class ImageViewer:
         label = tk.Label(self.frame, image=photo, bg="white")
         label.image = photo
         label.label_path = label_path  # 라벨에 label_path 속성 추가
-        label.config(relief="solid", bd=1)  # relief 타입을 명확히 지정
+        label.config(relief="solid", bd=0)  # relief 타입을 명확히 지정
         label.grid(row=row, column=col, padx=10, pady=10)
 
         # 드래그 선택 이벤트 바인딩 (Shift + 클릭/드래그 포함)
@@ -6219,7 +6219,7 @@ class ImageViewer:
                         
                 if is_selected:
                     # 선택 해제
-                    label.config(bd=2, highlightbackground="white", highlightthickness=4)
+                    label.config(bd=0, highlightbackground="white", highlightthickness=4)
                     label.config(bg="white")
                     
                     # 이미지 선택 목록에서 제거
@@ -6248,7 +6248,7 @@ class ImageViewer:
                         self.checklist.remove(label)
                 if not is_selected:
                     # 선택
-                    label.config(bd=2, highlightbackground="red", highlightthickness=4)
+                    label.config(bd=0, highlightbackground="red", highlightthickness=4)
                     label.config(bg="#ffdddd")  # 연한 빨간색 배경
                     
                     # 박스 인덱스가 있으면 특정 박스만, 아니면 전체 이미지 선택
@@ -7056,7 +7056,7 @@ class ImageViewer:
                         continue
                     
                     # 이미지 테두리를 빨간색으로 변경
-                    widget.config(bd=2, highlightbackground="red", highlightthickness=4)
+                    widget.config(bd=0, highlightbackground="red", highlightthickness=4)
                     widget.config(bg="#ffdddd")  # 연한 빨간색 배경
                     
                     # self.checklist에 위젯 추가
@@ -7173,7 +7173,7 @@ class ImageViewer:
             # 모든 선택된 이미지 라벨의 스타일 초기화
             for label in self.checklist:
                 if label.winfo_exists():
-                    label.config(bd=2, highlightbackground="white", highlightthickness=4)
+                    label.config(bd=0, highlightbackground="white", highlightthickness=4)
                     label.config(bg="white")
             
             # 선택 목록 초기화
