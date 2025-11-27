@@ -2562,7 +2562,7 @@ class ImageViewer:
             # Reset selection state
             for label in self.checklist:
                 if label.winfo_exists():
-                    label.config(highlightbackground="white", highlightthickness=2)
+                    label.config(highlightbackground="white", highlightthickness=4)
             self.selected_image_labels.clear()
             self.checklist.clear()
             self.update_selection_info()
@@ -3259,7 +3259,7 @@ class ImageViewer:
             if hasattr(self, 'reference_label') and self.reference_label:
                 # 기존 참조 라벨의 하이라이트 제거
                 if hasattr(self, 'reference_label_widget') and self.reference_label_widget and self.reference_label_widget.winfo_exists():
-                    self.reference_label_widget.config(highlightbackground="white", highlightthickness=2)
+                    self.reference_label_widget.config(highlightbackground="white", highlightthickness=4)
             
             # 현재 선택된 클래스
             selected_class = self.class_selector.get()
@@ -3668,7 +3668,7 @@ class ImageViewer:
             delattr(self, 'reference_label')
             
         if hasattr(self, 'reference_label_widget') and self.reference_label_widget and self.reference_label_widget.winfo_exists():
-            self.reference_label_widget.config(highlightbackground="white", highlightthickness=2)
+            self.reference_label_widget.config(highlightbackground="white", highlightthickness=4)
             
         if hasattr(self, 'filtered_similar_labels'):
             delattr(self, 'filtered_similar_labels')
@@ -3718,7 +3718,7 @@ class ImageViewer:
             try:
                 if label in self.checklist:
                     # 선택 해제 시
-                    label.config(bd=2, highlightbackground="white", highlightthickness=2)
+                    label.config(bd=2, highlightbackground="white", highlightthickness=4)
                     label.config(bg="white")
                     if label_path in self.selected_image_labels:
                         self.selected_image_labels.remove(label_path)
@@ -3897,7 +3897,7 @@ class ImageViewer:
                 # 전달받은 라인 인덱스 사용 (백업)
                 label.line_idx = line_idx
 
-            label.config(relief="solid", bd=1, highlightbackground=border_color, highlightthickness=2)
+            label.config(relief="solid", bd=1, highlightbackground=border_color, highlightthickness=4)
             label.grid(row=row, column=col, padx=10, pady=10)
 
             img_path = self.get_image_path_from_label(label_path)
@@ -5189,10 +5189,10 @@ class ImageViewer:
                         # 드래그 영역 내: 색상 미리보기
                         if widget in self.checklist:
                             # 현재 선택된 것 -> 해제될 예정: 주황색
-                            widget.config(highlightbackground="orange", highlightthickness=3)
+                            widget.config(highlightbackground="orange", highlightthickness=4)
                         else:
                             # 현재 미선택 -> 선택될 예정: 파란색
-                            widget.config(highlightbackground="blue", highlightthickness=3)
+                            widget.config(highlightbackground="blue", highlightthickness=4)
                     else:
                         # 드래그 영역 밖: 원래 상태로 복원
                         if widget in self.checklist:
@@ -5200,7 +5200,7 @@ class ImageViewer:
                             widget.config(highlightbackground="red", highlightthickness=4)
                         else:
                             # 미선택 상태 유지
-                            widget.config(highlightbackground="white", highlightthickness=2)
+                            widget.config(highlightbackground="white", highlightthickness=4)
                 except TclError:
                     # 위젯이 이미 삭제되었을 경우 무시
                     continue
@@ -5283,7 +5283,7 @@ class ImageViewer:
         """위젯의 선택 상태를 토글합니다."""
         if widget in self.checklist:
             # 선택 해제
-            widget.config(highlightbackground="white", highlightthickness=2)
+            widget.config(highlightbackground="white", highlightthickness=4)
             widget.config(bg="white")
             if widget.label_path in self.selected_image_labels:
                 self.selected_image_labels.remove(widget.label_path)
@@ -6175,7 +6175,7 @@ class ImageViewer:
                 # 이전 선택 해제
                 for l in page_labels:
                     if l in self.checklist:
-                        l.config(highlightbackground="white", highlightthickness=2)
+                        l.config(highlightbackground="white", highlightthickness=4)
                         l.config(bg="white")
                         if hasattr(l, 'label_path') and l.label_path in self.selected_image_labels:
                             self.selected_image_labels.remove(l.label_path)
@@ -6219,7 +6219,7 @@ class ImageViewer:
                         
                 if is_selected:
                     # 선택 해제
-                    label.config(bd=2, highlightbackground="white", highlightthickness=2)
+                    label.config(bd=2, highlightbackground="white", highlightthickness=4)
                     label.config(bg="white")
                     
                     # 이미지 선택 목록에서 제거
@@ -6309,7 +6309,7 @@ class ImageViewer:
                 print(f"  - Deselecting {('box ' + str(line_idx)) if line_idx is not None else 'image'}")
                 
                 # 시각적 스타일 리셋
-                label.config(highlightbackground="white", highlightthickness=2)
+                label.config(highlightbackground="white", highlightthickness=4)
                 label.config(bg="white")
                 
                 # 모든 자식 위젯 제거 (체크마크 표시 등)
@@ -7173,7 +7173,7 @@ class ImageViewer:
             # 모든 선택된 이미지 라벨의 스타일 초기화
             for label in self.checklist:
                 if label.winfo_exists():
-                    label.config(bd=2, highlightbackground="white", highlightthickness=2)
+                    label.config(bd=2, highlightbackground="white", highlightthickness=4)
                     label.config(bg="white")
             
             # 선택 목록 초기화
