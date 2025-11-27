@@ -1503,27 +1503,31 @@ class ImageViewer:
         for widget in self.frame.winfo_children():
             widget.destroy()
 
-        # 클래스 정보 갱신 완료 후 호출될 콜백 정의
-        def on_update_complete():
-            """클래스 드롭다운 업데이트 완료 후 호출"""
-            # 원래 클래스로 복원
-            if current_class != "Select Class":
-                self.class_selector.set(current_class)
+        # [SpeedOptimization] 즉시 완료 처리 (비동기 작업 및 캐시 갱신 제거)
+        # 플래그 설정하여 trace_add 중복 호출 방지
+        self._updating_display = True
 
-            # 페이지 번호 조정
-            self.current_page = min(current_page, self.total_pages - 1) if self.total_pages > 0 else 0
-            if self.current_page < 0:
-                self.current_page = 0
+        # 원래 클래스로 복원 (trace_add 트리거되지만 플래그로 인해 update_display 호출 안 됨)
+        if current_class != "Select Class":
+            self.class_selector.set(current_class)
 
-            # 화면 갱신
-            self.update_display()
+        # 페이지 번호 조정
+        self.current_page = min(current_page, self.total_pages - 1) if self.total_pages > 0 else 0
+        if self.current_page < 0:
+            self.current_page = 0
 
-            # progress_window 닫기
-            if progress_window and progress_window.winfo_exists():
-                progress_window.destroy()
+        # 플래그 해제
+        self._updating_display = False
 
-        # 클래스 정보 갱신 (비동기, 완료 후 on_update_complete 호출)
-        self.update_class_dropdown(completion_callback=on_update_complete)
+        # [SpeedOptimization] UI 업데이트 제거 - 데이터만 반영하고 화면은 나중에 페이지 재방문 시 자동 갱신
+        # self.update_display()  # 제거됨
+
+        # progress_window 닫기
+        if progress_window and progress_window.winfo_exists():
+            progress_window.destroy()
+
+        print(f"[SpeedOptimization] 마스킹 완료 (화면 갱신 생략)")
+        print(f"→ 데이터는 파일에 저장되었으며, 페이지 재방문 시 자동으로 최신 데이터가 로드됩니다")
 
     def convert_view_to_original(self, view_x, view_y):
         """뷰 좌표를 원본 이미지 좌표로 변환"""
@@ -7025,10 +7029,12 @@ class ImageViewer:
             self.update_display()
     def on_class_changed(self, *args):
         """Handle class selection changes"""
-        # 페이지 번호 초기화
-        self.current_page = 0
-        # 디스플레이 업데이트
-        self.update_display()
+        # [SpeedOptimization] 플래그 체크 추가 - 중복 호출 방지
+        if not self._updating_display:
+            # 페이지 번호 초기화
+            self.current_page = 0
+            # 디스플레이 업데이트
+            self.update_display()
     def select_all_images(self):
         """현재 화면에 표시된 모든 이미지와 그 안의 모든 박스를 선택 상태로 변경"""
         try:
