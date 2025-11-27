@@ -637,10 +637,15 @@ class ImageViewer:
         self.update_display()
     def load_data(self):
         """멀티스레딩을 활용한 이미지 및 라벨 데이터 로드"""
+        # 이미 로딩 중이면 무시 (중복 로딩 방지)
+        if self.data_loading:
+            print("[WARNING] 이미 데이터를 로딩 중입니다. 중복 로딩 무시.")
+            return
+
         file_path = filedialog.askopenfilename(filetypes=[("Text files", "*.txt")])
         if not file_path:
             return
-            
+
         self.initial_setup(file_path)
         self.data_loading = True  # 로딩 상태 설정
         
