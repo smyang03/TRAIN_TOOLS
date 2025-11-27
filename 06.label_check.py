@@ -1519,15 +1519,15 @@ class ImageViewer:
         # 플래그 해제
         self._updating_display = False
 
-        # [SpeedOptimization] UI 업데이트 제거 - 데이터만 반영하고 화면은 나중에 페이지 재방문 시 자동 갱신
-        # self.update_display()  # 제거됨
+        # 화면 갱신 - 변경사항 즉시 반영
+        self.update_display()
 
         # progress_window 닫기
         if progress_window and progress_window.winfo_exists():
             progress_window.destroy()
 
-        print(f"[SpeedOptimization] 마스킹 완료 (화면 갱신 생략)")
-        print(f"→ 데이터는 파일에 저장되었으며, 페이지 재방문 시 자동으로 최신 데이터가 로드됩니다")
+        print(f"[SpeedOptimization] 마스킹 완료")
+        print(f"→ 데이터가 파일에 저장되고 화면이 갱신되었습니다")
 
     def convert_view_to_original(self, view_x, view_y):
         """뷰 좌표를 원본 이미지 좌표로 변환"""
@@ -6713,8 +6713,8 @@ class ImageViewer:
             # 플래그 해제
             self._updating_display = False
 
-            # UI 업데이트 제거 - 원래 설계대로 데이터만 반영하고 화면은 유지
-            # self.update_display()  # 제거됨
+            # 화면 갱신 - 변경사항 즉시 반영
+            self.update_display()
 
             # progress_window 닫기
             if progress_window and progress_window.winfo_exists():
@@ -7873,9 +7873,9 @@ class ImageViewer:
             # 플래그 해제
             self._updating_display = False
 
-            # UI 업데이트 제거 - 원래 설계대로 데이터만 반영하고 화면은 유지
-            # self.update_display()  # 제거됨
-        
+            # 화면 갱신 - 변경사항 즉시 반영
+            self.update_display()
+
         # 버튼 추가
         ttk.Button(button_frame, text="변경", command=execute_change).pack(side="left", padx=5)
         ttk.Button(button_frame, text="취소", command=change_dialog.destroy).pack(side="right", padx=5)
