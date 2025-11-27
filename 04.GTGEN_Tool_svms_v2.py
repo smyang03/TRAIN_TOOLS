@@ -3910,11 +3910,20 @@ class MainApp:
 			if self.pre_rc is not None:
 				self.pre_rc[1] = class_name[clsid]
 
-			# 화면에 바운딩 박스 다시 그리기
+			# 화면에 바운딩 박스 다시 그리기 (라벨만 업데이트, 전체 갱신 X)
 			self.draw_bbox()
 
-			# 파일에 저장
+			# 파일에 즉시 저장
 			self.write_bbox()
+
+			# pending 카운터 증가 및 상태 표시
+			self.pending_operation_count += 1
+			self.show_temporary_status(
+				f"✓ 클래스 변경 (파일 저장, 화면 갱신 생략) - 작업: {self.pending_operation_count}개",
+				duration=1000,
+				bg_color='#2196F3'
+			)
+			print(f"[SpeedOptimization] 클래스 변경 - txt 저장 완료, draw_image() 생략")
 		return
 		# if self.selid < 0:
 		# 	return
@@ -4216,13 +4225,14 @@ class MainApp:
 			# pending 카운터 증가 및 상태 표시 (캐시 업데이트 제거로 속도 개선)
 			self.pending_operation_count += 1
 			self.show_temporary_status(
-				f"✓ 라벨 삭제 완료 (파일에 저장됨) - 현재 페이지: {self.pending_operation_count}개 작업",
+				f"✓ 라벨 삭제 (파일 저장, 화면 갱신 생략) - 작업: {self.pending_operation_count}개",
 				duration=1500,
 				bg_color='#4CAF50'
 			)
-			print(f"[CacheOptimization] 라벨 삭제 - txt 파일 저장 완료 (캐시 업데이트 생략)")
+			print(f"[SpeedOptimization] 라벨 삭제 - txt 저장 완료, draw_image() 생략")
 
-			self.draw_image()
+			# draw_image() 제거 - 전체 화면 갱신 생략으로 속도 개선
+			# 데이터는 write_bbox()로 이미 저장됨
 
 		if hasattr(self, 'show_label_list') and self.show_label_list.get():
 			self.update_label_list()
@@ -4969,12 +4979,17 @@ class MainApp:
 			except Exception as e:
 				print(f"마스킹 정보 파일 삭제 오류: {e}")
 
-		# 화면 새로고침 (이미지 파일에서 마스킹된 이미지 다시 로드)
-		# draw_image()가 강제로 실행되도록 pi 초기화
-		self.pi = -1
-		self.draw_image()
+		# pending 카운터 증가 및 상태 표시 (화면 갱신 생략)
+		self.pending_operation_count += 1
+		self.show_temporary_status(
+			f"✓ 라벨→마스크 변환 (파일 저장, 화면 갱신 생략) - 작업: {self.pending_operation_count}개",
+			duration=2000,
+			bg_color='#9C27B0'
+		)
+		print(f"[SpeedOptimization] 라벨→마스크 - 이미지/txt 저장 완료, draw_image() 생략")
 
-		print("라벨이 마스킹으로 변환되었습니다.")
+		# draw_image() 제거 - 전체 화면 갱신 생략으로 속도 개선
+		# 이미지 파일에 이미 마스킹이 저장되었으므로, 페이지 전환 시 자동 반영됨
 	def on_mouse_up(self, event):
 		x, y = self.get_canvas_coordinates(event)
 

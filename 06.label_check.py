@@ -6614,44 +6614,9 @@ class ImageViewer:
                         
                     deleted_count += 1
 
-                    # 캐시된 라벨 정보가 있다면 업데이트
-                    if hasattr(self, 'label_cache') and label_path in self.label_cache:
-                        del self.label_cache[label_path]
-                        # 접근 순서 목록에서도 제거
-                        if hasattr(self, 'label_cache_access_order') and label_path in self.label_cache_access_order:
-                            self.label_cache_access_order.remove(label_path)
-                    
-                    # 2. 겹침 캐시 무효화 (이 라벨이 관련된 모든 항목)
-                    if hasattr(self, 'overlap_cache'):
-                        keys_to_remove = []
-                        for cache_key in self.overlap_cache.keys():
-                            if isinstance(cache_key, tuple) and len(cache_key) > 0 and cache_key[0] == label_path:
-                                keys_to_remove.append(cache_key)
-                        
-                        for key in keys_to_remove:
-                            del self.overlap_cache[key]
-                    
-                    # 3. 이미지 캐시 관련 항목 무효화
-                    img_path = self.get_image_path_from_label(label_path)
-
-                    if hasattr(self, 'image_cache'):
-                        keys_to_remove = []
-                        for cache_key in self.image_cache.keys():
-                            if isinstance(cache_key, str) and cache_key.startswith(img_path):
-                                keys_to_remove.append(cache_key)
-                        
-                        for key in keys_to_remove:
-                            del self.image_cache[key]
-                            # 접근 순서 목록에서도 제거
-                            if hasattr(self, 'image_cache_access_order') and key in self.image_cache_access_order:
-                                self.image_cache_access_order.remove(key)
-                    
-                    # 4. 인코딩 캐시 무효화
-                    if hasattr(self, 'file_encoding_cache') and label_path in self.file_encoding_cache:
-                        del self.file_encoding_cache[label_path]
-                    
-                    # 로그 남기기
-                    print(f"모든 캐시 무효화 완료: {os.path.basename(label_path)}")
+                    # [SpeedOptimization] 캐시 무효화 제거 - 즉시 저장, 나중에 갱신
+                    # 파일에는 이미 저장되었으므로, 페이지 전환/재방문 시 자동으로 최신 데이터 로드됨
+                    print(f"[SpeedOptimization] 파일 저장 완료 (캐시 갱신 생략): {os.path.basename(label_path)}")
 
                     # 이 파일에 대한 인덱스 재계산 실행
                     self.recalculate_indices(label_path, valid_indices)
@@ -6705,13 +6670,9 @@ class ImageViewer:
         for widget in self.frame.winfo_children():
             widget.destroy()
 
-        # 클래스 정보 갱신 - 부분 업데이트로 전환 (속도 개선)
-        print(f"부분 업데이트 시작: {len(processed_files)}개 파일 처리")
-
-        # 변경된 파일의 라벨 데이터 캐시만 갱신 (전체 초기화하지 않음)
-        self.refresh_label_data_cache(specific_paths=list(processed_files))
-
-        print("라벨 데이터 캐시 갱신 완료")
+        # [SpeedOptimization] 캐시 갱신 제거 - 페이지 전환 시 자동 갱신
+        print(f"[SpeedOptimization] {len(processed_files)}개 파일 저장 완료 (캐시 갱신 생략)")
+        print(f"→ 데이터는 파일에 저장되었으며, 페이지 재방문 시 자동으로 최신 데이터가 로드됩니다")
 
         # 완료 후 처리
         def on_update_complete():
