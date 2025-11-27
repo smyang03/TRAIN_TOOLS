@@ -83,13 +83,19 @@ class ExclusionZoneManager:
 		"""
 		zones_to_check = self.global_zones if self.use_global else self.zones
 		if not zones_to_check:
+			print(f"[DEBUG] zones_to_check가 비어있음 (use_global={self.use_global})")
 			return False
 
 		x1, y1, x2, y2 = bbox[3], bbox[4], bbox[5], bbox[6]
+		print(f"[DEBUG] bbox 검사: class={bbox[1]}, coords=({x1:.1f}, {y1:.1f}, {x2:.1f}, {y2:.1f})")
 
-		for zone in zones_to_check:
-			if zone['enabled'] and self._bbox_polygon_overlap(x1, y1, x2, y2, zone['points']):
-				return True
+		for i, zone in enumerate(zones_to_check):
+			print(f"[DEBUG]   제외영역 {i+1}: enabled={zone['enabled']}, points={len(zone['points'])}개")
+			if zone['enabled']:
+				overlap = self._bbox_polygon_overlap(x1, y1, x2, y2, zone['points'])
+				print(f"[DEBUG]   → 겹침 결과: {overlap}")
+				if overlap:
+					return True
 		return False
 
 	def _bbox_polygon_overlap(self, x1, y1, x2, y2, polygon):
@@ -104,6 +110,9 @@ class ExclusionZoneManager:
 		min_x, max_x = min(x1, x2), max(x1, x2)
 		min_y, max_y = min(y1, y2), max(y1, y2)
 
+		print(f"[DEBUG]     bbox 정규화: ({min_x:.1f}, {min_y:.1f}) ~ ({max_x:.1f}, {max_y:.1f})")
+		print(f"[DEBUG]     polygon: {polygon[:3]}{'...' if len(polygon) > 3 else ''}")
+
 		# 1. bbox의 네 모서리 중 하나라도 폴리곤 안에 있는지 확인
 		bbox_corners = [
 			(min_x, min_y),  # 왼쪽 위
@@ -114,12 +123,14 @@ class ExclusionZoneManager:
 
 		for corner in bbox_corners:
 			if self._point_in_polygon(corner, polygon):
+				print(f"[DEBUG]     ✓ 검사1 통과: bbox 모서리 {corner}가 폴리곤 안에 있음")
 				return True  # bbox 모서리가 폴리곤 안에 있음
 
 		# 2. 폴리곤의 점 중 하나라도 bbox 안에 있는지 확인
 		for point in polygon:
 			px, py = point
 			if min_x <= px <= max_x and min_y <= py <= max_y:
+				print(f"[DEBUG]     ✓ 검사2 통과: 폴리곤 점 {point}가 bbox 안에 있음")
 				return True  # 폴리곤 점이 bbox 안에 있음
 
 		# 3. bbox의 변과 폴리곤의 변이 교차하는지 확인
@@ -135,8 +146,10 @@ class ExclusionZoneManager:
 			polygon_edge = (polygon[i], polygon[(i + 1) % n])
 			for bbox_edge in bbox_edges:
 				if self._segments_intersect(bbox_edge[0], bbox_edge[1], polygon_edge[0], polygon_edge[1]):
+					print(f"[DEBUG]     ✓ 검사3 통과: bbox 변과 폴리곤 변이 교차")
 					return True  # 변들이 교차함
 
+		print(f"[DEBUG]     ✗ 모든 검사 실패: 겹치지 않음")
 		return False  # 겹치지 않음
 
 	def _segments_intersect(self, p1, p2, p3, p4):
@@ -3164,10 +3177,13 @@ class MainApp:
 				total_deleted += deleted_count
 
 		# 2. 제외 영역 필터링
+		print(f"[DEBUG] 제외 영역 필터링 체크: enabled={self.exclusion_zone_enabled}, manager={self.exclusion_zone_manager is not None}")
 		if self.exclusion_zone_enabled and self.exclusion_zone_manager:
 			before_count = len(self.bbox)
+			print(f"[DEBUG] 제외 영역 필터링 시작: {before_count}개 라벨 검사")
 			self.bbox = [bbox for bbox in self.bbox if not self.exclusion_zone_manager.is_bbox_in_exclusion_zone(bbox)]
 			deleted_count = before_count - len(self.bbox)
+			print(f"[DEBUG] 제외 영역 필터링 완료: {deleted_count}개 삭제됨")
 			if deleted_count > 0:
 				print(f"[ExclusionZone] {deleted_count}개 라벨 제외 영역에서 삭제됨")
 				total_deleted += deleted_count
