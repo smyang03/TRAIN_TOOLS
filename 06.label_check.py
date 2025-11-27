@@ -6795,10 +6795,10 @@ class ImageViewer:
 
                 # 주의: 순회 중인 리스트는 수정하지 않음
                 # delete_selected_labels() 함수 끝에서 deselect_all_images()로 일괄 정리
-        
+
         # 3. labelsdata 배열 업데이트 (클래스별 라벨 경로)
-        # 인덱스 자체는 영향 받지 않지만, 일관성을 위해 캐시 갱신
-        self.refresh_label_data_cache(label_path)
+        # 캐시 갱신은 delete_selected_labels() 끝에서 배치로 한 번만 수행
+        # (개별 갱신 제거로 중복 갱신 방지 - 성능 개선 및 카운트 오류 방지)
     def update_file_indices(self, file_paths, deleted_line_indices=None):
         """
         파일 수정 후 인덱스 정보를 업데이트합니다.
