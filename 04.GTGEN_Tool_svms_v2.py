@@ -1639,28 +1639,36 @@ class MainApp:
 			print(f"Error loading folder: {e}")
 			messagebox.showerror("Error", f"Failed to load folder: {e}")
 	def check_bbox_mask_overlap(self, mask_area, bbox):
-		"""마스킹 영역과 바운딩 박스가 겹치는지 확인
-		
+		"""마스킹 영역과 바운딩 박스가 겹치는지 확인 (면적 기반)
+
 		Args:
 			mask_area: 마스킹 영역 [x1, y1, x2, y2] (뷰 좌표)
 			bbox: 바운딩 박스 [sel, clsname, info, x1, y1, x2, y2]
-			
+
 		Returns:
-			bool: 겹치면 True, 아니면 False
+			bool: 조금이라도 면적이 겹치면 True
 		"""
-		# 바운딩 박스 좌표
+		# 바운딩 박스 좌표 정규화
 		bbox_x1, bbox_y1, bbox_x2, bbox_y2 = bbox[3:]
-		
+		bbox_min_x = min(bbox_x1, bbox_x2)
+		bbox_max_x = max(bbox_x1, bbox_x2)
+		bbox_min_y = min(bbox_y1, bbox_y2)
+		bbox_max_y = max(bbox_y1, bbox_y2)
+
 		# 마스킹 영역 좌표 정규화 (x1 < x2, y1 < y2 보장)
-		mask_x1 = min(mask_area[0], mask_area[2])
-		mask_y1 = min(mask_area[1], mask_area[3])
-		mask_x2 = max(mask_area[0], mask_area[2])
-		mask_y2 = max(mask_area[1], mask_area[3])
-		
-		# 두 사각형이 겹치지 않는 경우 체크
-		if bbox_x2 < mask_x1 or bbox_x1 > mask_x2 or bbox_y2 < mask_y1 or bbox_y1 > mask_y2:
-			return False
-		
+		mask_min_x = min(mask_area[0], mask_area[2])
+		mask_min_y = min(mask_area[1], mask_area[3])
+		mask_max_x = max(mask_area[0], mask_area[2])
+		mask_max_y = max(mask_area[1], mask_area[3])
+
+		# 면적 기반 겹침 체크: 두 사각형이 조금이라도 겹치는지
+		# 겹치지 않는 조건: 한 쪽이 다른 쪽의 완전히 밖에 있음
+		if bbox_max_x <= mask_min_x or bbox_min_x >= mask_max_x:
+			return False  # x축에서 겹치지 않음
+		if bbox_max_y <= mask_min_y or bbox_min_y >= mask_max_y:
+			return False  # y축에서 겹치지 않음
+
+		# 두 축 모두에서 겹침 -> 면적 겹침 있음
 		return True
 	def load_new_list(self):
 		"""새로운 이미지 리스트 파일 로드"""
