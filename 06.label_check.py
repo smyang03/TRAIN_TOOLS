@@ -320,18 +320,33 @@ class ImageViewer:
         self.frame = tk.Frame(self.canvas)
         self.canvas_window = self.canvas.create_window((0, 0), window=self.frame, anchor="nw")
         
+        # UI 업데이트 중복 방지 플래그
+        self._updating_display = False
+
         # Event bindings
         self.canvas.bind("<Configure>", self.on_canvas_configure)
         self.canvas.bind_all("<MouseWheel>", self.on_mousewheel)
-        self.class_selector.trace_add("write", lambda *args: self.update_display())
+        # trace_add는 사용자가 수동으로 클래스를 변경할 때만 작동하도록 유지
+        self.class_selector.trace_add("write", self.on_class_selector_changed)
         self.class_selector.trace_add("write", self.on_class_changed)
         self.overlap_class_selector.trace_add("write", lambda *args: self.reset_overlap_cache())
-        self.overlap_class_selector.trace_add("write", lambda *args: self.update_display())
+        self.overlap_class_selector.trace_add("write", self.on_overlap_selector_changed)
 
         self.root.bind("<Button-1>", self.handle_left_click)
 
         self.setup_keyboard_events()
         self.add_similar_label_controls()
+
+    def on_class_selector_changed(self, *args):
+        """클래스 선택이 변경될 때 호출되는 콜백 - 중복 호출 방지"""
+        if not self._updating_display:
+            self.update_display()
+
+    def on_overlap_selector_changed(self, *args):
+        """겹침 클래스 선택이 변경될 때 호출되는 콜백 - 중복 호출 방지"""
+        if not self._updating_display:
+            self.update_display()
+
     def toggle_all_selection(self):
         """전체 선택/해제를 토글합니다."""
         # 현재 상태 확인 (선택된 이미지가 있으면 해제, 없으면 선택)
@@ -852,11 +867,13 @@ class ImageViewer:
             self.update_pagination_controls()
             print("[DEBUG] update_pagination_controls 완료")
 
-            # 첫 페이지 표시
+            # 첫 페이지 표시 - 플래그 설정하여 trace_add 중복 호출 방지
             self.current_page = 0
+            self._updating_display = True  # 플래그 설정
             print("[DEBUG] update_display 호출 시작")
             self.update_display()
             print("[DEBUG] update_display 완료")
+            self._updating_display = False  # 플래그 해제
 
             # 로딩 상태 해제
             self.data_loading = False
@@ -6716,7 +6733,10 @@ class ImageViewer:
 
             print("라벨 데이터 갱신 완료")
 
-            # 원래 클래스로 복원
+            # 플래그 설정하여 trace_add 중복 호출 방지
+            self._updating_display = True
+
+            # 원래 클래스로 복원 (trace_add 트리거되지만 플래그로 인해 update_display 호출 안 됨)
             if current_class != "Select Class":
                 self.class_selector.set(current_class)
 
@@ -6725,8 +6745,11 @@ class ImageViewer:
             if self.current_page < 0:
                 self.current_page = 0
 
-            # 디스플레이 업데이트
-            self.update_display()
+            # 플래그 해제
+            self._updating_display = False
+
+            # UI 업데이트 제거 - 원래 설계대로 데이터만 반영하고 화면은 유지
+            # self.update_display()  # 제거됨
 
             # progress_window 닫기
             if progress_window and progress_window.winfo_exists():
@@ -7864,7 +7887,10 @@ class ImageViewer:
                 widget.destroy()
 
             # 완료 후 처리 - 즉시 실행 (비동기 작업 제거로 속도 개선)
-            # 원래 클래스로 복원
+            # 플래그 설정하여 trace_add 중복 호출 방지
+            self._updating_display = True
+
+            # 원래 클래스로 복원 (trace_add 트리거되지만 플래그로 인해 update_display 호출 안 됨)
             if current_class != "Select Class":
                 self.class_selector.set(current_class)
 
@@ -7877,8 +7903,11 @@ class ImageViewer:
             self.changing_class = False
             print("클래스 변경 모드 비활성화")
 
-            # 화면 갱신
-            self.update_display()
+            # 플래그 해제
+            self._updating_display = False
+
+            # UI 업데이트 제거 - 원래 설계대로 데이터만 반영하고 화면은 유지
+            # self.update_display()  # 제거됨
         
         # 버튼 추가
         ttk.Button(button_frame, text="변경", command=execute_change).pack(side="left", padx=5)
