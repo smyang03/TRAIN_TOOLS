@@ -75,23 +75,78 @@ class ExclusionZoneManager:
 		self.global_zones = []
 
 	def is_bbox_in_exclusion_zone(self, bbox):
-		"""bbox가 제외 영역과 겹치는지 확인
+		"""bbox가 제외 영역과 겹치는지 확인 (면적 기반)
 		Args:
 			bbox: [sel, clsname, info, x1, y1, x2, y2] 형태
 		Returns:
-			bool: 겹치면 True
+			bool: 조금이라도 겹치면 True
 		"""
 		zones_to_check = self.global_zones if self.use_global else self.zones
 		if not zones_to_check:
 			return False
 
 		x1, y1, x2, y2 = bbox[3], bbox[4], bbox[5], bbox[6]
-		bbox_center = ((x1 + x2) / 2, (y1 + y2) / 2)
 
 		for zone in zones_to_check:
-			if zone['enabled'] and self._point_in_polygon(bbox_center, zone['points']):
+			if zone['enabled'] and self._bbox_polygon_overlap(x1, y1, x2, y2, zone['points']):
 				return True
 		return False
+
+	def _bbox_polygon_overlap(self, x1, y1, x2, y2, polygon):
+		"""bbox와 폴리곤이 겹치는지 확인 (면적 기반)
+		Args:
+			x1, y1, x2, y2: bbox 좌표
+			polygon: 폴리곤 점들 [(x, y), ...]
+		Returns:
+			bool: 조금이라도 겹치면 True
+		"""
+		# 1. bbox의 네 모서리 중 하나라도 폴리곤 안에 있는지 확인
+		bbox_corners = [
+			(x1, y1),  # 왼쪽 위
+			(x2, y1),  # 오른쪽 위
+			(x1, y2),  # 왼쪽 아래
+			(x2, y2)   # 오른쪽 아래
+		]
+
+		for corner in bbox_corners:
+			if self._point_in_polygon(corner, polygon):
+				return True  # bbox 모서리가 폴리곤 안에 있음
+
+		# 2. 폴리곤의 점 중 하나라도 bbox 안에 있는지 확인
+		for point in polygon:
+			px, py = point
+			if x1 <= px <= x2 and y1 <= py <= y2:
+				return True  # 폴리곤 점이 bbox 안에 있음
+
+		# 3. bbox의 변과 폴리곤의 변이 교차하는지 확인
+		bbox_edges = [
+			((x1, y1), (x2, y1)),  # 위쪽 변
+			((x2, y1), (x2, y2)),  # 오른쪽 변
+			((x2, y2), (x1, y2)),  # 아래쪽 변
+			((x1, y2), (x1, y1))   # 왼쪽 변
+		]
+
+		n = len(polygon)
+		for i in range(n):
+			polygon_edge = (polygon[i], polygon[(i + 1) % n])
+			for bbox_edge in bbox_edges:
+				if self._segments_intersect(bbox_edge[0], bbox_edge[1], polygon_edge[0], polygon_edge[1]):
+					return True  # 변들이 교차함
+
+		return False  # 겹치지 않음
+
+	def _segments_intersect(self, p1, p2, p3, p4):
+		"""두 선분이 교차하는지 확인
+		Args:
+			p1, p2: 첫 번째 선분의 시작/끝점
+			p3, p4: 두 번째 선분의 시작/끝점
+		Returns:
+			bool: 교차하면 True
+		"""
+		def ccw(A, B, C):
+			return (C[1] - A[1]) * (B[0] - A[0]) > (B[1] - A[1]) * (C[0] - A[0])
+
+		return ccw(p1, p3, p4) != ccw(p2, p3, p4) and ccw(p1, p2, p3) != ccw(p1, p2, p4)
 
 	def _point_in_polygon(self, point, polygon):
 		"""점이 폴리곤 안에 있는지 확인 (Ray casting algorithm)"""
