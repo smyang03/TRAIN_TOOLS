@@ -98,6 +98,13 @@ class ImageViewer:
         # 새 개선 사항을 위한 변수들 (추가)
         self.ui_update_pending = False
         self.last_ui_update_time = time.time()
+
+        # 작업 상태 추적 (라벨 삭제/마스킹/클래스 변경)
+        self.modified_labels = {
+            'deleted': set(),  # (label_path, line_idx) 튜플 저장
+            'masking_changed': set(),  # (label_path, line_idx) 튜플 저장
+            'class_changed': set()  # (label_path, line_idx) 튜플 저장
+        }
         self.memory_check_counter = 0
         self.ui_busy = False
         self.data_loading = False
@@ -1480,7 +1487,13 @@ class ImageViewer:
                     # 변경된 라벨 파일 저장
                     with open(label_path, 'w', encoding='utf-8') as f:
                         f.writelines(filtered_lines)
-                    
+
+                    # 마스킹 변경된 라벨 정보 기록
+                    for line_idx in box_line_indices:
+                        label_key = (os.path.normpath(label_path), line_idx)
+                        self.modified_labels['masking_changed'].add(label_key)
+                        print(f"[StatusIndicator] 마스킹 변경 기록: {os.path.basename(label_path)}, line {line_idx}")
+
                     converted_count += 1
                 
             except Exception as e:
@@ -3804,6 +3817,56 @@ class ImageViewer:
         if self.tooltip_timer:
             self.root.after_cancel(self.tooltip_timer)
             self.tooltip_timer = None
+
+    def draw_status_indicator(self, image, label_path, line_idx=None):
+        """
+        이미지의 오른쪽 상단에 작업 상태를 표시하는 동그라미 indicator를 그립니다.
+
+        Parameters:
+            image (PIL.Image): 처리할 이미지
+            label_path (str): 라벨 파일 경로
+            line_idx (int, optional): 라벨 파일에서의 라인 인덱스
+        """
+        # 작업 상태 확인
+        label_key = (os.path.normpath(label_path), line_idx) if line_idx is not None else (os.path.normpath(label_path), None)
+
+        indicators = []
+        # 삭제된 라벨: 빨간색
+        if label_key in self.modified_labels['deleted']:
+            indicators.append('red')
+        # 마스킹 변경된 라벨: 노란색
+        if label_key in self.modified_labels['masking_changed']:
+            indicators.append('yellow')
+        # 클래스 변경된 라벨: 파란색
+        if label_key in self.modified_labels['class_changed']:
+            indicators.append('blue')
+
+        if not indicators:
+            return  # 작업 상태가 없으면 아무것도 그리지 않음
+
+        draw = ImageDraw.Draw(image)
+
+        # 동그라미 크기 및 위치 설정
+        circle_radius = 8
+        margin = 5
+        x_start = image.width - margin - circle_radius
+        y_pos = margin + circle_radius
+
+        # 여러 상태가 있는 경우 오른쪽에서 왼쪽으로 나열
+        for i, color in enumerate(indicators):
+            x_pos = x_start - (i * (circle_radius * 2 + 3))
+
+            # 동그라미 좌표 계산
+            circle_bbox = [
+                x_pos - circle_radius,
+                y_pos - circle_radius,
+                x_pos + circle_radius,
+                y_pos + circle_radius
+            ]
+
+            # 동그라미 그리기 (채워진 원)
+            draw.ellipse(circle_bbox, fill=color, outline='white', width=2)
+
     def draw_boxes_on_image_corp(self, image, label_path, row, col, class_index, img_index, line_idx=None):
         """
         크롭된 이미지에 정보를 그리고, 대상 클래스 박스도 함께 표시합니다.
@@ -3913,6 +3976,10 @@ class ImageViewer:
             y_pos = 35 if show_iou else 20
             actual_line_idx = current_box['line_idx']  # 실제 파일의 라인 인덱스
             draw.text((5, y_pos), f"Line: {actual_line_idx} (Class: {current_box['class']})", fill=text_color)
+
+        # 작업 상태 indicator 표시
+        bind_line_idx = current_box['line_idx'] if current_box else line_idx
+        self.draw_status_indicator(image, label_path, bind_line_idx)
 
         # 라벨 생성 및 이미지 표시
         try:
@@ -5639,7 +5706,10 @@ class ImageViewer:
             print(f"Error drawing boxes for {label_path}: {e}")
             import traceback
             traceback.print_exc()
-        
+
+        # 작업 상태 indicator 표시 (전체 이미지는 line_idx=None)
+        self.draw_status_indicator(image, label_path, None)
+
         # Create photo image and label
         photo = ImageTk.PhotoImage(image)
         label = tk.Label(self.frame, image=photo, bg="white")
@@ -6620,6 +6690,10 @@ class ImageViewer:
                     for idx in valid_indices:
                         print(f"  라인 {idx} 삭제 중...")
                         del lines[idx]
+                        # 삭제된 라벨 정보 기록
+                        label_key = (os.path.normpath(label_path), idx)
+                        self.modified_labels['deleted'].add(label_key)
+                        print(f"[StatusIndicator] 삭제 기록: {os.path.basename(label_path)}, line {idx}")
 
                     print(f"삭제 후 남은 라인 수: {len(lines)}")
 
@@ -7797,6 +7871,10 @@ class ImageViewer:
                                     new_lines.append(new_line)
                                     changed_boxes += 1
                                     print(f"라인 {line_idx}의 클래스를 {parts[0]}로 변경")
+                                    # 클래스 변경된 라벨 정보 기록
+                                    label_key = (os.path.normpath(label_path), line_idx)
+                                    self.modified_labels['class_changed'].add(label_key)
+                                    print(f"[StatusIndicator] 클래스 변경 기록: {os.path.basename(label_path)}, line {line_idx}")
                                 else:
                                     # 빈 라인은 그대로 유지
                                     new_lines.append(line)
