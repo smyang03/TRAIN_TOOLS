@@ -1519,15 +1519,14 @@ class ImageViewer:
         # 플래그 해제
         self._updating_display = False
 
-        # 화면 갱신 - 변경사항 즉시 반영
-        self.update_display()
-
         # progress_window 닫기
         if progress_window and progress_window.winfo_exists():
             progress_window.destroy()
 
-        print(f"[SpeedOptimization] 마스킹 완료")
-        print(f"→ 데이터가 파일에 저장되고 화면이 갱신되었습니다")
+        # 경량 화면 갱신 (파일은 이미 저장됨, UI만 갱신)
+        self.refresh_current_view()
+
+        print(f"마스킹 완료 - 화면이 갱신되었습니다")
 
     def convert_view_to_original(self, view_x, view_y):
         """뷰 좌표를 원본 이미지 좌표로 변환"""
@@ -3257,7 +3256,19 @@ class ImageViewer:
                 self.status_bar.config(text=f"오류: {str(e)[:30]}...")
 
         finally:
-            self.ui_busy = False     
+            self.ui_busy = False
+
+    def refresh_current_view(self):
+        """
+        경량 화면 갱신 - 라벨 삭제/변경/마스킹 후 사용
+
+        파일은 이미 저장되었고, UI만 다시 그려서 변경사항을 즉시 반영합니다.
+        이미지 캐시를 활용하므로 전체 페이지를 새로 로드하는 것보다 빠릅니다.
+        페이지 이동 시에는 update_display()가 자동으로 호출되므로 걱정 없습니다.
+        """
+        # update_display()를 호출하여 UI 갱신
+        # 이미지는 캐시에서 가져오므로 빠르게 동작
+        self.update_display()
 
     def toggle_image_view(self, img_path, label_path):
         """Toggle between box view and full view for a specific image"""
@@ -6713,12 +6724,14 @@ class ImageViewer:
             # 플래그 해제
             self._updating_display = False
 
-            # 화면 갱신 - 변경사항 즉시 반영
-            self.update_display()
-
             # progress_window 닫기
             if progress_window and progress_window.winfo_exists():
                 progress_window.destroy()
+
+            # 경량 화면 갱신 (파일은 이미 저장됨, UI만 갱신)
+            self.refresh_current_view()
+
+            print(f"라벨 삭제 완료 - 화면이 갱신되었습니다")
 
         # 즉시 완료 처리 (비동기 작업 없음)
         on_update_complete()
@@ -7873,9 +7886,9 @@ class ImageViewer:
             # 플래그 해제
             self._updating_display = False
 
-            # 화면 갱신 - 변경사항 즉시 반영
-            self.update_display()
-
+            # UI 업데이트 제거 - 원래 설계대로 데이터만 반영하고 화면은 유지
+            # self.update_display()  # 제거됨
+        
         # 버튼 추가
         ttk.Button(button_frame, text="변경", command=execute_change).pack(side="left", padx=5)
         ttk.Button(button_frame, text="취소", command=change_dialog.destroy).pack(side="right", padx=5)

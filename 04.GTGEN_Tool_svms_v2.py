@@ -816,6 +816,8 @@ class MainApp:
 
 		# Pending changes 시스템 초기화 (캐시 업데이트 최적화)
 		self.pending_operation_count = 0  # 현재 페이지에서 수행된 작업 수
+		self.pending_deleted_labels = []  # 삭제된 라벨 정보 (빨간색 동그라미)
+		self.pending_masked_labels = []   # 마스킹으로 변환된 라벨 정보 (노란색 동그라미)
 		print("[CacheOptimization] Pending changes 시스템 초기화 완료")
 
 		# 메인 윈도우 초기 생성 (설정 다이얼로그를 띄우기 위해)
@@ -2227,9 +2229,11 @@ class MainApp:
 			if self.ci == self.pi: return
 			self.pi = self.ci
 
-			# 페이지 전환 시 pending 작업 카운터 초기화
+			# 페이지 전환 시 pending 작업 카운터 및 작업 내역 초기화
 			self.pending_operation_count = 0
-			print(f"[CacheOptimization] 페이지 전환 - pending 카운터 초기화")
+			self.pending_deleted_labels = []
+			self.pending_masked_labels = []
+			print(f"[CacheOptimization] 페이지 전환 - pending 카운터 및 작업 내역 초기화")
 
 			if len(self.imlist) > 0:
 				self.img_slider.config(to=len(self.imlist))
@@ -3338,6 +3342,40 @@ class MainApp:
 						tags='clsname'
 					)
 					cnt +=1
+
+			# 작업 요약 표시 (삭제/변환된 라벨 수)
+			if len(self.pending_deleted_labels) > 0 or len(self.pending_masked_labels) > 0:
+				y_offset = 20 + (15 * cnt)  # 클래스 카운트 아래에 표시
+
+				# 작업 요약 텍스트
+				summary_parts = []
+				if len(self.pending_deleted_labels) > 0:
+					summary_parts.append(f"🔴 삭제: {len(self.pending_deleted_labels)}개")
+				if len(self.pending_masked_labels) > 0:
+					summary_parts.append(f"🟡 마스킹: {len(self.pending_masked_labels)}개")
+
+				summary_text = " | ".join(summary_parts)
+				text_width = len(summary_text) * 7
+
+				# 배경 사각형
+				self.canvas.create_rectangle(
+					8, y_offset,
+					8 + text_width, y_offset + 14,
+					fill='darkblue',
+					outline='',
+					tags='clsname'
+				)
+
+				# 텍스트
+				self.canvas.create_text(
+					10, y_offset + 2,
+					font='Arial 10 bold',
+					fill='white',
+					text=summary_text,
+					anchor='nw',
+					tags='clsname'
+				)
+
 			if self.selid >= 0:
 				self.draw_bbox_rc(self.bbox[self.selid])
 			if hasattr(self, 'show_label_list') and self.show_label_list.get():
@@ -3346,6 +3384,9 @@ class MainApp:
 
 		# 제외 영역 표시
 		self.draw_exclusion_zones()
+
+		# 삭제/변환된 라벨에 동그라미 표시
+		self.draw_pending_operation_markers()
 		return
 
 	def draw_bbox_rc(self, rc, index=None):
@@ -3463,6 +3504,40 @@ class MainApp:
 			for point in self.exclusion_zone_points:
 				x, y = point
 				self.canvas.create_oval(x-4, y-4, x+4, y+4, fill='cyan', outline='white', width=2, tags="exclusion_zone")
+
+	def draw_pending_operation_markers(self):
+		"""삭제/변환된 라벨에 동그라미 표시"""
+		self.canvas.delete("pending_marker")
+
+		# 삭제된 라벨에 빨간색 동그라미 표시
+		for label_info in self.pending_deleted_labels:
+			x1, y1, x2, y2 = label_info['x1'], label_info['y1'], label_info['x2'], label_info['y2']
+			center_x = (x1 + x2) / 2
+			center_y = (y1 + y2) / 2
+			radius = 10
+
+			# 빨간색 동그라미
+			self.canvas.create_oval(
+				center_x - radius, center_y - radius,
+				center_x + radius, center_y + radius,
+				outline='red', fill='red', width=3,
+				tags="pending_marker"
+			)
+
+		# 마스킹으로 변환된 라벨에 노란색 동그라미 표시
+		for label_info in self.pending_masked_labels:
+			x1, y1, x2, y2 = label_info['x1'], label_info['y1'], label_info['x2'], label_info['y2']
+			center_x = (x1 + x2) / 2
+			center_y = (y1 + y2) / 2
+			radius = 10
+
+			# 노란색 동그라미
+			self.canvas.create_oval(
+				center_x - radius, center_y - radius,
+				center_x + radius, center_y + radius,
+				outline='yellow', fill='yellow', width=3,
+				tags="pending_marker"
+			)
 
 	def on_viewclass(self, event):
 		if self.viewclass is True : self.viewclass = False
@@ -4206,6 +4281,18 @@ class MainApp:
 
 		self.bbox_add = False;  self.cross_line = False;  bbox_crop = False
 		copyflag = False
+
+		# 삭제 전 라벨 정보 저장 (빨간색 동그라미 표시용)
+		deleted_bbox = self.bbox[self.selid]
+		self.pending_deleted_labels.append({
+			'bbox': deleted_bbox,
+			'class_name': deleted_bbox[1],
+			'x1': deleted_bbox[3],
+			'y1': deleted_bbox[4],
+			'x2': deleted_bbox[5],
+			'y2': deleted_bbox[6]
+		})
+
 		self.bbox = self.bbox[:self.selid] + self.bbox[self.selid+1:]
 		self.pi = -1
 		self.selid -= 1
@@ -4953,11 +5040,21 @@ class MainApp:
 		
 		# 디버깅: 마스킹된 픽셀 개수 확인
 		print(f"마스킹된 픽셀 개수: {len(self.masking[0])}")
-		
+
 		if len(self.masking[0]) == 0:
 			print("경고: 마스킹이 적용되지 않았습니다!")
 			return
-		
+
+		# 마스킹으로 변환되는 라벨 정보 저장 (노란색 동그라미 표시용)
+		self.pending_masked_labels.append({
+			'bbox': bbox,
+			'class_name': bbox[1],
+			'x1': view_x1,
+			'y1': view_y1,
+			'x2': view_x2,
+			'y2': view_y2
+		})
+
 		# 현재 라벨 삭제
 		self.bbox.pop(self.selid)
 		self.write_bbox()
