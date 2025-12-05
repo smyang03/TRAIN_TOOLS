@@ -5253,32 +5253,19 @@ class MainApp:
 	def show_class_menu(self, event, button, current_idx):
 		"""버튼 우클릭 시 클래스 선택 메뉴 표시"""
 		menu = tk.Menu(self.master, tearoff=0)
-		
+
 		# 검색 옵션 추가
-		menu.add_command(label="🔍 Search Classes...", 
+		menu.add_command(label="🔍 Search Classes...",
 						command=lambda: self.open_class_search_dialog(button))
 		menu.add_separator()
-		
-		# 클래스 그룹화 (가독성을 위해)
-		groups = {
-			"Person": [0, 1, 2,3],  # person, slip, head, helmet, gasmask, Drum, sitting
-			"Vehicles": [6,7,8],  # bicycle, car, motorbike, aeroplane, bus, train, truck, boat, van
-			"Traffic": [15, 16, 17, 18],  # trafficlight, firehydrant, stop sign, parking meter
-			"Animals": [13,14],  # bird, cat, dog, etc.
-			"Accessories": [11,12]  # backpack, umbrella, handbag, tie, suitcase
-		}
-		
-		# 각 그룹의 하위 메뉴 생성
-		for group_name, indices in groups.items():
-			submenu = tk.Menu(menu, tearoff=0)
-			for idx in indices:
-				if idx < len(class_name):
-					submenu.add_command(
-						label=f"{idx}: {class_name[idx]}", 
-						command=lambda btn=button, idx=idx: self.set_button_class(btn, idx)
-					)
-			menu.add_cascade(label=group_name, menu=submenu)
-		
+
+		# 모든 클래스를 평면 구조로 표시
+		for idx in range(len(class_name)):
+			menu.add_command(
+				label=f"{idx}: {class_name[idx]}",
+				command=lambda btn=button, idx=idx: self.set_button_class(btn, idx)
+			)
+
 		# 메뉴 표시
 		try:
 			menu.tk_popup(event.x_root, event.y_root)
@@ -5902,38 +5889,19 @@ class MainApp:
 	def show_class_menu(self, event, button, current_idx):
 		"""버튼 우클릭 시 클래스 선택 메뉴 표시"""
 		menu = tk.Menu(self.master, tearoff=0)
-		
+
 		# 검색 옵션 추가
-		menu.add_command(label="🔍 Search Classes...", 
+		menu.add_command(label="🔍 Search Classes...",
 						command=lambda: self.open_class_search_dialog(button))
 		menu.add_separator()
-		
-		# 클래스 그룹화 (가독성을 위해)
-		groups = {
-			"Person": [0, 1, 2, 3, 4, 5, 6],  # person, slip, head, helmet, gasmask, Drum, sitting
-			"Vehicles": [7, 8, 9, 10, 11, 12, 13, 14, 29],  # bicycle, car, motorbike, aeroplane, bus, train, truck, boat, van
-			"Traffic": [15, 16, 17, 18],  # trafficlight, firehydrant, stop sign, parking meter
-			"Animals": [20, 21, 22, 23, 24, 25, 26, 27, 28],  # bird, cat, dog, etc.
-			"Accessories": [30, 31, 32, 33, 34],  # backpack, umbrella, handbag, tie, suitcase
-			"Sports": [35, 36, 37, 38, 39, 40, 41, 42, 43, 44],  # frisbee, skis, etc.
-			"Kitchen": [45, 46, 47, 48, 49, 50, 51],  # bottle, wine glass, cup, etc.
-			"Food": [52, 53, 54, 55, 56, 57, 58, 59, 60, 61],  # banana, apple, etc.
-			"Furniture": [19, 62, 63, 64, 65, 66, 67],  # bench, chair, sofa, etc.
-			"Electronics": [68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78],  # tv, laptop, etc.
-			"Other": [79,80,81,82,83,84,85,89,87,88,89,90,91,92,93,94,95,96,97,98,99]  # book
-		}
-		
-		# 각 그룹의 하위 메뉴 생성
-		for group_name, indices in groups.items():
-			submenu = tk.Menu(menu, tearoff=0)
-			for idx in indices:
-				if idx < len(class_name):
-					submenu.add_command(
-						label=f"{idx}: {class_name[idx]}", 
-						command=lambda btn=button, idx=idx: self.set_button_class(btn, idx)
-					)
-			menu.add_cascade(label=group_name, menu=submenu)
-		
+
+		# 모든 클래스를 평면 구조로 표시
+		for idx in range(len(class_name)):
+			menu.add_command(
+				label=f"{idx}: {class_name[idx]}",
+				command=lambda btn=button, idx=idx: self.set_button_class(btn, idx)
+			)
+
 		# 메뉴 표시
 		try:
 			menu.tk_popup(event.x_root, event.y_root)
