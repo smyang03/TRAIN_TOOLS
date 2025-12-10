@@ -162,9 +162,14 @@ def validate_paths(image_path, label_path, logger=None):
     
     return issues
 
-def create_complete_dataset_list(input_path, output_path):
+def create_complete_dataset_list(input_path, output_path, keyword=None):
     """
     입력 경로의 모든 이미지 파일을 하나의 리스트로 생성하는 함수
+
+    Args:
+        input_path: 입력 데이터셋 경로
+        output_path: 출력 저장 경로
+        keyword: 파일명 필터링 키워드 (None이면 모든 파일 포함, 한글/특수문자 지원)
     """
     output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -172,6 +177,8 @@ def create_complete_dataset_list(input_path, output_path):
     # 로깅 설정
     logger = setup_logging(output_path)
     logger.info(f"전체 데이터셋 리스트 생성 시작: {input_path}")
+    if keyword:
+        logger.info(f"파일명 필터 키워드: '{keyword}'")
     
     # 결과 파일 경로 설정
     complete_list_path = output_path / 'complete_dataset.txt'
@@ -190,6 +197,7 @@ def create_complete_dataset_list(input_path, output_path):
         'created_labels': 0,      # 새로 생성된 라벨 파일
         'obj_annotation': obj_annotation,
         'path_issues': [],        # 경로 문제 목록
+        'filtered_cnt': 0,        # 키워드 필터링으로 제외된 파일 수
     }
     
     # 파일 리스트 초기화
@@ -211,15 +219,20 @@ def create_complete_dataset_list(input_path, output_path):
     
     # 입력 경로 순회
     logger.info(f"전체 {total_files}개 파일 처리 시작...")
-    
+
     for root, _, files in os.walk(input_path):
         for file in files:
             if not file.lower().endswith(('.jpg', '.jpeg')):
                 continue
-                
+
+            # 키워드 필터링 (파일명에 키워드가 포함되어 있는지 확인)
+            if keyword and keyword not in file:
+                stats['filtered_cnt'] += 1
+                continue
+
             stats['total_cnt'] += 1
             progress = (stats['total_cnt'] / total_files) * 100
-            
+
             # 파일 경로 설정
             full_path = os.path.join(root, file)
             label_path = get_label_path_from_image(full_path)
@@ -318,9 +331,15 @@ def create_complete_dataset_list(input_path, output_path):
     
     return stats
 
-def create_limited_dataset(input_path, output_path, num_files):
+def create_limited_dataset(input_path, output_path, num_files, keyword=None):
     """
     전체 데이터셋에서 지정된 개수의 파일을 파일명 패턴 분포에 맞게 선택하여 리스트 생성
+
+    Args:
+        input_path: 입력 데이터셋 경로
+        output_path: 출력 저장 경로
+        num_files: 선택할 파일 개수
+        keyword: 파일명 필터링 키워드 (None이면 모든 파일 포함, 한글/특수문자 지원)
     """
     import random
     import numpy as np
@@ -333,6 +352,8 @@ def create_limited_dataset(input_path, output_path, num_files):
     # 로깅 설정
     logger = setup_logging(output_path)
     logger.info(f"제한된 데이터셋 생성 시작: {num_files}개 파일")
+    if keyword:
+        logger.info(f"파일명 필터 키워드: '{keyword}'")
     
     # 결과 파일 경로 설정
     limited_list_path = output_path / 'limited_dataset.txt'
@@ -350,16 +371,21 @@ def create_limited_dataset(input_path, output_path, num_files):
         'total_annotations': 0,   # 선택된 파일의 총 어노테이션 수
         'created_labels': 0,      # 새로 생성된 라벨 파일
         'obj_annotation': obj_annotation,
-        'group_stats': {}         # 그룹별 통계 추가
+        'group_stats': {},        # 그룹별 통계 추가
+        'filtered_cnt': 0,        # 키워드 필터링으로 제외된 파일 수
     }
     
     # 전체 파일 리스트 수집
     all_files = []
     print(f"입력 경로에서 이미지 파일 찾는 중...")
-    
+
     for root, _, files in os.walk(input_path):
         for file in files:
             if file.lower().endswith(('.jpg', '.jpeg')):
+                # 키워드 필터링 (파일명에 키워드가 포함되어 있는지 확인)
+                if keyword and keyword not in file:
+                    stats['filtered_cnt'] += 1
+                    continue
                 full_path = os.path.join(root, file)
                 all_files.append(full_path)
     
@@ -1573,9 +1599,10 @@ def main():
             print("7. 고급 데이터셋 처리 (필터링 옵션 포함)")
             print("8. 경로 생성 테스트")
             print("9. 클래스별 리스트 파일 분리 (NEW!)")
-            print("10. 종료")
+            print("10. 파일명 키워드 필터링 리스트 생성 (NEW!)")
+            print("11. 종료")
 
-            choice = input("\n작업을 선택하세요 (1-10): ")
+            choice = input("\n작업을 선택하세요 (1-11): ")
             
             if choice == '1':
                 # 데이터셋 처리 기능
@@ -1981,6 +2008,46 @@ def main():
                     traceback.print_exc()
 
             elif choice == '10':
+                # 파일명 키워드 필터링 리스트 생성
+                input_path = input("입력 데이터셋 경로를 입력하세요 (기본 경로: Enter): ")
+                if not input_path:
+                    input_path = get_default_input_path()
+
+                if not os.path.exists(input_path):
+                    print(f"오류: 입력한 경로가 존재하지 않습니다: {input_path}")
+                    continue
+
+                keyword = input("필터링할 키워드를 입력하세요 (한글/특수문자 가능): ").strip()
+                if not keyword:
+                    print("오류: 키워드를 입력해야 합니다.")
+                    continue
+
+                output_path = input("출력 저장 경로를 입력하세요 (기본 경로: Enter): ")
+                if not output_path:
+                    output_path = get_default_output_path(input_path)
+
+                print(f"\n처리 시작...")
+                print(f"입력 경로: {input_path}")
+                print(f"출력 경로: {output_path}")
+                print(f"필터 키워드: '{keyword}'")
+
+                try:
+                    stats = create_complete_dataset_list(input_path, output_path, keyword=keyword)
+
+                    if stats:
+                        print("\n키워드 필터링 리스트 생성 완료!")
+                        print(f"필터링된 파일 수: {stats['filtered_cnt']}개")
+                        print(f"선택된 파일 수: {stats['total_cnt']}개")
+                        print(f"에러 발생 수: {stats['error_cnt']}개")
+                        print(f"생성된 라벨: {stats['created_labels']}개")
+
+                        print_class_statistics(stats['obj_annotation'], "클래스별 통계")
+
+                except Exception as e:
+                    print(f"\n데이터 처리 중 오류 발생: {e}")
+                    traceback.print_exc()
+
+            elif choice == '11':
                 print("프로그램을 종료합니다.")
                 return 0
 
