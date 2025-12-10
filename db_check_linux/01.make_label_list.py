@@ -328,7 +328,151 @@ def create_complete_dataset_list(input_path, output_path, keyword=None):
     logger.info(f"처리된 파일: {stats['total_cnt']}개")
     logger.info(f"생성된 라벨: {stats['created_labels']}개")
     logger.info(f"에러 발생: {stats['error_cnt']}개")
-    
+
+    return stats
+
+def find_images_without_class(input_path, output_path, target_class):
+    """
+    특정 클래스가 없는 이미지 파일을 찾아 리스트 생성
+
+    Args:
+        input_path: 입력 데이터셋 경로
+        output_path: 출력 저장 경로
+        target_class: 확인할 클래스 ID (0~88)
+
+    Returns:
+        stats: 처리 통계 딕셔너리
+    """
+    output_path = Path(output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # 로깅 설정
+    logger = setup_logging(output_path)
+    logger.info(f"클래스 {target_class} 없는 이미지 검색 시작: {input_path}")
+
+    # 결과 파일 경로 설정
+    missing_class_list_path = output_path / f'missing_class_{target_class}.txt'
+    has_class_list_path = output_path / f'has_class_{target_class}.txt'
+    error_log_path = output_path / 'errors.txt'
+
+    # 통계 변수 초기화
+    stats = {
+        'total_cnt': 0,              # 전체 처리한 파일 수
+        'missing_class_cnt': 0,      # 대상 클래스가 없는 이미지
+        'has_class_cnt': 0,          # 대상 클래스가 있는 이미지
+        'no_label_cnt': 0,           # 라벨 파일이 없는 이미지
+        'empty_label_cnt': 0,        # 어노테이션이 없는 이미지 (배경)
+        'error_cnt': 0,              # 에러 발생 수
+        'target_class': target_class,
+    }
+
+    # 파일 리스트 초기화
+    with open(missing_class_list_path, 'w', encoding='utf-8') as f:
+        f.write(f"# 클래스 {target_class}가 없는 이미지 파일 목록\n")
+
+    with open(has_class_list_path, 'w', encoding='utf-8') as f:
+        f.write(f"# 클래스 {target_class}가 있는 이미지 파일 목록\n")
+
+    # 에러 로그 파일 초기화
+    with open(error_log_path, 'w', encoding='utf-8') as f:
+        f.write("에러 로그\n")
+        f.write("=" * 50 + "\n")
+
+    # 전체 파일 수 계산
+    total_files = count_jpg_files(input_path)
+    logger.info(f"입력 경로에서 총 {total_files}개의 이미지 파일 발견")
+
+    if total_files == 0:
+        logger.error("입력 경로에 이미지 파일이 없습니다.")
+        return None
+
+    # 입력 경로 순회
+    logger.info(f"전체 {total_files}개 파일 처리 시작...")
+
+    for root, _, files in os.walk(input_path):
+        for file in files:
+            if not file.lower().endswith(('.jpg', '.jpeg')):
+                continue
+
+            stats['total_cnt'] += 1
+            progress = (stats['total_cnt'] / total_files) * 100
+
+            # 파일 경로 설정
+            full_path = os.path.join(root, file)
+            label_path = get_label_path_from_image(full_path)
+
+            # 라벨 파일 존재 확인
+            if not os.path.isfile(label_path):
+                stats['no_label_cnt'] += 1
+                stats['missing_class_cnt'] += 1
+                with open(missing_class_list_path, 'a', encoding='utf-8') as f:
+                    f.write(f"{full_path}\n")
+                with open(error_log_path, 'a', encoding='utf-8') as f:
+                    f.write(f"라벨 파일 없음 - {full_path}\n")
+                continue
+
+            # 라벨 파일에서 클래스 확인
+            has_target_class = False
+            try:
+                with open(label_path, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                    if not lines:  # 빈 파일 처리 (배경 이미지)
+                        stats['empty_label_cnt'] += 1
+                        stats['missing_class_cnt'] += 1
+                        with open(missing_class_list_path, 'a', encoding='utf-8') as mf:
+                            mf.write(f"{full_path}\n")
+                    else:
+                        for line_num, line in enumerate(lines, 1):
+                            line = line.strip()
+                            if not line:
+                                continue
+
+                            split_line = line.split()
+                            if len(split_line) < 5:  # YOLO 형식은 최소 5개 값 필요
+                                logger.warning(f"잘못된 어노테이션 형식 {label_path}:{line_num} - {line}")
+                                continue
+
+                            try:
+                                class_id = int(float(split_line[0]))
+                                if class_id == target_class:
+                                    has_target_class = True
+                                    break
+                            except (ValueError, IndexError) as e:
+                                logger.warning(f"어노테이션 파싱 오류 {label_path}:{line_num} - {e}")
+                                continue
+
+                        # 결과에 따라 분류
+                        if has_target_class:
+                            stats['has_class_cnt'] += 1
+                            with open(has_class_list_path, 'a', encoding='utf-8') as f:
+                                f.write(f"{full_path}\n")
+                        else:
+                            stats['missing_class_cnt'] += 1
+                            with open(missing_class_list_path, 'a', encoding='utf-8') as f:
+                                f.write(f"{full_path}\n")
+
+            except Exception as e:
+                logger.error(f"라벨 파일 처리 오류 {label_path}: {e}")
+                stats['error_cnt'] += 1
+                with open(error_log_path, 'a', encoding='utf-8') as f:
+                    f.write(f"라벨 처리 오류 - {label_path}: {e}\n")
+                continue
+
+            # 진행률 표시 (1000개마다 로그)
+            if stats['total_cnt'] % 1000 == 0:
+                logger.info(f"진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files})")
+
+            print(f"\r진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files}) | "
+                  f"클래스 없음: {stats['missing_class_cnt']} | "
+                  f"클래스 있음: {stats['has_class_cnt']}", end='')
+
+    print("\n")  # 진행률 표시 줄바꿈
+
+    logger.info(f"클래스 {target_class} 검색 완료")
+    logger.info(f"전체 파일: {stats['total_cnt']}개")
+    logger.info(f"클래스 없음: {stats['missing_class_cnt']}개")
+    logger.info(f"클래스 있음: {stats['has_class_cnt']}개")
+
     return stats
 
 def create_limited_dataset(input_path, output_path, num_files, keyword=None):
@@ -1600,9 +1744,10 @@ def main():
             print("8. 경로 생성 테스트")
             print("9. 클래스별 리스트 파일 분리 (NEW!)")
             print("10. 파일명 키워드 필터링 리스트 생성 (NEW!)")
-            print("11. 종료")
+            print("11. 특정 클래스 없는 파일 리스트 생성 (NEW!)")
+            print("12. 종료")
 
-            choice = input("\n작업을 선택하세요 (1-11): ")
+            choice = input("\n작업을 선택하세요 (1-12): ")
             
             if choice == '1':
                 # 데이터셋 처리 기능
@@ -2048,6 +2193,53 @@ def main():
                     traceback.print_exc()
 
             elif choice == '11':
+                # 특정 클래스 없는 파일 리스트 생성
+                input_path = input("입력 데이터셋 경로를 입력하세요 (기본 경로: Enter): ")
+                if not input_path:
+                    input_path = get_default_input_path()
+
+                if not os.path.exists(input_path):
+                    print(f"오류: 입력한 경로가 존재하지 않습니다: {input_path}")
+                    continue
+
+                try:
+                    target_class = int(input("확인할 클래스 ID를 입력하세요 (0~88): "))
+                    if not (0 <= target_class <= 88):
+                        print("오류: 클래스 ID는 0~88 사이여야 합니다.")
+                        continue
+                except ValueError:
+                    print("오류: 올바른 숫자를 입력하세요")
+                    continue
+
+                output_path = input("출력 저장 경로를 입력하세요 (기본 경로: Enter): ")
+                if not output_path:
+                    output_path = get_default_output_path(input_path)
+
+                print(f"\n처리 시작...")
+                print(f"입력 경로: {input_path}")
+                print(f"출력 경로: {output_path}")
+                print(f"대상 클래스: {target_class}")
+
+                try:
+                    stats = find_images_without_class(input_path, output_path, target_class)
+
+                    if stats:
+                        print(f"\n클래스 {target_class} 검색 완료!")
+                        print(f"전체 파일 수: {stats['total_cnt']}개")
+                        print(f"클래스 없는 파일: {stats['missing_class_cnt']}개 ({stats['missing_class_cnt']/stats['total_cnt']*100:.1f}%)")
+                        print(f"클래스 있는 파일: {stats['has_class_cnt']}개 ({stats['has_class_cnt']/stats['total_cnt']*100:.1f}%)")
+                        print(f"라벨 파일 없음: {stats['no_label_cnt']}개")
+                        print(f"배경 이미지 (빈 라벨): {stats['empty_label_cnt']}개")
+                        print(f"에러 발생: {stats['error_cnt']}개")
+                        print(f"\n생성된 파일:")
+                        print(f"  - missing_class_{target_class}.txt: 클래스 없는 파일 목록")
+                        print(f"  - has_class_{target_class}.txt: 클래스 있는 파일 목록")
+
+                except Exception as e:
+                    print(f"\n데이터 처리 중 오류 발생: {e}")
+                    traceback.print_exc()
+
+            elif choice == '12':
                 print("프로그램을 종료합니다.")
                 return 0
 
