@@ -240,41 +240,57 @@ class AutoDeleteClassManager:
 	def __init__(self, base_dir=None):
 		self.base_dir = base_dir or os.getcwd()
 		self.config_file = os.path.join(self.base_dir, ".auto_delete_classes.json")
-		self.delete_class_ids = set()  # 자동 삭제할 클래스 ID 집합
-		self.delete_mode = "auto"  # 삭제 모드: "auto" (페이지 이동 시), "shortcut" (단축키 'g' 입력 시)
+		# 새로운 구조: {class_id: mode} - 각 클래스별로 삭제 모드 저장
+		self.delete_class_config = {}  # {class_id: "auto" or "shortcut"}
 		self.load_config()
 
-	def add_class(self, class_id):
-		"""자동 삭제 대상에 클래스 추가"""
-		self.delete_class_ids.add(class_id)
+	def add_class(self, class_id, mode="auto"):
+		"""자동 삭제 대상에 클래스 추가
+		Args:
+			class_id: 클래스 ID
+			mode: 삭제 모드 ("auto" 또는 "shortcut")
+		"""
+		self.delete_class_config[class_id] = mode
 		self.save_config()
 
 	def remove_class(self, class_id):
 		"""자동 삭제 대상에서 클래스 제거"""
-		self.delete_class_ids.discard(class_id)
+		if class_id in self.delete_class_config:
+			del self.delete_class_config[class_id]
 		self.save_config()
 
-	def toggle_class(self, class_id):
-		"""클래스 자동 삭제 토글"""
-		if class_id in self.delete_class_ids:
-			self.delete_class_ids.remove(class_id)
-		else:
-			self.delete_class_ids.add(class_id)
-		self.save_config()
+	def set_class_mode(self, class_id, mode):
+		"""클래스의 삭제 모드 설정
+		Args:
+			class_id: 클래스 ID
+			mode: 삭제 모드 ("auto" 또는 "shortcut")
+		"""
+		if class_id in self.delete_class_config:
+			self.delete_class_config[class_id] = mode
+
+	def get_class_mode(self, class_id):
+		"""클래스의 삭제 모드 반환
+		Args:
+			class_id: 클래스 ID
+		Returns:
+			mode: "auto", "shortcut" 또는 None (설정 안됨)
+		"""
+		return self.delete_class_config.get(class_id, None)
 
 	def is_class_marked_for_deletion(self, class_id):
 		"""해당 클래스가 자동 삭제 대상인지 확인"""
-		return class_id in self.delete_class_ids
+		return class_id in self.delete_class_config
 
-	def filter_bboxes(self, bbox_list, class_name_list):
+	def filter_bboxes(self, bbox_list, class_name_list, mode_filter=None):
 		"""bbox 리스트에서 자동 삭제 대상 클래스 제거
 		Args:
 			bbox_list: bbox 리스트 ([sel, clsname, info, x1, y1, x2, y2] 형태)
 			class_name_list: 클래스 이름 리스트 (전역 class_name)
+			mode_filter: 특정 모드만 필터링 ("auto", "shortcut", None=모두)
 		Returns:
 			filtered_list: 필터링된 bbox 리스트
 		"""
-		if not self.delete_class_ids:
+		if not self.delete_class_config:
 			return bbox_list
 
 		# bbox[1]에서 클래스 이름을 가져와서 class_id로 변환
@@ -284,9 +300,17 @@ class AutoDeleteClassManager:
 			try:
 				# 클래스 이름을 인덱스(class_id)로 변환
 				class_id = class_name_list.index(class_name_str)
+
+				# 삭제 대상인지 확인
+				if class_id in self.delete_class_config:
+					class_mode = self.delete_class_config[class_id]
+					# mode_filter가 지정되면 해당 모드만 삭제
+					if mode_filter is None or class_mode == mode_filter:
+						# 삭제 대상 - 필터링됨 (추가하지 않음)
+						continue
+
 				# 삭제 대상이 아니면 유지
-				if class_id not in self.delete_class_ids:
-					filtered.append(bbox)
+				filtered.append(bbox)
 			except ValueError:
 				# 클래스 이름을 찾을 수 없으면 유지
 				print(f"[WARNING] Unknown class name: {class_name_str}, keeping bbox")
@@ -297,32 +321,51 @@ class AutoDeleteClassManager:
 	def save_config(self):
 		"""설정을 파일로 저장"""
 		try:
+			# 새 형식: class_id를 문자열 키로 저장 (JSON 호환)
 			config_data = {
-				"delete_class_ids": list(self.delete_class_ids),
-				"delete_mode": self.delete_mode
+				"version": 3,
+				"delete_class_config": {str(k): v for k, v in self.delete_class_config.items()}
 			}
 			with open(self.config_file, 'w') as f:
-				json.dump(config_data, f)
+				json.dump(config_data, f, indent=2)
 		except Exception as e:
 			print(f"[ERROR] Failed to save auto delete config: {e}")
 
 	def load_config(self):
-		"""설정을 파일에서 로드"""
+		"""설정을 파일에서 로드 (이전 버전 호환)"""
 		if os.path.exists(self.config_file):
 			try:
 				with open(self.config_file, 'r') as f:
 					config_data = json.load(f)
-					# 이전 버전 호환성 (리스트만 있는 경우)
+
+					# Version 1: 리스트만 있는 경우 [0, 1, 2]
 					if isinstance(config_data, list):
-						self.delete_class_ids = set(config_data)
-						self.delete_mode = "auto"
+						self.delete_class_config = {class_id: "auto" for class_id in config_data}
+						print(f"[AutoDelete] V1 형식 로드: 모두 auto 모드로 변환")
+
+					# Version 2: delete_class_ids + delete_mode
+					elif "delete_class_ids" in config_data:
+						class_ids = config_data.get("delete_class_ids", [])
+						mode = config_data.get("delete_mode", "auto")
+						self.delete_class_config = {class_id: mode for class_id in class_ids}
+						print(f"[AutoDelete] V2 형식 로드: 모두 {mode} 모드로 변환")
+
+					# Version 3: delete_class_config (새 형식)
+					elif "delete_class_config" in config_data:
+						# 문자열 키를 정수로 변환
+						raw_config = config_data.get("delete_class_config", {})
+						self.delete_class_config = {int(k): v for k, v in raw_config.items()}
+						print(f"[AutoDelete] V3 형식 로드: 클래스별 개별 설정")
+
 					else:
-						self.delete_class_ids = set(config_data.get("delete_class_ids", []))
-						self.delete_mode = config_data.get("delete_mode", "auto")
+						self.delete_class_config = {}
+						print(f"[AutoDelete] 빈 설정 파일")
+
 			except Exception as e:
 				print(f"[ERROR] Failed to load auto delete config: {e}")
-				self.delete_class_ids = set()
-				self.delete_mode = "auto"
+				self.delete_class_config = {}
+		else:
+			print(f"[AutoDelete] 설정 파일 없음 - 새로 시작")
 
 # 클래스 설정 관리 클래스
 class ClassConfigManager:
@@ -825,7 +868,13 @@ class MainApp:
 
 		# 클래스 자동 삭제 관리자 초기화
 		self.auto_delete_manager = AutoDeleteClassManager()
-		print(f"[AutoDelete] 자동 삭제 클래스: {self.auto_delete_manager.delete_class_ids}")
+		if self.auto_delete_manager.delete_class_config:
+			auto_classes = [f"ID{k}(auto)" for k, v in self.auto_delete_manager.delete_class_config.items() if v == "auto"]
+			shortcut_classes = [f"ID{k}(g)" for k, v in self.auto_delete_manager.delete_class_config.items() if v == "shortcut"]
+			all_config = auto_classes + shortcut_classes
+			print(f"[AutoDelete] 자동 삭제 설정: {', '.join(all_config) if all_config else '없음'}")
+		else:
+			print(f"[AutoDelete] 자동 삭제 설정: 없음")
 
 		# Pending changes 시스템 초기화 (캐시 업데이트 최적화)
 		self.pending_operation_count = 0  # 현재 페이지에서 수행된 작업 수
@@ -3257,12 +3306,13 @@ class MainApp:
 		# === 자동 필터링 적용 ===
 		total_deleted = 0
 
-		# 1. 클래스 자동 삭제 필터링 (delete_mode가 "auto"일 때만)
-		if self.auto_delete_manager and self.auto_delete_manager.delete_class_ids and self.auto_delete_manager.delete_mode == "auto":
+		# 1. 클래스 자동 삭제 필터링 (mode="auto"인 클래스만 페이지 이동 시 자동 삭제)
+		if self.auto_delete_manager and self.auto_delete_manager.delete_class_config:
 			before_count = len(self.bbox)
 			# class_name은 전역 변수
 			global class_name
-			self.bbox = self.auto_delete_manager.filter_bboxes(self.bbox, class_name)
+			# mode_filter="auto"로 페이지 이동 시 자동 삭제되는 클래스만 필터링
+			self.bbox = self.auto_delete_manager.filter_bboxes(self.bbox, class_name, mode_filter="auto")
 			deleted_count = before_count - len(self.bbox)
 			if deleted_count > 0:
 				print(f"[AutoDelete] {deleted_count}개 라벨 자동 삭제됨 (페이지 이동 시)")
@@ -5616,12 +5666,15 @@ class MainApp:
 
 [클래스 자동 삭제 기능]
 1. '자동삭제' 버튼 클릭
-2. 삭제 모드 선택:
-   - 페이지 이동 시 자동 삭제: 다음 페이지부터 자동으로 삭제
-   - 단축키 'g' 입력 시 삭제: 'g' 키를 눌렀을 때만 삭제
-3. 삭제할 클래스 선택
-4. '저장' 클릭
-5. 선택한 모드에 따라 라벨이 삭제됨
+2. 각 클래스별로 설정:
+   - 체크박스: 자동 삭제 대상 여부 선택
+   - 모드 선택 (클래스별 개별 설정):
+     * 페이지 이동: 다음 페이지로 이동 시 자동 삭제
+     * 단축키 'g': 'g' 키를 눌렀을 때만 삭제
+3. '저장' 클릭
+4. 설정에 따라:
+   - 페이지 이동 모드: 다음 페이지부터 자동 삭제
+   - 단축키 'g' 모드: 'g' 키 입력 시 삭제
 
 ====================
 이 도움말은 편집할 수 있습니다.
@@ -5774,41 +5827,19 @@ class MainApp:
 		tk.Button(dialog, text="닫기", command=dialog.destroy, width=10).pack(pady=5)
 
 	def manage_auto_delete_classes(self):
-		"""클래스 자동 삭제 관리 다이얼로그"""
+		"""클래스 자동 삭제 관리 다이얼로그 (클래스별 개별 모드 설정)"""
 		dialog = tk.Toplevel(self.master)
 		dialog.title("클래스 자동 삭제 관리")
-		dialog.geometry("400x500")
+		dialog.geometry("600x550")
 		dialog.transient(self.master)
 		dialog.grab_set()
 
 		# 설명 레이블
-		tk.Label(dialog, text="자동으로 삭제할 클래스를 선택하세요", font=("맑은 고딕", 10, "bold")).pack(pady=10)
-
-		# 삭제 모드 선택 프레임
-		mode_frame = tk.LabelFrame(dialog, text="삭제 모드")
-		mode_frame.pack(fill=tk.X, padx=10, pady=5)
-
-		delete_mode_var = tk.StringVar()
-		delete_mode_var.set(self.auto_delete_manager.delete_mode)
-
-		tk.Radiobutton(
-			mode_frame,
-			text="페이지 이동 시 자동 삭제",
-			variable=delete_mode_var,
-			value="auto",
-			font=("맑은 고딕", 10)
-		).pack(anchor='w', padx=10, pady=2)
-
-		tk.Radiobutton(
-			mode_frame,
-			text="단축키 'g' 입력 시 삭제",
-			variable=delete_mode_var,
-			value="shortcut",
-			font=("맑은 고딕", 10)
-		).pack(anchor='w', padx=10, pady=2)
+		tk.Label(dialog, text="클래스별로 자동 삭제 모드를 설정하세요", font=("맑은 고딕", 10, "bold")).pack(pady=10)
+		tk.Label(dialog, text="체크박스를 선택하고 각 클래스의 삭제 모드를 선택하세요", fg="blue").pack()
 
 		# 클래스 리스트
-		list_frame = tk.LabelFrame(dialog, text="클래스 목록")
+		list_frame = tk.LabelFrame(dialog, text="클래스 목록 및 삭제 모드")
 		list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
 		# 체크박스를 위한 스크롤 가능 프레임
@@ -5824,23 +5855,60 @@ class MainApp:
 		canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
 		canvas.configure(yscrollcommand=scrollbar.set)
 
-		# 각 클래스에 대한 체크박스 생성
-		class_vars = {}
+		# 각 클래스에 대한 체크박스 + 모드 선택 라디오 버튼
+		class_check_vars = {}  # {class_id: BooleanVar}
+		class_mode_vars = {}   # {class_id: StringVar}
+
 		for cls in self.class_config_manager.classes:
 			class_id = cls['id']
 			class_name = cls['name']
 
-			var = tk.BooleanVar()
-			var.set(self.auto_delete_manager.is_class_marked_for_deletion(class_id))
-			class_vars[class_id] = var
+			# 현재 설정 가져오기
+			current_mode = self.auto_delete_manager.get_class_mode(class_id)
+			is_enabled = current_mode is not None
+
+			# 클래스별 프레임
+			class_frame = tk.Frame(scrollable_frame)
+			class_frame.pack(fill=tk.X, padx=5, pady=3)
+
+			# 체크박스
+			check_var = tk.BooleanVar()
+			check_var.set(is_enabled)
+			class_check_vars[class_id] = check_var
 
 			chk = tk.Checkbutton(
-				scrollable_frame,
+				class_frame,
 				text=f"{class_name} (ID: {class_id})",
-				variable=var,
-				font=("맑은 고딕", 10)
+				variable=check_var,
+				font=("맑은 고딕", 9),
+				width=20,
+				anchor='w'
 			)
-			chk.pack(anchor='w', padx=10, pady=2)
+			chk.pack(side=tk.LEFT, padx=5)
+
+			# 모드 선택 라디오 버튼
+			mode_var = tk.StringVar()
+			mode_var.set(current_mode if current_mode else "auto")
+			class_mode_vars[class_id] = mode_var
+
+			radio_frame = tk.Frame(class_frame)
+			radio_frame.pack(side=tk.LEFT, padx=10)
+
+			tk.Radiobutton(
+				radio_frame,
+				text="페이지 이동",
+				variable=mode_var,
+				value="auto",
+				font=("맑은 고딕", 8)
+			).pack(side=tk.LEFT, padx=2)
+
+			tk.Radiobutton(
+				radio_frame,
+				text="단축키 'g'",
+				variable=mode_var,
+				value="shortcut",
+				font=("맑은 고딕", 8)
+			).pack(side=tk.LEFT, padx=2)
 
 		canvas.pack(side="left", fill="both", expand=True)
 		scrollbar.pack(side="right", fill="y")
@@ -5851,33 +5919,50 @@ class MainApp:
 
 		def save_and_close():
 			"""설정 저장하고 닫기"""
-			# 현재 선택 상태를 manager에 반영
-			self.auto_delete_manager.delete_class_ids.clear()
-			for class_id, var in class_vars.items():
-				if var.get():
-					self.auto_delete_manager.delete_class_ids.add(class_id)
+			# 새로운 설정 적용
+			self.auto_delete_manager.delete_class_config.clear()
 
-			# 삭제 모드 저장
-			self.auto_delete_manager.delete_mode = delete_mode_var.get()
+			for class_id in class_check_vars:
+				if class_check_vars[class_id].get():
+					# 체크된 경우 모드와 함께 저장
+					mode = class_mode_vars[class_id].get()
+					self.auto_delete_manager.delete_class_config[class_id] = mode
+
 			self.auto_delete_manager.save_config()
 
-			mode_text = "페이지 이동 시 자동 삭제" if self.auto_delete_manager.delete_mode == "auto" else "단축키 'g' 입력 시 삭제"
-			deleted_classes = [self.class_config_manager.classes[i]['name'] for i in self.auto_delete_manager.delete_class_ids if i < len(self.class_config_manager.classes)]
-			if deleted_classes:
-				messagebox.showinfo("저장 완료", f"삭제 모드: {mode_text}\n\n다음 클래스가 자동 삭제로 설정되었습니다:\n" + ", ".join(deleted_classes))
+			# 결과 메시지
+			if self.auto_delete_manager.delete_class_config:
+				summary_lines = []
+				auto_classes = []
+				shortcut_classes = []
+
+				for class_id, mode in self.auto_delete_manager.delete_class_config.items():
+					if class_id < len(self.class_config_manager.classes):
+						class_name = self.class_config_manager.classes[class_id]['name']
+						if mode == "auto":
+							auto_classes.append(class_name)
+						else:
+							shortcut_classes.append(class_name)
+
+				if auto_classes:
+					summary_lines.append(f"[페이지 이동 시 자동 삭제]\n  " + ", ".join(auto_classes))
+				if shortcut_classes:
+					summary_lines.append(f"[단축키 'g' 입력 시 삭제]\n  " + ", ".join(shortcut_classes))
+
+				messagebox.showinfo("저장 완료", "클래스별 자동 삭제 설정이 완료되었습니다.\n\n" + "\n\n".join(summary_lines))
 			else:
-				messagebox.showinfo("저장 완료", f"삭제 모드: {mode_text}\n\n자동 삭제 클래스가 없습니다.")
+				messagebox.showinfo("저장 완료", "자동 삭제 클래스가 없습니다.")
 
 			dialog.destroy()
 
 		def select_all():
 			"""모두 선택"""
-			for var in class_vars.values():
+			for var in class_check_vars.values():
 				var.set(True)
 
 		def deselect_all():
 			"""모두 선택 해제"""
-			for var in class_vars.values():
+			for var in class_check_vars.values():
 				var.set(False)
 
 		tk.Button(button_frame, text="모두 선택", command=select_all, width=10).pack(side=tk.LEFT, padx=2)
@@ -5886,19 +5971,24 @@ class MainApp:
 		tk.Button(button_frame, text="취소", command=dialog.destroy, width=10).pack(side=tk.LEFT, padx=2)
 
 	def manual_delete_auto_classes(self):
-		"""단축키 'g'로 수동 삭제 실행 (shortcut 모드용)"""
-		if not self.auto_delete_manager or not self.auto_delete_manager.delete_class_ids:
+		"""단축키 'g'로 수동 삭제 실행 (mode="shortcut"인 클래스만 삭제)"""
+		if not self.auto_delete_manager or not self.auto_delete_manager.delete_class_config:
 			print("[AutoDelete] 자동 삭제 설정이 없습니다.")
+			messagebox.showinfo("자동 삭제", "자동 삭제 설정이 없습니다.")
 			return
 
-		if self.auto_delete_manager.delete_mode != "shortcut":
-			print("[AutoDelete] 단축키 삭제 모드가 아닙니다. (현재 모드: {})".format(self.auto_delete_manager.delete_mode))
+		# mode="shortcut"인 클래스가 있는지 확인
+		shortcut_classes = [class_id for class_id, mode in self.auto_delete_manager.delete_class_config.items() if mode == "shortcut"]
+		if not shortcut_classes:
+			print("[AutoDelete] 단축키 삭제 모드로 설정된 클래스가 없습니다.")
+			messagebox.showinfo("자동 삭제", "단축키 'g' 모드로 설정된 클래스가 없습니다.\n자동삭제 설정에서 모드를 변경하세요.")
 			return
 
 		before_count = len(self.bbox)
 		# class_name은 전역 변수
 		global class_name
-		self.bbox = self.auto_delete_manager.filter_bboxes(self.bbox, class_name)
+		# mode_filter="shortcut"으로 단축키 모드 클래스만 필터링
+		self.bbox = self.auto_delete_manager.filter_bboxes(self.bbox, class_name, mode_filter="shortcut")
 		deleted_count = before_count - len(self.bbox)
 
 		if deleted_count > 0:
