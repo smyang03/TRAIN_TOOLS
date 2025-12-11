@@ -6473,10 +6473,10 @@ class MainApp:
 		warning_messages = []
 
 		# 1. 자동 삭제 클래스 확인
-		if self.auto_delete_manager and self.auto_delete_manager.delete_class_ids:
+		if self.auto_delete_manager and self.auto_delete_manager.delete_class_config:
 			global class_name
 			class_id = int(self.copied_label[2])
-			if class_id in self.auto_delete_manager.delete_class_ids:
+			if class_id in self.auto_delete_manager.delete_class_config:
 				class_str = class_name[class_id] if class_id < len(class_name) else str(class_id)
 				warning_messages.append(f"자동 삭제 대상 클래스: {class_str}")
 
@@ -6611,12 +6611,12 @@ class MainApp:
 		warning_messages = []
 
 		# 1. 자동 삭제 클래스 확인
-		if self.auto_delete_manager and self.auto_delete_manager.delete_class_ids:
+		if self.auto_delete_manager and self.auto_delete_manager.delete_class_config:
 			global class_name
 			filtered_labels = []
 			for label in self.copied_multi_labels:
 				class_id = int(label[2])
-				if class_id in self.auto_delete_manager.delete_class_ids:
+				if class_id in self.auto_delete_manager.delete_class_config:
 					class_str = class_name[class_id] if class_id < len(class_name) else str(class_id)
 					filtered_labels.append(class_str)
 
