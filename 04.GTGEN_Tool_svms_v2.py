@@ -45,10 +45,19 @@ class ExclusionZoneManager:
 		self.use_global = True  # 전역 영역 사용 여부
 		self.load_global_zones()
 
-	def add_zone(self, points, use_global=True):
-		"""새로운 제외 영역 추가 (points는 [(x,y), ...] 형태)"""
+	def add_zone(self, points, use_global=True, class_ids=None):
+		"""새로운 제외 영역 추가 (points는 [(x,y), ...] 형태)
+		Args:
+			points: 폴리곤 점들
+			use_global: 전역 영역에 추가할지 여부
+			class_ids: 적용할 클래스 ID 리스트 (None 또는 빈 리스트면 모든 클래스에 적용)
+		"""
 		if len(points) >= 3:  # 최소 3개의 점이 있어야 폴리곤 형성
-			zone = {'points': points, 'enabled': True}
+			zone = {
+				'points': points,
+				'enabled': True,
+				'class_ids': class_ids if class_ids else []  # 빈 리스트면 모든 클래스에 적용
+			}
 			if use_global:
 				self.global_zones.append(zone)
 			else:
@@ -70,14 +79,26 @@ class ExclusionZoneManager:
 			return True
 		return False
 
+	def update_zone_classes(self, index, class_ids):
+		"""제외 영역의 적용 클래스 업데이트
+		Args:
+			index: 영역 인덱스
+			class_ids: 적용할 클래스 ID 리스트 (빈 리스트면 모든 클래스에 적용)
+		"""
+		if 0 <= index < len(self.global_zones):
+			self.global_zones[index]['class_ids'] = class_ids if class_ids else []
+			return True
+		return False
+
 	def clear_zones(self):
 		"""모든 제외 영역 삭제"""
 		self.global_zones = []
 
-	def is_bbox_in_exclusion_zone(self, bbox):
-		"""bbox가 제외 영역과 겹치는지 확인 (면적 기반)
+	def is_bbox_in_exclusion_zone(self, bbox, class_name_list=None):
+		"""bbox가 제외 영역과 겹치는지 확인 (면적 기반 + 클래스 필터)
 		Args:
 			bbox: [sel, clsname, info, x1, y1, x2, y2] 형태
+			class_name_list: 클래스 이름 리스트 (전역 class_name)
 		Returns:
 			bool: 조금이라도 겹치면 True
 		"""
@@ -86,12 +107,22 @@ class ExclusionZoneManager:
 			print(f"[DEBUG] zones_to_check가 비어있음 (use_global={self.use_global})")
 			return False
 
+		# bbox의 클래스 ID 가져오기
+		bbox_class_id = bbox[2]  # info 필드가 class_id
 		x1, y1, x2, y2 = bbox[3], bbox[4], bbox[5], bbox[6]
-		print(f"[DEBUG] bbox 검사: class={bbox[1]}, coords=({x1:.1f}, {y1:.1f}, {x2:.1f}, {y2:.1f})")
+		print(f"[DEBUG] bbox 검사: class={bbox[1]}, class_id={bbox_class_id}, coords=({x1:.1f}, {y1:.1f}, {x2:.1f}, {y2:.1f})")
 
 		for i, zone in enumerate(zones_to_check):
-			print(f"[DEBUG]   제외영역 {i+1}: enabled={zone['enabled']}, points={len(zone['points'])}개")
+			# 하위 호환성: class_ids 키가 없으면 빈 리스트로 간주
+			zone_class_ids = zone.get('class_ids', [])
+			print(f"[DEBUG]   제외영역 {i+1}: enabled={zone['enabled']}, points={len(zone['points'])}개, class_ids={zone_class_ids}")
+
 			if zone['enabled']:
+				# 클래스 필터 체크: class_ids가 비어있으면 모든 클래스에 적용
+				if zone_class_ids and bbox_class_id not in zone_class_ids:
+					print(f"[DEBUG]   → 클래스 필터로 제외됨 (bbox_class_id={bbox_class_id})")
+					continue
+
 				overlap = self._bbox_polygon_overlap(x1, y1, x2, y2, zone['points'])
 				print(f"[DEBUG]   → 겹침 결과: {overlap}")
 				if overlap:
@@ -498,6 +529,13 @@ class ClassConfigManager:
 		names = [c['name'] for c in sorted_classes]
 		colors = [c['color'] for c in sorted_classes]
 		return [names, colors]
+
+	def get_class_name(self, class_id):
+		"""특정 클래스 ID의 이름 반환"""
+		for c in self.classes:
+			if c['id'] == class_id:
+				return c['name']
+		return f"Unknown({class_id})"  # 찾지 못한 경우
 
 	def get_button_configs(self):
 		"""버튼 생성에 필요한 정보 반환 [(name, id, key), ...]"""
@@ -4869,10 +4907,23 @@ class MainApp:
 
 		# 제외 영역 그리기 모드에서 우클릭 시 폴리곤 완성
 		if self.exclusion_zone_mode and len(self.exclusion_zone_points) >= 3:
-			# 폴리곤 완성 (전역 영역에 추가)
-			self.exclusion_zone_manager.add_zone(self.exclusion_zone_points, use_global=True)
-			self.exclusion_zone_manager.save_global_zones()
-			messagebox.showinfo("제외 영역 추가", f"전역 제외 영역이 추가되었습니다.\n점 개수: {len(self.exclusion_zone_points)}")
+			# 클래스 선택 다이얼로그
+			selected_class_ids = self.select_classes_for_exclusion_zone(title="제외 영역 클래스 선택")
+
+			if selected_class_ids is not None:  # 취소하지 않은 경우
+				# 폴리곤 완성 (전역 영역에 추가)
+				self.exclusion_zone_manager.add_zone(self.exclusion_zone_points, use_global=True, class_ids=selected_class_ids)
+				self.exclusion_zone_manager.save_global_zones()
+
+				# 클래스 정보 메시지
+				if selected_class_ids:
+					class_names = [self.class_config_manager.get_class_name(cid) for cid in selected_class_ids]
+					class_info = f"적용 클래스: {', '.join(class_names)}"
+				else:
+					class_info = "적용 클래스: 모든 클래스"
+
+				messagebox.showinfo("제외 영역 추가", f"전역 제외 영역이 추가되었습니다.\n점 개수: {len(self.exclusion_zone_points)}\n{class_info}")
+
 			self.exclusion_zone_mode = False
 			self.exclusion_zone_points = []
 			self.draw_bbox()  # 화면 갱신
@@ -5773,7 +5824,16 @@ class MainApp:
 			for i, zone in enumerate(self.exclusion_zone_manager.global_zones):
 				status = "✓" if zone['enabled'] else "✗"
 				point_count = len(zone['points'])
-				listbox.insert(tk.END, f"{status} 영역 {i+1} ({point_count}개 점)")
+
+				# 클래스 정보 표시
+				zone_class_ids = zone.get('class_ids', [])
+				if zone_class_ids:
+					class_names = [self.class_config_manager.get_class_name(cid) for cid in zone_class_ids]
+					class_info = f" - {', '.join(class_names)}"
+				else:
+					class_info = " - 모든 클래스"
+
+				listbox.insert(tk.END, f"{status} 영역 {i+1} ({point_count}개 점){class_info}")
 
 		refresh_list()
 
@@ -5819,12 +5879,129 @@ class MainApp:
 				refresh_list()
 				self.draw_bbox()  # 화면 갱신
 
+		def edit_classes():
+			"""선택한 영역의 적용 클래스 편집"""
+			selection = listbox.curselection()
+			if selection:
+				index = selection[0]
+				zone = self.exclusion_zone_manager.global_zones[index]
+				current_class_ids = zone.get('class_ids', [])
+
+				# 클래스 선택 다이얼로그
+				new_class_ids = self.select_classes_for_exclusion_zone(
+					title=f"영역 {index+1} 클래스 편집",
+					initial_class_ids=current_class_ids
+				)
+
+				if new_class_ids is not None:  # 취소하지 않은 경우
+					self.exclusion_zone_manager.update_zone_classes(index, new_class_ids)
+					self.exclusion_zone_manager.save_global_zones()
+					refresh_list()
+					self.draw_bbox()  # 화면 갱신
+					messagebox.showinfo("클래스 편집", "적용 클래스가 업데이트되었습니다.")
+
 		tk.Button(button_frame, text="영역 추가", command=add_zone, width=10).pack(side=tk.LEFT, padx=2)
 		tk.Button(button_frame, text="삭제", command=remove_zone, width=10).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="클래스 편집", command=edit_classes, width=10).pack(side=tk.LEFT, padx=2)
 		tk.Button(button_frame, text="활성화/비활성화", command=toggle_zone, width=15).pack(side=tk.LEFT, padx=2)
 		tk.Button(button_frame, text="모두 삭제", command=clear_all, width=10).pack(side=tk.LEFT, padx=2)
 
 		tk.Button(dialog, text="닫기", command=dialog.destroy, width=10).pack(pady=5)
+
+	def select_classes_for_exclusion_zone(self, title="클래스 선택", initial_class_ids=None):
+		"""제외 영역에 적용할 클래스를 선택하는 다이얼로그
+		Args:
+			title: 다이얼로그 제목
+			initial_class_ids: 초기 선택 클래스 ID 리스트
+		Returns:
+			선택한 클래스 ID 리스트 (취소 시 None)
+		"""
+		result = {'class_ids': None}
+
+		dialog = tk.Toplevel(self.master)
+		dialog.title(title)
+		dialog.geometry("500x400")
+		dialog.transient(self.master)
+		dialog.grab_set()
+
+		# 설명 레이블
+		tk.Label(dialog, text="제외 영역에 적용할 클래스를 선택하세요", font=("맑은 고딕", 10, "bold")).pack(pady=10)
+		tk.Label(dialog, text="클래스를 선택하지 않으면 모든 클래스에 적용됩니다", fg="blue").pack()
+
+		# 클래스 리스트
+		list_frame = tk.LabelFrame(dialog, text="클래스 목록")
+		list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+		# 스크롤 가능 프레임
+		canvas = tk.Canvas(list_frame)
+		scrollbar = tk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
+		scrollable_frame = tk.Frame(canvas)
+
+		scrollable_frame.bind(
+			"<Configure>",
+			lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+		)
+
+		canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+		canvas.configure(yscrollcommand=scrollbar.set)
+
+		# 체크박스 변수
+		class_check_vars = {}
+		initial_class_ids = initial_class_ids if initial_class_ids else []
+
+		for cls in self.class_config_manager.classes:
+			class_id = cls['id']
+			class_name = cls['name']
+
+			check_var = tk.BooleanVar()
+			check_var.set(class_id in initial_class_ids)
+			class_check_vars[class_id] = check_var
+
+			chk = tk.Checkbutton(
+				scrollable_frame,
+				text=f"{class_name} (ID: {class_id})",
+				variable=check_var,
+				font=("맑은 고딕", 9),
+				anchor='w'
+			)
+			chk.pack(fill=tk.X, padx=5, pady=2)
+
+		canvas.pack(side="left", fill="both", expand=True)
+		scrollbar.pack(side="right", fill="y")
+
+		# 버튼 프레임
+		button_frame = tk.Frame(dialog)
+		button_frame.pack(pady=10)
+
+		def on_ok():
+			"""확인 버튼"""
+			selected_class_ids = [class_id for class_id, var in class_check_vars.items() if var.get()]
+			result['class_ids'] = selected_class_ids
+			dialog.destroy()
+
+		def on_cancel():
+			"""취소 버튼"""
+			result['class_ids'] = None
+			dialog.destroy()
+
+		def select_all():
+			"""전체 선택"""
+			for var in class_check_vars.values():
+				var.set(True)
+
+		def deselect_all():
+			"""전체 해제"""
+			for var in class_check_vars.values():
+				var.set(False)
+
+		tk.Button(button_frame, text="전체 선택", command=select_all, width=10).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="전체 해제", command=deselect_all, width=10).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="확인", command=on_ok, width=10, bg="lightblue").pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="취소", command=on_cancel, width=10).pack(side=tk.LEFT, padx=2)
+
+		# 모달 대기
+		self.master.wait_window(dialog)
+		return result['class_ids']
 
 	def manage_auto_delete_classes(self):
 		"""클래스 자동 삭제 관리 다이얼로그 (클래스별 개별 모드 설정)"""
