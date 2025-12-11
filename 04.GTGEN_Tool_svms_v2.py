@@ -6503,6 +6503,7 @@ class MainApp:
 		new_label[0] = True  # 선택 상태로 설정
 		self.bbox.append(new_label)
 		self.selid = len(self.bbox) - 1
+		self.pre_rc = None  # 방향키 이동을 위해 pre_rc 초기화
 
 		# 파일에 저장 (중요!)
 		self.write_bbox()
