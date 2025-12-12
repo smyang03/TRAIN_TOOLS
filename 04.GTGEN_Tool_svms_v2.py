@@ -236,6 +236,33 @@ class ExclusionZoneManager:
 				print(f"[ERROR] Failed to load global exclusion zones: {e}")
 				self.global_zones = []
 
+	def normalize_zone_coordinates(self, original_width, original_height):
+		"""기존 절대 좌표를 상대 좌표로 변환 (마이그레이션)
+		Args:
+			original_width: 원본 이미지 너비
+			original_height: 원본 이미지 높이
+		"""
+		needs_save = False
+		for zone in self.global_zones:
+			if zone['points']:
+				# 첫 번째 점의 좌표 값으로 절대/상대 좌표 판단
+				first_point = zone['points'][0]
+				if first_point[0] > 1.0 or first_point[1] > 1.0:
+					# 절대 좌표로 판단 → 상대 좌표로 변환
+					print(f"[ExclusionZone] 절대 좌표를 상대 좌표로 변환: {first_point}")
+					normalized_points = []
+					for point in zone['points']:
+						rel_x = point[0] / original_width
+						rel_y = point[1] / original_height
+						normalized_points.append((rel_x, rel_y))
+					zone['points'] = normalized_points
+					needs_save = True
+
+		# 변환된 경우 저장
+		if needs_save:
+			self.save_global_zones()
+			print(f"[ExclusionZone] 상대 좌표로 변환 후 저장 완료")
+
 	def save_enabled_state(self, enabled):
 		"""제외 영역 기능 활성화 상태 저장"""
 		try:
@@ -2388,6 +2415,8 @@ class MainApp:
 			# 제외 영역 로드
 			if self.exclusion_zone_manager:
 				self.exclusion_zone_manager.load_zones(self.im_fn)
+				# 기존 절대 좌표를 상대 좌표로 변환 (마이그레이션)
+				self.exclusion_zone_manager.normalize_zone_coordinates(self.original_width, self.original_height)
 
 			self.load_bbox()
 
@@ -3580,31 +3609,40 @@ class MainApp:
 			if zone['points']:
 				# 폴리곤 색상 (활성화 여부에 따라)
 				color = 'orange' if zone['enabled'] else 'gray'
-				# 폴리곤 그리기
+				# 폴리곤 그리기 (상대 좌표 → 캔버스 좌표로 변환)
 				points = []
 				for point in zone['points']:
-					points.extend([point[0], point[1]])
+					# 상대 좌표 (0.0~1.0) → 원본 이미지 좌표 → 캔버스 좌표
+					canvas_x = point[0] * self.original_width * self.zoom_ratio
+					canvas_y = point[1] * self.original_height * self.zoom_ratio
+					points.extend([canvas_x, canvas_y])
 				self.canvas.create_polygon(points, outline=color, fill='', width=2, dash=(5, 5), tags="exclusion_zone")
 
-				# 영역 번호 표시
+				# 영역 번호 표시 (중심 좌표도 변환)
 				if zone['points']:
-					center_x = sum(p[0] for p in zone['points']) / len(zone['points'])
-					center_y = sum(p[1] for p in zone['points']) / len(zone['points'])
+					center_x = sum(p[0] for p in zone['points']) / len(zone['points']) * self.original_width * self.zoom_ratio
+					center_y = sum(p[1] for p in zone['points']) / len(zone['points']) * self.original_height * self.zoom_ratio
 					self.canvas.create_text(center_x, center_y, text=f"제외영역 {i+1}", fill=color, font='Arial 10 bold', tags="exclusion_zone")
 
 		# 현재 그리고 있는 제외 영역 표시
 		if self.exclusion_zone_mode and self.exclusion_zone_points:
-			# 선택한 점들 연결
+			# 선택한 점들 연결 (상대 좌표 → 캔버스 좌표로 변환)
 			for i in range(len(self.exclusion_zone_points)):
 				if i > 0:
 					x1, y1 = self.exclusion_zone_points[i-1]
 					x2, y2 = self.exclusion_zone_points[i]
-					self.canvas.create_line(x1, y1, x2, y2, fill='cyan', width=2, tags="exclusion_zone")
+					canvas_x1 = x1 * self.original_width * self.zoom_ratio
+					canvas_y1 = y1 * self.original_height * self.zoom_ratio
+					canvas_x2 = x2 * self.original_width * self.zoom_ratio
+					canvas_y2 = y2 * self.original_height * self.zoom_ratio
+					self.canvas.create_line(canvas_x1, canvas_y1, canvas_x2, canvas_y2, fill='cyan', width=2, tags="exclusion_zone")
 
-			# 점 표시
+			# 점 표시 (상대 좌표 → 캔버스 좌표로 변환)
 			for point in self.exclusion_zone_points:
 				x, y = point
-				self.canvas.create_oval(x-4, y-4, x+4, y+4, fill='cyan', outline='white', width=2, tags="exclusion_zone")
+				canvas_x = x * self.original_width * self.zoom_ratio
+				canvas_y = y * self.original_height * self.zoom_ratio
+				self.canvas.create_oval(canvas_x-4, canvas_y-4, canvas_x+4, canvas_y+4, fill='cyan', outline='white', width=2, tags="exclusion_zone")
 
 	def draw_pending_operation_markers(self):
 		"""삭제/변환된 라벨에 동그라미 표시"""
@@ -4937,8 +4975,10 @@ class MainApp:
 			# 첫 점을 다시 클릭했는지 확인 (폴리곤 닫기)
 			if len(self.exclusion_zone_points) >= 3:
 				first_point = self.exclusion_zone_points[0]
-				# 첫 점 근처 클릭 확인 (10픽셀 이내)
-				if ((x - first_point[0])**2 + (y - first_point[1])**2) <= 100:
+				# 첫 점 근처 클릭 확인 (10픽셀 이내, 상대 좌표를 캔버스 좌표로 변환하여 비교)
+				first_point_x = first_point[0] * self.original_width * self.zoom_ratio
+				first_point_y = first_point[1] * self.original_height * self.zoom_ratio
+				if ((x - first_point_x)**2 + (y - first_point_y)**2) <= 100:
 					# 폴리곤 완성 (전역 영역에 추가)
 					self.exclusion_zone_manager.add_zone(self.exclusion_zone_points, use_global=True)
 					self.exclusion_zone_manager.save_global_zones()
@@ -4948,8 +4988,12 @@ class MainApp:
 					self.draw_bbox()  # 화면 갱신
 					return
 
-			# 점 추가
-			self.exclusion_zone_points.append((x, y))
+			# 점 추가 (캔버스 좌표 → 원본 이미지 좌표 → 상대 좌표로 변환하여 저장)
+			orig_x = x / self.zoom_ratio
+			orig_y = y / self.zoom_ratio
+			rel_x = orig_x / self.original_width
+			rel_y = orig_y / self.original_height
+			self.exclusion_zone_points.append((rel_x, rel_y))
 			self.draw_bbox()  # 화면 갱신
 			return
 
