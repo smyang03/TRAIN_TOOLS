@@ -3283,10 +3283,10 @@ class MainApp:
 				print(f"WARNING: Invalid class index {class_idx}, using default")
 				name = class_name[0] if class_name else "unknown"
 
-			return [False, name, -1, (x), (y), (x+w), (y+h)]
+			return [False, name, class_idx, (x), (y), (x+w), (y+h)]
 		except (IndexError, ValueError, TypeError) as e:
 			print(f"ERROR in convert_rel2abs: {e}, rc={rc}")
-			return [False, class_name[0] if class_name else "unknown", -1, 0, 0, 10, 10]
+			return [False, class_name[0] if class_name else "unknown", 0, 0, 0, 10, 10]
 
 	def convert_abs2rel(self, rc):
 		r = rc[3:]
@@ -4939,10 +4939,23 @@ class MainApp:
 				first_point = self.exclusion_zone_points[0]
 				# 첫 점 근처 클릭 확인 (10픽셀 이내)
 				if ((x - first_point[0])**2 + (y - first_point[1])**2) <= 100:
-					# 폴리곤 완성 (전역 영역에 추가)
-					self.exclusion_zone_manager.add_zone(self.exclusion_zone_points, use_global=True)
-					self.exclusion_zone_manager.save_global_zones()
-					messagebox.showinfo("제외 영역 추가", f"전역 제외 영역이 추가되었습니다.\n점 개수: {len(self.exclusion_zone_points)}")
+					# 클래스 선택 다이얼로그
+					selected_class_ids = self.select_classes_for_exclusion_zone(title="제외 영역 클래스 선택")
+
+					if selected_class_ids is not None:  # 취소하지 않은 경우
+						# 폴리곤 완성 (전역 영역에 추가)
+						self.exclusion_zone_manager.add_zone(self.exclusion_zone_points, use_global=True, class_ids=selected_class_ids)
+						self.exclusion_zone_manager.save_global_zones()
+
+						# 클래스 정보 메시지
+						if selected_class_ids:
+							class_names = [self.class_config_manager.get_class_name(cid) for cid in selected_class_ids]
+							class_info = f"적용 클래스: {', '.join(class_names)}"
+						else:
+							class_info = "적용 클래스: 모든 클래스"
+
+						messagebox.showinfo("제외 영역 추가", f"전역 제외 영역이 추가되었습니다.\n점 개수: {len(self.exclusion_zone_points)}\n{class_info}")
+
 					self.exclusion_zone_mode = False
 					self.exclusion_zone_points = []
 					self.draw_bbox()  # 화면 갱신
