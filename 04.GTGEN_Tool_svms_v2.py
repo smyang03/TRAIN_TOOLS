@@ -94,11 +94,12 @@ class ExclusionZoneManager:
 		"""모든 제외 영역 삭제"""
 		self.global_zones = []
 
-	def is_bbox_in_exclusion_zone(self, bbox, class_name_list=None):
+	def is_bbox_in_exclusion_zone(self, bbox, class_name_list=None, zoom_ratio=1.0):
 		"""bbox가 제외 영역과 겹치는지 확인 (면적 기반 + 클래스 필터)
 		Args:
-			bbox: [sel, clsname, info, x1, y1, x2, y2] 형태
+			bbox: [sel, clsname, info, x1, y1, x2, y2] 형태 (화면 좌표)
 			class_name_list: 클래스 이름 리스트 (전역 class_name)
+			zoom_ratio: 현재 줌 비율 (bbox를 원본 좌표로 변환하기 위해 필요)
 		Returns:
 			bool: 조금이라도 겹치면 True
 		"""
@@ -109,7 +110,8 @@ class ExclusionZoneManager:
 
 		# bbox의 클래스 ID 가져오기
 		bbox_class_id = bbox[2]  # info 필드가 class_id
-		x1, y1, x2, y2 = bbox[3], bbox[4], bbox[5], bbox[6]
+		# bbox를 원본 좌표로 변환 (화면 좌표 / zoom_ratio)
+		x1, y1, x2, y2 = bbox[3] / zoom_ratio, bbox[4] / zoom_ratio, bbox[5] / zoom_ratio, bbox[6] / zoom_ratio
 		print(f"[DEBUG] bbox 검사: class={bbox[1]}, class_id={bbox_class_id}, coords=({x1:.1f}, {y1:.1f}, {x2:.1f}, {y2:.1f})")
 
 		for i, zone in enumerate(zones_to_check):
@@ -3361,7 +3363,7 @@ class MainApp:
 		if self.exclusion_zone_enabled and self.exclusion_zone_manager:
 			before_count = len(self.bbox)
 			print(f"[DEBUG] 제외 영역 필터링 시작: {before_count}개 라벨 검사")
-			self.bbox = [bbox for bbox in self.bbox if not self.exclusion_zone_manager.is_bbox_in_exclusion_zone(bbox)]
+			self.bbox = [bbox for bbox in self.bbox if not self.exclusion_zone_manager.is_bbox_in_exclusion_zone(bbox, zoom_ratio=self.zoom_ratio)]
 			deleted_count = before_count - len(self.bbox)
 			print(f"[DEBUG] 제외 영역 필터링 완료: {deleted_count}개 삭제됨")
 			if deleted_count > 0:
@@ -3580,19 +3582,21 @@ class MainApp:
 			if zone['points']:
 				# 폴리곤 색상 (활성화 여부에 따라)
 				color = 'orange' if zone['enabled'] else 'gray'
-				# 폴리곤 그리기
+				# 폴리곤 그리기 - 원본 좌표를 화면 좌표로 변환 (줌 비율 적용)
 				points = []
 				for point in zone['points']:
-					points.extend([point[0], point[1]])
+					screen_x = point[0] * self.zoom_ratio
+					screen_y = point[1] * self.zoom_ratio
+					points.extend([screen_x, screen_y])
 				self.canvas.create_polygon(points, outline=color, fill='', width=2, dash=(5, 5), tags="exclusion_zone")
 
 				# 영역 번호 표시
 				if zone['points']:
-					center_x = sum(p[0] for p in zone['points']) / len(zone['points'])
-					center_y = sum(p[1] for p in zone['points']) / len(zone['points'])
+					center_x = sum(p[0] * self.zoom_ratio for p in zone['points']) / len(zone['points'])
+					center_y = sum(p[1] * self.zoom_ratio for p in zone['points']) / len(zone['points'])
 					self.canvas.create_text(center_x, center_y, text=f"제외영역 {i+1}", fill=color, font='Arial 10 bold', tags="exclusion_zone")
 
-		# 현재 그리고 있는 제외 영역 표시
+		# 현재 그리고 있는 제외 영역 표시 (이미 화면 좌표로 저장되어 있음)
 		if self.exclusion_zone_mode and self.exclusion_zone_points:
 			# 선택한 점들 연결
 			for i in range(len(self.exclusion_zone_points)):
@@ -4911,8 +4915,12 @@ class MainApp:
 			selected_class_ids = self.select_classes_for_exclusion_zone(title="제외 영역 클래스 선택")
 
 			if selected_class_ids is not None:  # 취소하지 않은 경우
+				# 화면 좌표를 원본 좌표로 변환 (줌 비율 적용)
+				original_points = [(px / self.zoom_ratio, py / self.zoom_ratio)
+								  for px, py in self.exclusion_zone_points]
+
 				# 폴리곤 완성 (전역 영역에 추가)
-				self.exclusion_zone_manager.add_zone(self.exclusion_zone_points, use_global=True, class_ids=selected_class_ids)
+				self.exclusion_zone_manager.add_zone(original_points, use_global=True, class_ids=selected_class_ids)
 				self.exclusion_zone_manager.save_global_zones()
 
 				# 클래스 정보 메시지
@@ -4943,8 +4951,12 @@ class MainApp:
 					selected_class_ids = self.select_classes_for_exclusion_zone(title="제외 영역 클래스 선택")
 
 					if selected_class_ids is not None:  # 취소하지 않은 경우
+						# 화면 좌표를 원본 좌표로 변환 (줌 비율 적용)
+						original_points = [(px / self.zoom_ratio, py / self.zoom_ratio)
+										  for px, py in self.exclusion_zone_points]
+
 						# 폴리곤 완성 (전역 영역에 추가)
-						self.exclusion_zone_manager.add_zone(self.exclusion_zone_points, use_global=True, class_ids=selected_class_ids)
+						self.exclusion_zone_manager.add_zone(original_points, use_global=True, class_ids=selected_class_ids)
 						self.exclusion_zone_manager.save_global_zones()
 
 						# 클래스 정보 메시지
@@ -6672,7 +6684,7 @@ class MainApp:
 
 		# 2. 제외 영역 확인
 		if self.exclusion_zone_enabled and self.exclusion_zone_manager:
-			if self.exclusion_zone_manager.is_bbox_in_exclusion_zone(self.copied_label):
+			if self.exclusion_zone_manager.is_bbox_in_exclusion_zone(self.copied_label, zoom_ratio=self.zoom_ratio):
 				warning_messages.append("제외 영역 내 라벨")
 
 		# 경고가 있으면 사용자에게 확인
@@ -6818,7 +6830,7 @@ class MainApp:
 		if self.exclusion_zone_enabled and self.exclusion_zone_manager:
 			in_exclusion_count = 0
 			for label in self.copied_multi_labels:
-				if self.exclusion_zone_manager.is_bbox_in_exclusion_zone(label):
+				if self.exclusion_zone_manager.is_bbox_in_exclusion_zone(label, zoom_ratio=self.zoom_ratio):
 					in_exclusion_count += 1
 
 			if in_exclusion_count > 0:
