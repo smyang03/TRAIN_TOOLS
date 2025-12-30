@@ -1556,6 +1556,23 @@ class MainApp:
 			value=10
 		)
 		self.rb_delete_10.pack(side=tk.LEFT, padx=2)
+
+		self.rb_delete_custom = tk.Radiobutton(
+			self.delete_mode_frame,
+			text="직접입력:",
+			variable=self.delete_count_var,
+			value=0
+		)
+		self.rb_delete_custom.pack(side=tk.LEFT, padx=2)
+
+		# 직접 입력 Entry
+		self.delete_custom_entry = tk.Entry(
+			self.delete_mode_frame,
+			width=5
+		)
+		self.delete_custom_entry.pack(side=tk.LEFT, padx=2)
+		self.delete_custom_entry.insert(0, "1")  # 기본값
+
 		self.setup_label_list_ui()
 
 		# 3. 캔버스 프레임 (스크롤바 포함)
@@ -4646,6 +4663,19 @@ class MainApp:
 		"""현재 파일 삭제 (연속 삭제 옵션 지원)"""
 		# 삭제할 장 수 가져오기
 		delete_count = self.delete_count_var.get() if hasattr(self, 'delete_count_var') else 1
+
+		# 직접 입력 모드인 경우 Entry에서 값 가져오기
+		if delete_count == 0 and hasattr(self, 'delete_custom_entry'):
+			try:
+				custom_value = int(self.delete_custom_entry.get())
+				if custom_value > 0:
+					delete_count = custom_value
+				else:
+					messagebox.showwarning("경고", "1 이상의 숫자를 입력하세요.")
+					return
+			except ValueError:
+				messagebox.showwarning("경고", "올바른 숫자를 입력하세요.")
+				return
 
 		# 실제 삭제 가능한 장 수 계산
 		remaining = len(self.imlist) - self.ci
