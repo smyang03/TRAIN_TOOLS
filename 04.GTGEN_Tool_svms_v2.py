@@ -3683,6 +3683,9 @@ class MainApp:
 		# 제외 영역 표시
 		self.draw_exclusion_zones()
 
+		# 클래스 변경 영역 표시
+		self.draw_class_change_zones()
+
 		# 삭제/변환된 라벨에 동그라미 표시
 		self.draw_pending_operation_markers()
 		return
@@ -3804,6 +3807,56 @@ class MainApp:
 			for point in self.exclusion_zone_points:
 				x, y = point
 				self.canvas.create_oval(x-4, y-4, x+4, y+4, fill='cyan', outline='white', width=2, tags="exclusion_zone")
+
+	def draw_class_change_zones(self):
+		"""클래스 변경 영역 표시"""
+		self.canvas.delete("class_change_zone")
+
+		if not self.class_change_zone_manager:
+			return
+
+		# 등록된 클래스 변경 영역 표시
+		for i, zone in enumerate(self.class_change_zone_manager.zones):
+			if zone['points']:
+				# 폴리곤 색상 (활성화 여부에 따라)
+				color = 'lime' if zone['enabled'] else 'gray'
+				# 폴리곤 그리기 - 원본 좌표를 화면 좌표로 변환 (줌 비율 적용)
+				points = []
+				for point in zone['points']:
+					screen_x = point[0] * self.zoom_ratio
+					screen_y = point[1] * self.zoom_ratio
+					points.extend([screen_x, screen_y])
+				self.canvas.create_polygon(points, outline=color, fill='', width=2, dash=(5, 5), tags="class_change_zone")
+
+				# 영역 번호 및 모드 정보 표시
+				if zone['points']:
+					center_x = sum(p[0] * self.zoom_ratio for p in zone['points']) / len(zone['points'])
+					center_y = sum(p[1] * self.zoom_ratio for p in zone['points']) / len(zone['points'])
+
+					# 모드 정보 텍스트
+					target_class = self.class_config_manager.get_class_name(zone['target_class_id'])
+					if zone['mode'] == 'all':
+						mode_text = f"모두→{target_class}"
+					else:
+						source_class = self.class_config_manager.get_class_name(zone['source_class_id'])
+						mode_text = f"{source_class}→{target_class}"
+
+					self.canvas.create_text(center_x, center_y, text=f"클래스변경 {i+1}\n{mode_text}",
+											fill=color, font='Arial 10 bold', tags="class_change_zone")
+
+		# 현재 그리고 있는 클래스 변경 영역 표시 (이미 화면 좌표로 저장되어 있음)
+		if self.class_change_zone_mode and self.class_change_zone_points:
+			# 선택한 점들 연결
+			for i in range(len(self.class_change_zone_points)):
+				if i > 0:
+					x1, y1 = self.class_change_zone_points[i-1]
+					x2, y2 = self.class_change_zone_points[i]
+					self.canvas.create_line(x1, y1, x2, y2, fill='magenta', width=2, tags="class_change_zone")
+
+			# 점 표시
+			for point in self.class_change_zone_points:
+				x, y = point
+				self.canvas.create_oval(x-4, y-4, x+4, y+4, fill='magenta', outline='white', width=2, tags="class_change_zone")
 
 	def draw_pending_operation_markers(self):
 		"""삭제/변환된 라벨에 동그라미 표시"""
@@ -6348,30 +6401,22 @@ class MainApp:
 
 		def add_zone_all():
 			"""모든 클래스 변경 영역 추가"""
-			print(f"[DEBUG] add_zone_all 호출됨")
 			# 목표 클래스 선택
 			target_class_id = self.select_single_class_dialog("목표 클래스 선택", "모든 클래스를 변경할 목표 클래스를 선택하세요")
-			print(f"[DEBUG] add_zone_all: target_class_id = {target_class_id}")
 			if target_class_id is not None:
 				self.class_change_zone_mode = True
 				self.class_change_zone_points = []
 				self.class_change_zone_config = {'mode': 'all', 'target_class_id': target_class_id}
-				print(f"[DEBUG] add_zone_all: 클래스 변경 모드 활성화, config = {self.class_change_zone_config}")
 				messagebox.showinfo("클래스 변경 영역 추가", "캔버스에서 좌클릭으로 점을 추가하세요.\n우클릭 또는 첫 점을 다시 클릭하면 완성됩니다.")
 				dialog.destroy()
-			else:
-				print(f"[DEBUG] add_zone_all: 클래스 선택 취소됨")
 
 		def add_zone_filter():
 			"""특정 클래스 필터 변경 영역 추가"""
-			print(f"[DEBUG] add_zone_filter 호출됨")
 			# 원본 클래스 선택
 			source_class_id = self.select_single_class_dialog("원본 클래스 선택", "변경할 원본 클래스를 선택하세요")
-			print(f"[DEBUG] add_zone_filter: source_class_id = {source_class_id}")
 			if source_class_id is not None:
 				# 목표 클래스 선택
 				target_class_id = self.select_single_class_dialog("목표 클래스 선택", "변경할 목표 클래스를 선택하세요")
-				print(f"[DEBUG] add_zone_filter: target_class_id = {target_class_id}")
 				if target_class_id is not None:
 					self.class_change_zone_mode = True
 					self.class_change_zone_points = []
@@ -6380,13 +6425,8 @@ class MainApp:
 						'source_class_id': source_class_id,
 						'target_class_id': target_class_id
 					}
-					print(f"[DEBUG] add_zone_filter: 클래스 변경 모드 활성화, config = {self.class_change_zone_config}")
 					messagebox.showinfo("클래스 변경 영역 추가", "캔버스에서 좌클릭으로 점을 추가하세요.\n우클릭 또는 첫 점을 다시 클릭하면 완성됩니다.")
 					dialog.destroy()
-				else:
-					print(f"[DEBUG] add_zone_filter: 목표 클래스 선택 취소됨")
-			else:
-				print(f"[DEBUG] add_zone_filter: 원본 클래스 선택 취소됨")
 
 		def remove_zone():
 			"""선택한 영역 삭제"""
@@ -6475,22 +6515,18 @@ class MainApp:
 		scrollbar.config(command=listbox.yview)
 
 		# 클래스 목록 채우기
-		print(f"[DEBUG] select_single_class_dialog: class_name 길이 = {len(class_name)}")
 		for class_id, class_name_str in enumerate(class_name):
 			listbox.insert(tk.END, f"[{class_id}] {class_name_str}")
 
 		def on_ok():
 			selection = listbox.curselection()
-			print(f"[DEBUG] on_ok: selection = {selection}")
 			if selection:
 				result['class_id'] = selection[0]
-				print(f"[DEBUG] on_ok: class_id = {result['class_id']}")
 				dialog.destroy()
 			else:
 				messagebox.showwarning("경고", "클래스를 선택하세요.")
 
 		def on_cancel():
-			print(f"[DEBUG] on_cancel 호출됨")
 			result['class_id'] = None
 			dialog.destroy()
 
@@ -6499,9 +6535,7 @@ class MainApp:
 		tk.Button(button_frame, text="확인", command=on_ok, width=10, bg="lightblue").pack(side=tk.LEFT, padx=5)
 		tk.Button(button_frame, text="취소", command=on_cancel, width=10).pack(side=tk.LEFT, padx=5)
 
-		print(f"[DEBUG] wait_window 시작")
 		self.master.wait_window(dialog)
-		print(f"[DEBUG] wait_window 종료, result = {result['class_id']}")
 		return result['class_id']
 
 	def manage_auto_delete_classes(self):
