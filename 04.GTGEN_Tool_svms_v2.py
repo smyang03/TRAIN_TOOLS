@@ -105,28 +105,24 @@ class ExclusionZoneManager:
 		"""
 		zones_to_check = self.global_zones if self.use_global else self.zones
 		if not zones_to_check:
-			print(f"[DEBUG] zones_to_check가 비어있음 (use_global={self.use_global})")
+			# 제외 영역이 없으면 False 반환 (디버그 로그 제거)
 			return False
 
 		# bbox의 클래스 ID 가져오기
 		bbox_class_id = bbox[2]  # info 필드가 class_id
 		# bbox를 원본 좌표로 변환 (화면 좌표 / zoom_ratio)
 		x1, y1, x2, y2 = bbox[3] / zoom_ratio, bbox[4] / zoom_ratio, bbox[5] / zoom_ratio, bbox[6] / zoom_ratio
-		print(f"[DEBUG] bbox 검사: class={bbox[1]}, class_id={bbox_class_id}, coords=({x1:.1f}, {y1:.1f}, {x2:.1f}, {y2:.1f})")
 
 		for i, zone in enumerate(zones_to_check):
 			# 하위 호환성: class_ids 키가 없으면 빈 리스트로 간주
 			zone_class_ids = zone.get('class_ids', [])
-			print(f"[DEBUG]   제외영역 {i+1}: enabled={zone['enabled']}, points={len(zone['points'])}개, class_ids={zone_class_ids}")
 
 			if zone['enabled']:
 				# 클래스 필터 체크: class_ids가 비어있으면 모든 클래스에 적용
 				if zone_class_ids and bbox_class_id not in zone_class_ids:
-					print(f"[DEBUG]   → 클래스 필터로 제외됨 (bbox_class_id={bbox_class_id})")
 					continue
 
 				overlap = self._bbox_polygon_overlap(x1, y1, x2, y2, zone['points'])
-				print(f"[DEBUG]   → 겹침 결과: {overlap}")
 				if overlap:
 					return True
 		return False
@@ -143,9 +139,6 @@ class ExclusionZoneManager:
 		min_x, max_x = min(x1, x2), max(x1, x2)
 		min_y, max_y = min(y1, y2), max(y1, y2)
 
-		print(f"[DEBUG]     bbox 정규화: ({min_x:.1f}, {min_y:.1f}) ~ ({max_x:.1f}, {max_y:.1f})")
-		print(f"[DEBUG]     polygon: {polygon[:3]}{'...' if len(polygon) > 3 else ''}")
-
 		# 1. bbox의 네 모서리 중 하나라도 폴리곤 안에 있는지 확인
 		bbox_corners = [
 			(min_x, min_y),  # 왼쪽 위
@@ -156,14 +149,12 @@ class ExclusionZoneManager:
 
 		for corner in bbox_corners:
 			if self._point_in_polygon(corner, polygon):
-				print(f"[DEBUG]     ✓ 검사1 통과: bbox 모서리 {corner}가 폴리곤 안에 있음")
 				return True  # bbox 모서리가 폴리곤 안에 있음
 
 		# 2. 폴리곤의 점 중 하나라도 bbox 안에 있는지 확인
 		for point in polygon:
 			px, py = point
 			if min_x <= px <= max_x and min_y <= py <= max_y:
-				print(f"[DEBUG]     ✓ 검사2 통과: 폴리곤 점 {point}가 bbox 안에 있음")
 				return True  # 폴리곤 점이 bbox 안에 있음
 
 		# 3. bbox의 변과 폴리곤의 변이 교차하는지 확인
@@ -179,10 +170,8 @@ class ExclusionZoneManager:
 			polygon_edge = (polygon[i], polygon[(i + 1) % n])
 			for bbox_edge in bbox_edges:
 				if self._segments_intersect(bbox_edge[0], bbox_edge[1], polygon_edge[0], polygon_edge[1]):
-					print(f"[DEBUG]     ✓ 검사3 통과: bbox 변과 폴리곤 변이 교차")
 					return True  # 변들이 교차함
 
-		print(f"[DEBUG]     ✗ 모든 검사 실패: 겹치지 않음")
 		return False  # 겹치지 않음
 
 	def _segments_intersect(self, p1, p2, p3, p4):
@@ -7106,22 +7095,35 @@ class MainApp:
 			messagebox.showwarning("경고", "복사할 라벨이 선택되지 않았습니다. 먼저 라벨을 선택해주세요.")
 			return
 
-		# 현재 선택된 라벨을 복사
-		self.copied_label = copy.deepcopy(self.bbox[self.selid])
-		
+		# 현재 선택된 라벨을 원본 좌표로 변환하여 복사 (줌 비율 고려)
+		selected_bbox = self.bbox[self.selid]
+
+		# bbox를 원본 좌표로 변환 (화면 좌표 / zoom_ratio)
+		original_bbox = [
+			selected_bbox[0],  # sel
+			selected_bbox[1],  # clsname
+			selected_bbox[2],  # info (class_id)
+			selected_bbox[3] / self.zoom_ratio,  # x1 (원본)
+			selected_bbox[4] / self.zoom_ratio,  # y1 (원본)
+			selected_bbox[5] / self.zoom_ratio,  # x2 (원본)
+			selected_bbox[6] / self.zoom_ratio   # y2 (원본)
+		]
+
+		self.copied_label = copy.deepcopy(original_bbox)
+
 		# 사용자에게 피드백 제공
 		label_class = self.copied_label[1]
-		bbox_width = self.copied_label[5] - self.copied_label[3]
-		bbox_height = self.copied_label[6] - self.copied_label[4]
-		
+		bbox_width = int((self.copied_label[5] - self.copied_label[3]) * self.zoom_ratio)
+		bbox_height = int((self.copied_label[6] - self.copied_label[4]) * self.zoom_ratio)
+
 		# 임시 메시지 표시 (캔버스에)
 		self.canvas.delete("copy_message")
 		self.canvas.create_text(
-			self.imsize[0] // 2, 20, 
+			self.imsize[0] // 2, 20,
 			text=f"라벨 복사됨: {label_class} ({bbox_width}x{bbox_height})",
 			fill="white", font=("Arial", 12), tags="copy_message"
 		)
-		
+
 		# 잠시 후 메시지 삭제
 		self.master.after(1500, lambda: self.canvas.delete("copy_message"))
 
@@ -7131,20 +7133,31 @@ class MainApp:
 			messagebox.showwarning("경고", "붙여넣을 라벨이 없습니다. 먼저 라벨을 복사해주세요.")
 			return
 
-		# 자동 필터링 충돌 확인
+		# 원본 좌표를 현재 줌 비율로 변환 (원본 좌표 * zoom_ratio)
+		screen_bbox = [
+			self.copied_label[0],  # sel
+			self.copied_label[1],  # clsname
+			self.copied_label[2],  # info (class_id)
+			self.copied_label[3] * self.zoom_ratio,  # x1 (화면)
+			self.copied_label[4] * self.zoom_ratio,  # y1 (화면)
+			self.copied_label[5] * self.zoom_ratio,  # x2 (화면)
+			self.copied_label[6] * self.zoom_ratio   # y2 (화면)
+		]
+
+		# 자동 필터링 충돌 확인 (화면 좌표 사용)
 		warning_messages = []
 
 		# 1. 자동 삭제 클래스 확인
 		if self.auto_delete_manager and self.auto_delete_manager.delete_class_config:
 			global class_name
-			class_id = int(self.copied_label[2])
+			class_id = int(screen_bbox[2])
 			if class_id in self.auto_delete_manager.delete_class_config:
 				class_str = class_name[class_id] if class_id < len(class_name) else str(class_id)
 				warning_messages.append(f"자동 삭제 대상 클래스: {class_str}")
 
-		# 2. 제외 영역 확인
+		# 2. 제외 영역 확인 (화면 좌표 사용)
 		if self.exclusion_zone_enabled and self.exclusion_zone_manager:
-			if self.exclusion_zone_manager.is_bbox_in_exclusion_zone(self.copied_label, zoom_ratio=self.zoom_ratio):
+			if self.exclusion_zone_manager.is_bbox_in_exclusion_zone(screen_bbox, zoom_ratio=self.zoom_ratio):
 				warning_messages.append("제외 영역 내 라벨")
 
 		# 경고가 있으면 사용자에게 확인
@@ -7154,8 +7167,8 @@ class MainApp:
 			if not messagebox.askyesno("자동 필터링 경고", msg):
 				return
 
-		# 복사된 라벨의 사본 생성
-		new_label = copy.deepcopy(self.copied_label)
+		# 화면 좌표로 변환된 라벨을 사용
+		new_label = copy.deepcopy(screen_bbox)
 
 		# 선택 상태 초기화 (모든 라벨 선택 해제)
 		for rc in self.bbox:
@@ -7247,18 +7260,31 @@ class MainApp:
 		if not self.multi_selected:
 			messagebox.showwarning("경고", "다중 선택된 라벨이 없습니다.")
 			return
-		
-		# 선택된 라벨들을 복사 변수에 저장
+
+		# 선택된 라벨들을 원본 좌표로 변환하여 복사 (줌 비율 고려)
 		self.copied_multi_labels = []
 		for idx in sorted(self.multi_selected):
 			if idx < len(self.bbox):
-				self.copied_multi_labels.append(copy.deepcopy(self.bbox[idx]))
-		
+				selected_bbox = self.bbox[idx]
+
+				# bbox를 원본 좌표로 변환 (화면 좌표 / zoom_ratio)
+				original_bbox = [
+					selected_bbox[0],  # sel
+					selected_bbox[1],  # clsname
+					selected_bbox[2],  # info (class_id)
+					selected_bbox[3] / self.zoom_ratio,  # x1 (원본)
+					selected_bbox[4] / self.zoom_ratio,  # y1 (원본)
+					selected_bbox[5] / self.zoom_ratio,  # x2 (원본)
+					selected_bbox[6] / self.zoom_ratio   # y2 (원본)
+				]
+
+				self.copied_multi_labels.append(copy.deepcopy(original_bbox))
+
 		# 피드백 메시지
 		count = len(self.copied_multi_labels)
 		self.canvas.delete("copy_message")
 		self.canvas.create_text(
-			self.imsize[0] // 2, 20, 
+			self.imsize[0] // 2, 20,
 			text=f"다중 라벨 복사됨: {count}개",
 			fill="white", font=("Arial", 12), tags="copy_message"
 		)
@@ -7270,15 +7296,29 @@ class MainApp:
 			messagebox.showwarning("경고", "붙여넣을 다중 라벨이 없습니다.")
 			return
 
-		# 자동 필터링 충돌 확인
+		# 원본 좌표를 현재 줌 비율로 변환 (원본 좌표 * zoom_ratio)
+		screen_bboxes = []
+		for label in self.copied_multi_labels:
+			screen_bbox = [
+				label[0],  # sel
+				label[1],  # clsname
+				label[2],  # info (class_id)
+				label[3] * self.zoom_ratio,  # x1 (화면)
+				label[4] * self.zoom_ratio,  # y1 (화면)
+				label[5] * self.zoom_ratio,  # x2 (화면)
+				label[6] * self.zoom_ratio   # y2 (화면)
+			]
+			screen_bboxes.append(screen_bbox)
+
+		# 자동 필터링 충돌 확인 (화면 좌표 사용)
 		warning_messages = []
 
 		# 1. 자동 삭제 클래스 확인
 		if self.auto_delete_manager and self.auto_delete_manager.delete_class_config:
 			global class_name
 			filtered_labels = []
-			for label in self.copied_multi_labels:
-				class_id = int(label[2])
+			for bbox in screen_bboxes:
+				class_id = int(bbox[2])
 				if class_id in self.auto_delete_manager.delete_class_config:
 					class_str = class_name[class_id] if class_id < len(class_name) else str(class_id)
 					filtered_labels.append(class_str)
@@ -7286,11 +7326,11 @@ class MainApp:
 			if filtered_labels:
 				warning_messages.append(f"자동 삭제 대상 클래스: {', '.join(filtered_labels)}")
 
-		# 2. 제외 영역 확인
+		# 2. 제외 영역 확인 (화면 좌표 사용)
 		if self.exclusion_zone_enabled and self.exclusion_zone_manager:
 			in_exclusion_count = 0
-			for label in self.copied_multi_labels:
-				if self.exclusion_zone_manager.is_bbox_in_exclusion_zone(label, zoom_ratio=self.zoom_ratio):
+			for bbox in screen_bboxes:
+				if self.exclusion_zone_manager.is_bbox_in_exclusion_zone(bbox, zoom_ratio=self.zoom_ratio):
 					in_exclusion_count += 1
 
 			if in_exclusion_count > 0:
@@ -7307,9 +7347,9 @@ class MainApp:
 		for rc in self.bbox:
 			rc[0] = False
 
-		# 복사된 라벨들 추가
-		for label in self.copied_multi_labels:
-			new_label = copy.deepcopy(label)
+		# 화면 좌표로 변환된 라벨들 추가
+		for screen_bbox in screen_bboxes:
+			new_label = copy.deepcopy(screen_bbox)
 			new_label[0] = False  # 선택 해제 상태로 추가
 			self.bbox.append(new_label)
 
@@ -7319,7 +7359,7 @@ class MainApp:
 		self.draw_bbox()
 
 		# 피드백 메시지
-		count = len(self.copied_multi_labels)
+		count = len(screen_bboxes)
 		self.canvas.delete("paste_message")
 		self.canvas.create_text(
 			self.imsize[0] // 2, 20,
