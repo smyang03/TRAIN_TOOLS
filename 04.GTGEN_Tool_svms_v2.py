@@ -266,6 +266,169 @@ class ExclusionZoneManager:
 		# 전역 영역은 이미 __init__에서 로드됨
 		pass
 
+# 클래스 변경 영역 관리 클래스
+class ClassChangeZoneManager:
+	"""폴리곤 영역 내 bbox의 클래스를 변경하는 기능을 관리하는 클래스"""
+
+	def __init__(self, base_dir=None):
+		self.base_dir = base_dir or os.getcwd()
+		self.zones = []  # 클래스 변경 영역 리스트
+		self.global_zone_file = os.path.join(self.base_dir, ".class_change_zones.json")
+		self.load_zones()
+
+	def add_zone(self, points, mode, target_class_id, source_class_id=None):
+		"""새로운 클래스 변경 영역 추가
+		Args:
+			points: 폴리곤 점들 [(x, y), ...]
+			mode: 변경 모드 ("all" 또는 "filter")
+			target_class_id: 변경할 목표 클래스 ID
+			source_class_id: 필터 모드일 때 대상 클래스 ID (mode="filter"일 때만 사용)
+		"""
+		if len(points) >= 3:
+			zone = {
+				'points': points,
+				'enabled': True,
+				'mode': mode,  # "all" or "filter"
+				'target_class_id': target_class_id,
+				'source_class_id': source_class_id  # mode="filter"일 때만 사용
+			}
+			self.zones.append(zone)
+			return True
+		return False
+
+	def remove_zone(self, index):
+		"""클래스 변경 영역 삭제"""
+		if 0 <= index < len(self.zones):
+			del self.zones[index]
+			return True
+		return False
+
+	def toggle_zone(self, index):
+		"""클래스 변경 영역 활성화/비활성화 토글"""
+		if 0 <= index < len(self.zones):
+			self.zones[index]['enabled'] = not self.zones[index]['enabled']
+			return True
+		return False
+
+	def clear_zones(self):
+		"""모든 클래스 변경 영역 삭제"""
+		self.zones = []
+
+	def apply_class_changes(self, bbox_list, class_name_list, zoom_ratio=1.0):
+		"""bbox 리스트에 클래스 변경 영역 적용
+		Args:
+			bbox_list: bbox 리스트 (화면 좌표)
+			class_name_list: 클래스 이름 리스트
+			zoom_ratio: 현재 줌 비율
+		Returns:
+			tuple: (변경된 bbox 리스트, 변경 개수)
+		"""
+		if not self.zones:
+			return bbox_list, 0
+
+		changed_count = 0
+		new_bbox_list = []
+
+		for bbox in bbox_list:
+			# bbox: [sel, clsname, info, x1, y1, x2, y2]
+			bbox_class_id = bbox[2]
+			x1, y1, x2, y2 = bbox[3] / zoom_ratio, bbox[4] / zoom_ratio, bbox[5] / zoom_ratio, bbox[6] / zoom_ratio
+
+			changed = False
+			for zone in self.zones:
+				if not zone['enabled']:
+					continue
+
+				# 폴리곤 내부에 있는지 확인
+				if self._bbox_in_polygon(x1, y1, x2, y2, zone['points']):
+					# 모드에 따라 클래스 변경
+					if zone['mode'] == 'all':
+						# 모든 클래스를 target_class_id로 변경
+						new_class_id = zone['target_class_id']
+						if 0 <= new_class_id < len(class_name_list):
+							new_class_name = class_name_list[new_class_id]
+							# bbox 복사 후 클래스 정보 변경
+							new_bbox = list(bbox)
+							new_bbox[1] = new_class_name
+							new_bbox[2] = new_class_id
+							new_bbox_list.append(new_bbox)
+							changed = True
+							changed_count += 1
+							break
+					elif zone['mode'] == 'filter':
+						# source_class_id와 일치하는 경우만 target_class_id로 변경
+						if bbox_class_id == zone['source_class_id']:
+							new_class_id = zone['target_class_id']
+							if 0 <= new_class_id < len(class_name_list):
+								new_class_name = class_name_list[new_class_id]
+								new_bbox = list(bbox)
+								new_bbox[1] = new_class_name
+								new_bbox[2] = new_class_id
+								new_bbox_list.append(new_bbox)
+								changed = True
+								changed_count += 1
+								break
+
+			# 변경되지 않았으면 원본 bbox 추가
+			if not changed:
+				new_bbox_list.append(bbox)
+
+		return new_bbox_list, changed_count
+
+	def _bbox_in_polygon(self, x1, y1, x2, y2, polygon):
+		"""bbox가 폴리곤 내부에 있는지 확인 (중심점 기준)
+		Args:
+			x1, y1, x2, y2: bbox 좌표
+			polygon: 폴리곤 점들 [(x, y), ...]
+		Returns:
+			bool: bbox 중심점이 폴리곤 안에 있으면 True
+		"""
+		# bbox 중심점 계산
+		cx = (x1 + x2) / 2
+		cy = (y1 + y2) / 2
+
+		return self._point_in_polygon((cx, cy), polygon)
+
+	def _point_in_polygon(self, point, polygon):
+		"""점이 폴리곤 안에 있는지 확인 (Ray casting algorithm)"""
+		x, y = point
+		n = len(polygon)
+		inside = False
+
+		p1x, p1y = polygon[0]
+		for i in range(1, n + 1):
+			p2x, p2y = polygon[i % n]
+			if y > min(p1y, p2y):
+				if y <= max(p1y, p2y):
+					if x <= max(p1x, p2x):
+						if p1y != p2y:
+							xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+						if p1x == p2x or x <= xinters:
+							inside = not inside
+			p1x, p1y = p2x, p2y
+
+		return inside
+
+	def save_zones(self):
+		"""클래스 변경 영역을 파일로 저장"""
+		try:
+			with open(self.global_zone_file, 'w') as f:
+				json.dump(self.zones, f, indent=2)
+			print(f"[ClassChangeZone] 클래스 변경 영역 저장: {len(self.zones)}개")
+		except Exception as e:
+			print(f"[ERROR] Failed to save class change zones: {e}")
+
+	def load_zones(self):
+		"""클래스 변경 영역을 파일에서 로드"""
+		if os.path.exists(self.global_zone_file):
+			try:
+				with open(self.global_zone_file, 'r') as f:
+					self.zones = json.load(f)
+				print(f"[ClassChangeZone] 클래스 변경 영역 로드: {len(self.zones)}개")
+			except Exception as e:
+				print(f"[ERROR] Failed to load class change zones: {e}")
+				self.zones = []
+
 # 클래스 자동 삭제 관리 클래스
 class AutoDeleteClassManager:
 	"""특정 클래스를 자동으로 삭제하는 기능을 관리하는 클래스"""
@@ -906,6 +1069,12 @@ class MainApp:
 		self.exclusion_zone_enabled = self.exclusion_zone_manager.load_enabled_state()
 		print(f"[ExclusionZone] 기능 활성화 상태: {self.exclusion_zone_enabled}")
 
+		# 클래스 변경 영역 관리자 초기화
+		self.class_change_zone_manager = ClassChangeZoneManager()
+		self.class_change_zone_mode = False  # 클래스 변경 영역 그리기 모드
+		self.class_change_zone_points = []  # 현재 그리고 있는 클래스 변경 영역의 점들
+		print(f"[ClassChangeZone] 클래스 변경 영역: {len(self.class_change_zone_manager.zones)}개")
+
 		# 클래스 자동 삭제 관리자 초기화
 		self.auto_delete_manager = AutoDeleteClassManager()
 		if self.auto_delete_manager.delete_class_config:
@@ -1157,6 +1326,10 @@ class MainApp:
 		self.btnExclusionZone = tk.Button(self.button_frame, text="제외영역", command=self.manage_exclusion_zones, bd=1)
 		self.btnExclusionZone.pack(side=tk.RIGHT, padx=2)
 
+		# 클래스 변경 영역 버튼
+		self.btnClassChangeZone = tk.Button(self.button_frame, text="클래스변경", command=self.manage_class_change_zones, bd=1)
+		self.btnClassChangeZone.pack(side=tk.RIGHT, padx=2)
+
 		# 클래스 자동 삭제 버튼
 		self.btnAutoDelete = tk.Button(self.button_frame, text="자동삭제", command=self.manage_auto_delete_classes, bd=1)
 		self.btnAutoDelete.pack(side=tk.RIGHT, padx=2)
@@ -1252,9 +1425,9 @@ class MainApp:
 		self.copy_functions_frame = tk.Frame(self.master, bd=1, relief=tk.RAISED)
 		self.copy_functions_frame.pack(side=tk.TOP, fill="x", padx=5, pady=5)
 
-		# 왼쪽 절반에 마스킹 복사 UI 배치
+		# 마스킹 복사 UI 배치 (상단)
 		self.mask_copy_frame = tk.Frame(self.copy_functions_frame)
-		self.mask_copy_frame.pack(side=tk.LEFT, padx=5, fill="x", expand=True)
+		self.mask_copy_frame.pack(side=tk.TOP, padx=5, fill="x", expand=True, pady=2)
 
 		self.mask_copy_label = tk.Label(self.mask_copy_frame, text="마스킹 복사:", bd=0)
 		self.mask_copy_label.pack(side=tk.LEFT, padx=5)
@@ -1300,12 +1473,10 @@ class MainApp:
 
 		self.page_move_btn = tk.Button(self.mask_copy_frame, text="Go", command=self.move_to_page, bd=1)
 		self.page_move_btn.pack(side=tk.LEFT, padx=5)
-		# 구분자 추가
-		tk.Frame(self.copy_functions_frame, bd=1, width=1, bg="gray").pack(side=tk.LEFT, fill="y", padx=10, pady=2)
 
-		# 오른쪽 절반에 라벨 복사 UI 배치
+		# 라벨 복사 UI 배치 (하단)
 		self.label_copy_frame = tk.Frame(self.copy_functions_frame)
-		self.label_copy_frame.pack(side=tk.LEFT, padx=5, fill="x", expand=True)
+		self.label_copy_frame.pack(side=tk.TOP, padx=5, fill="x", expand=True, pady=2)
 
 		# 기존 코드를 대체하는 메서드 호출 - UI를 별도 함수로 분리
 		self.update_label_copy_ui()
@@ -2094,7 +2265,7 @@ class MainApp:
 		"""현재 레이블을 지정된 범위의 이미지들에 복사 (다중 선택 지원)"""
 		copy_mode = self.copy_mode.get()
 		preserve_mode = self.preserve_mode.get()
-		
+
 		# 모드별 체크
 		if copy_mode == "all" and len(self.bbox) == 0:
 			messagebox.showwarning("경고", "복사할 라벨이 없습니다.")
@@ -2105,7 +2276,7 @@ class MainApp:
 		elif copy_mode == "selected_multi" and not self.multi_selected:
 			messagebox.showwarning("경고", "다중 선택된 라벨이 없습니다.")
 			return
-		
+
 		# 시작 및 종료 프레임 번호 가져오기
 		try:
 			start_frame = int(self.label_start_frame_entry.get())
@@ -2113,15 +2284,15 @@ class MainApp:
 		except ValueError:
 			messagebox.showerror("오류", "시작 및 종료 프레임 번호는 숫자여야 합니다.")
 			return
-		
+
 		# 프레임 범위 검증
 		if start_frame < 1 or end_frame > len(self.imlist) or start_frame > end_frame:
 			messagebox.showerror("오류", f"프레임 범위는 1에서 {len(self.imlist)} 사이여야 합니다.")
 			return
-		
+
 		# 현재 보고 있는 이미지 인덱스 저장
 		current_idx = self.ci
-		
+
 		# 모드별 작업 확인 메시지 (수정됨)
 		if copy_mode == "all":
 			confirm_msg = f"{start_frame}에서 {end_frame}까지의 이미지에 모든 라벨을 복사하시겠습니까?"
@@ -2137,36 +2308,35 @@ class MainApp:
 				confirm_msg = f"{start_frame}에서 {end_frame}까지의 이미지에 선택한 {count}개 라벨을 추가하고 기존 라벨을 유지하시겠습니까?"
 			else:  # replace
 				confirm_msg = f"{start_frame}에서 {end_frame}까지의 이미지에 선택한 {count}개 라벨만 복사하고 기존 라벨을 삭제하시겠습니까?"
-		
+
 		# 확인 메시지
 		if not messagebox.askyesno("확인", confirm_msg):
 			return
-		
+
 		# 현재 라벨 저장
 		self.write_bbox()
-		
-		# 복사할 라벨 정보 준비
+
+		# 복사할 라벨 정보 준비 (절대 좌표로 저장)
+		source_bboxes = []  # 절대 좌표 bbox 리스트
+		use_file_content = False  # 파일 내용을 직접 사용할지 여부
+
 		if copy_mode == "all":
-			# 모든 라벨 복사
+			# 모든 라벨 복사 - 파일 내용 직접 사용
 			with open(self.gt_fn, 'rt') as f:
 				copytext = f.readlines()
-			
-			if not copytext: 
+
+			if not copytext:
 				messagebox.showwarning("경고", "복사할 라벨 내용이 없습니다.")
 				return
+			use_file_content = True
 		elif copy_mode == "selected":
-			# 선택된 라벨만 복사
-			selected_bbox = self.bbox[self.selid]
-			selected_label_rel = self.convert_abs2rel(selected_bbox)
-			copytext = [' '.join(str(e) for e in selected_label_rel) + '\n']
+			# 선택된 라벨만 복사 - 절대 좌표 저장
+			source_bboxes = [self.bbox[self.selid]]
 		else:  # selected_multi
-			# 다중 선택된 라벨들 복사
-			copytext = []
+			# 다중 선택된 라벨들 복사 - 절대 좌표 저장
 			for idx in sorted(self.multi_selected):
 				if idx < len(self.bbox):
-					selected_bbox = self.bbox[idx]
-					selected_label_rel = self.convert_abs2rel(selected_bbox)
-					copytext.append(' '.join(str(e) for e in selected_label_rel) + '\n')
+					source_bboxes.append(self.bbox[idx])
 		
 		# 진행 상황 창 생성
 		progress_window = tk.Toplevel(self.master)
@@ -2196,18 +2366,53 @@ class MainApp:
 			progress_bar["value"] = i - (start_frame - 1) + 1
 			progress_label.config(text=f"처리 중: {i+1}/{end_frame} ({int(progress_bar['value']/total_frames*100)}%)")
 			self.master.update()
-			
+
 			# 현재 이미지 건너뛰기
 			if i == current_idx:
 				continue
-			
+
 			try:
 				# 대상 파일 경로 계산
 				target_img_path = self.imlist[i]
 				target_label_path = target_img_path.replace('JPEGImages', 'labels')
 				target_label_path = target_label_path.replace('.jpg', '.txt')
 				target_label_path = target_label_path.replace('.png', '.txt')
-				
+
+				# 타겟 이미지의 해상도 읽기 (선택/다중 선택 모드일 때만)
+				if not use_file_content:
+					try:
+						target_img = Image.open(target_img_path)
+						target_size = target_img.size  # (width, height)
+						target_img.close()
+
+						# 타겟 이미지 해상도로 bbox 변환
+						copytext = []
+						for bbox in source_bboxes:
+							# bbox: [sel, clsname, info, x1, y1, x2, y2] 형태 (절대 좌표)
+							# 현재 이미지 크기에서 타겟 이미지 크기로 스케일 조정
+							scale_x = target_size[0] / self.imsize[0]
+							scale_y = target_size[1] / self.imsize[1]
+
+							# 절대 좌표 스케일링
+							x1 = bbox[3] * scale_x
+							y1 = bbox[4] * scale_y
+							x2 = bbox[5] * scale_x
+							y2 = bbox[6] * scale_y
+
+							# YOLO 상대 좌표로 변환
+							cx = 0.5 * (x1 + x2) / target_size[0]
+							cy = 0.5 * (y1 + y2) / target_size[1]
+							w = abs(x2 - x1) / target_size[0]
+							h = abs(y2 - y1) / target_size[1]
+
+							class_idx = bbox[2]  # class_id
+							rel_coords = [class_idx, cx, cy, w, h]
+							copytext.append(' '.join(str(e) for e in rel_coords) + '\n')
+
+					except Exception as e:
+						print(f"타겟 이미지 해상도 읽기 오류: {e}")
+						continue
+
 				# 디렉토리 확인/생성은 별도 try 블록
 				try:
 					target_dir = os.path.dirname(target_label_path)
@@ -2216,7 +2421,7 @@ class MainApp:
 				except Exception as e:
 					print(f"디렉토리 생성 오류: {e}")
 					continue
-					
+
 				# 기존 라벨 읽기는 별도 try 블록
 				existing_labels = []
 				try:
@@ -2226,20 +2431,20 @@ class MainApp:
 				except Exception as e:
 					print(f"라벨 읽기 오류: {e}")
 					# 읽기 실패 시 결정: 계속 진행 또는 건너뛰기
-					
+
 				# 백업 생성은 별도 try 블록
 				try:
 					if os.path.exists(target_label_path):
 						backup_dir = 'original_backup/labels/'
 						if not os.path.isdir(backup_dir):
 							os.makedirs(backup_dir)
-						
+
 						backup_path = backup_dir + self.make_path(target_label_path)
 						if not os.path.exists(backup_path):
 							shutil.copyfile(target_label_path, backup_path)
 				except Exception as e:
 					print(f"백업 생성 오류: {e}")
-					
+
 				# 라벨 쓰기는 별도 try 블록
 				try:
 					with open(target_label_path, 'w', encoding='utf-8') as f:
@@ -4937,6 +5142,37 @@ class MainApp:
 			self.draw_bbox()  # 화면 갱신
 			return
 
+		# 클래스 변경 영역 그리기 모드에서 우클릭 시 폴리곤 완성
+		if self.class_change_zone_mode and len(self.class_change_zone_points) >= 3:
+			# 화면 좌표를 원본 좌표로 변환 (줌 비율 적용)
+			original_points = [(px / self.zoom_ratio, py / self.zoom_ratio)
+							  for px, py in self.class_change_zone_points]
+
+			# 폴리곤 완성
+			config = self.class_change_zone_config
+			self.class_change_zone_manager.add_zone(
+				original_points,
+				mode=config['mode'],
+				target_class_id=config['target_class_id'],
+				source_class_id=config.get('source_class_id')
+			)
+			self.class_change_zone_manager.save_zones()
+
+			# 모드 정보 메시지
+			target_class = self.class_config_manager.get_class_name(config['target_class_id'])
+			if config['mode'] == 'all':
+				mode_info = f"모든 클래스 → {target_class}"
+			else:
+				source_class = self.class_config_manager.get_class_name(config['source_class_id'])
+				mode_info = f"{source_class} → {target_class}"
+
+			messagebox.showinfo("클래스 변경 영역 추가", f"클래스 변경 영역이 추가되었습니다.\n점 개수: {len(self.class_change_zone_points)}\n{mode_info}")
+
+			self.class_change_zone_mode = False
+			self.class_change_zone_points = []
+			self.draw_bbox()  # 화면 갱신
+			return
+
 	def on_mouse_down(self, event):
 		x, y = self.get_canvas_coordinates(event)
 
@@ -4975,6 +5211,47 @@ class MainApp:
 
 			# 점 추가
 			self.exclusion_zone_points.append((x, y))
+			self.draw_bbox()  # 화면 갱신
+			return
+
+		# 클래스 변경 영역 그리기 모드
+		if self.class_change_zone_mode:
+			# 첫 점을 다시 클릭했는지 확인 (폴리곤 닫기)
+			if len(self.class_change_zone_points) >= 3:
+				first_point = self.class_change_zone_points[0]
+				# 첫 점 근처 클릭 확인 (10픽셀 이내)
+				if ((x - first_point[0])**2 + (y - first_point[1])**2) <= 100:
+					# 화면 좌표를 원본 좌표로 변환 (줌 비율 적용)
+					original_points = [(px / self.zoom_ratio, py / self.zoom_ratio)
+									  for px, py in self.class_change_zone_points]
+
+					# 폴리곤 완성
+					config = self.class_change_zone_config
+					self.class_change_zone_manager.add_zone(
+						original_points,
+						mode=config['mode'],
+						target_class_id=config['target_class_id'],
+						source_class_id=config.get('source_class_id')
+					)
+					self.class_change_zone_manager.save_zones()
+
+					# 모드 정보 메시지
+					target_class = self.class_config_manager.get_class_name(config['target_class_id'])
+					if config['mode'] == 'all':
+						mode_info = f"모든 클래스 → {target_class}"
+					else:
+						source_class = self.class_config_manager.get_class_name(config['source_class_id'])
+						mode_info = f"{source_class} → {target_class}"
+
+					messagebox.showinfo("클래스 변경 영역 추가", f"클래스 변경 영역이 추가되었습니다.\n점 개수: {len(self.class_change_zone_points)}\n{mode_info}")
+
+					self.class_change_zone_mode = False
+					self.class_change_zone_points = []
+					self.draw_bbox()  # 화면 갱신
+					return
+
+			# 점 추가
+			self.class_change_zone_points.append((x, y))
 			self.draw_bbox()  # 화면 갱신
 			return
 
@@ -6027,6 +6304,189 @@ class MainApp:
 		# 모달 대기
 		self.master.wait_window(dialog)
 		return result['class_ids']
+
+	def manage_class_change_zones(self):
+		"""클래스 변경 영역 관리 다이얼로그"""
+		dialog = tk.Toplevel(self.master)
+		dialog.title("클래스 변경 영역 관리")
+		dialog.geometry("500x550")
+		dialog.transient(self.master)
+		dialog.grab_set()
+
+		# 설명 레이블
+		tk.Label(dialog, text="클래스 변경 영역을 관리합니다", font=("맑은 고딕", 10, "bold")).pack(pady=10)
+		tk.Label(dialog, text="폴리곤 영역 내 bbox의 클래스를 변경합니다", fg="blue").pack()
+
+		# 영역 리스트
+		list_frame = tk.LabelFrame(dialog, text="클래스 변경 영역 목록")
+		list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+		scrollbar = tk.Scrollbar(list_frame)
+		scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+		listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set)
+		listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+		scrollbar.config(command=listbox.yview)
+
+		def refresh_list():
+			listbox.delete(0, tk.END)
+			for i, zone in enumerate(self.class_change_zone_manager.zones):
+				status = "✓" if zone['enabled'] else "✗"
+				point_count = len(zone['points'])
+				mode = zone['mode']
+				target_class = self.class_config_manager.get_class_name(zone['target_class_id'])
+
+				if mode == 'all':
+					mode_info = f"모든 클래스 → {target_class}"
+				else:  # filter
+					source_class = self.class_config_manager.get_class_name(zone['source_class_id'])
+					mode_info = f"{source_class} → {target_class}"
+
+				listbox.insert(tk.END, f"{status} 영역 {i+1} ({point_count}개 점) - {mode_info}")
+
+		refresh_list()
+
+		# 버튼 프레임
+		button_frame = tk.Frame(dialog)
+		button_frame.pack(pady=10)
+
+		def add_zone_all():
+			"""모든 클래스 변경 영역 추가"""
+			# 목표 클래스 선택
+			target_class_id = self.select_single_class_dialog("목표 클래스 선택", "모든 클래스를 변경할 목표 클래스를 선택하세요")
+			if target_class_id is not None:
+				self.class_change_zone_mode = True
+				self.class_change_zone_points = []
+				self.class_change_zone_config = {'mode': 'all', 'target_class_id': target_class_id}
+				messagebox.showinfo("클래스 변경 영역 추가", "캔버스에서 좌클릭으로 점을 추가하세요.\n우클릭 또는 첫 점을 다시 클릭하면 완성됩니다.")
+				dialog.destroy()
+
+		def add_zone_filter():
+			"""특정 클래스 필터 변경 영역 추가"""
+			# 원본 클래스 선택
+			source_class_id = self.select_single_class_dialog("원본 클래스 선택", "변경할 원본 클래스를 선택하세요")
+			if source_class_id is not None:
+				# 목표 클래스 선택
+				target_class_id = self.select_single_class_dialog("목표 클래스 선택", "변경할 목표 클래스를 선택하세요")
+				if target_class_id is not None:
+					self.class_change_zone_mode = True
+					self.class_change_zone_points = []
+					self.class_change_zone_config = {
+						'mode': 'filter',
+						'source_class_id': source_class_id,
+						'target_class_id': target_class_id
+					}
+					messagebox.showinfo("클래스 변경 영역 추가", "캔버스에서 좌클릭으로 점을 추가하세요.\n우클릭 또는 첫 점을 다시 클릭하면 완성됩니다.")
+					dialog.destroy()
+
+		def remove_zone():
+			"""선택한 영역 삭제"""
+			selection = listbox.curselection()
+			if selection:
+				index = selection[0]
+				self.class_change_zone_manager.remove_zone(index)
+				self.class_change_zone_manager.save_zones()
+				refresh_list()
+				self.draw_bbox()
+
+		def toggle_zone():
+			"""선택한 영역 활성화/비활성화"""
+			selection = listbox.curselection()
+			if selection:
+				index = selection[0]
+				self.class_change_zone_manager.toggle_zone(index)
+				self.class_change_zone_manager.save_zones()
+				refresh_list()
+				self.draw_bbox()
+
+		def clear_all():
+			"""모든 영역 삭제"""
+			if messagebox.askyesno("확인", "모든 클래스 변경 영역을 삭제하시겠습니까?"):
+				self.class_change_zone_manager.clear_zones()
+				self.class_change_zone_manager.save_zones()
+				refresh_list()
+				self.draw_bbox()
+
+		def apply_now():
+			"""현재 페이지에 즉시 적용"""
+			if self.class_change_zone_manager.zones:
+				original_bbox_count = len(self.bbox)
+				self.bbox, changed_count = self.class_change_zone_manager.apply_class_changes(
+					self.bbox, class_name, self.zoom_ratio
+				)
+				if changed_count > 0:
+					self.write_bbox()  # 변경 사항 저장
+					self.draw_bbox()  # 화면 갱신
+					messagebox.showinfo("적용 완료", f"{changed_count}개의 bbox 클래스가 변경되었습니다.")
+				else:
+					messagebox.showinfo("적용 완료", "변경할 bbox가 없습니다.")
+			else:
+				messagebox.showwarning("경고", "등록된 클래스 변경 영역이 없습니다.")
+
+		tk.Button(button_frame, text="영역 추가 (전체)", command=add_zone_all, width=15).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="영역 추가 (필터)", command=add_zone_filter, width=15).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="삭제", command=remove_zone, width=10).pack(side=tk.LEFT, padx=2)
+
+		button_frame2 = tk.Frame(dialog)
+		button_frame2.pack(pady=5)
+		tk.Button(button_frame2, text="활성화/비활성화", command=toggle_zone, width=15).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame2, text="모두 삭제", command=clear_all, width=10).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame2, text="현재 페이지 적용", command=apply_now, width=15, bg="lightgreen").pack(side=tk.LEFT, padx=2)
+
+		tk.Button(dialog, text="닫기", command=dialog.destroy, width=10).pack(pady=5)
+
+	def select_single_class_dialog(self, title, message):
+		"""단일 클래스 선택 다이얼로그
+		Args:
+			title: 다이얼로그 제목
+			message: 설명 메시지
+		Returns:
+			선택한 클래스 ID (취소 시 None)
+		"""
+		result = {'class_id': None}
+
+		dialog = tk.Toplevel(self.master)
+		dialog.title(title)
+		dialog.geometry("400x500")
+		dialog.transient(self.master)
+		dialog.grab_set()
+
+		tk.Label(dialog, text=message, font=("맑은 고딕", 10, "bold")).pack(pady=10)
+
+		# 클래스 리스트
+		list_frame = tk.LabelFrame(dialog, text="클래스 목록")
+		list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+		scrollbar = tk.Scrollbar(list_frame)
+		scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+		listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, selectmode=tk.SINGLE)
+		listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+		scrollbar.config(command=listbox.yview)
+
+		# 클래스 목록 채우기
+		for class_id, class_name_str in enumerate(class_name):
+			listbox.insert(tk.END, f"[{class_id}] {class_name_str}")
+
+		def on_ok():
+			selection = listbox.curselection()
+			if selection:
+				result['class_id'] = selection[0]
+				dialog.destroy()
+			else:
+				messagebox.showwarning("경고", "클래스를 선택하세요.")
+
+		def on_cancel():
+			result['class_id'] = None
+			dialog.destroy()
+
+		button_frame = tk.Frame(dialog)
+		button_frame.pack(pady=10)
+		tk.Button(button_frame, text="확인", command=on_ok, width=10, bg="lightblue").pack(side=tk.LEFT, padx=5)
+		tk.Button(button_frame, text="취소", command=on_cancel, width=10).pack(side=tk.LEFT, padx=5)
+
+		self.master.wait_window(dialog)
+		return result['class_id']
 
 	def manage_auto_delete_classes(self):
 		"""클래스 자동 삭제 관리 다이얼로그 (클래스별 개별 모드 설정)"""
