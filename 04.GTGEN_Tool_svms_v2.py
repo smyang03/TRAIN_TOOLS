@@ -3805,22 +3805,31 @@ class MainApp:
 			masking_copied = True
 
 		# 라벨 자동 복사 적용 (마스킹 이후)
+		# 중요: 현재 페이지에 이미 라벨이 있으면 자동 복사를 건너뛰어 중복 방지
 		if self.auto_copy_labels_enabled and self.prev_page_labels:
-			# 원본 좌표를 현재 줌 비율로 변환하여 적용
-			for original_bbox in self.prev_page_labels:
-				screen_bbox = [
-					False,  # sel = False
-					original_bbox[1],  # clsname
-					original_bbox[2],  # info (class_id)
-					original_bbox[3] * self.zoom_ratio,  # x1 (화면)
-					original_bbox[4] * self.zoom_ratio,  # y1 (화면)
-					original_bbox[5] * self.zoom_ratio,  # x2 (화면)
-					original_bbox[6] * self.zoom_ratio   # y2 (화면)
-				]
-				self.bbox.append(copy.deepcopy(screen_bbox))
+			# 현재 페이지에 이미 라벨이 있는지 확인
+			existing_label_count = len(self.bbox)
 
-			print(f"[AutoCopy] 라벨 자동 복사 적용: {len(self.prev_page_labels)}개")
-			label_copied = True
+			if existing_label_count > 0:
+				# 이미 라벨이 있으면 자동 복사 건너뜀
+				print(f"[AutoCopy] 현재 페이지에 이미 {existing_label_count}개 라벨이 있어 자동 복사를 건너뜁니다.")
+			else:
+				# 빈 페이지인 경우에만 자동 복사 적용
+				# 원본 좌표를 현재 줌 비율로 변환하여 적용
+				for original_bbox in self.prev_page_labels:
+					screen_bbox = [
+						False,  # sel = False
+						original_bbox[1],  # clsname
+						original_bbox[2],  # info (class_id)
+						original_bbox[3] * self.zoom_ratio,  # x1 (화면)
+						original_bbox[4] * self.zoom_ratio,  # y1 (화면)
+						original_bbox[5] * self.zoom_ratio,  # x2 (화면)
+						original_bbox[6] * self.zoom_ratio   # y2 (화면)
+					]
+					self.bbox.append(copy.deepcopy(screen_bbox))
+
+				print(f"[AutoCopy] 라벨 자동 복사 적용: {len(self.prev_page_labels)}개")
+				label_copied = True
 
 		# 마스킹이 복사된 경우 load_masking()으로 화면 표시 및 파일 저장
 		# 이때 내부에서 겹치는 라벨도 삭제됨
