@@ -3683,6 +3683,9 @@ class MainApp:
 		# 제외 영역 표시
 		self.draw_exclusion_zones()
 
+		# 클래스 변경 영역 표시
+		self.draw_class_change_zones()
+
 		# 삭제/변환된 라벨에 동그라미 표시
 		self.draw_pending_operation_markers()
 		return
@@ -3804,6 +3807,56 @@ class MainApp:
 			for point in self.exclusion_zone_points:
 				x, y = point
 				self.canvas.create_oval(x-4, y-4, x+4, y+4, fill='cyan', outline='white', width=2, tags="exclusion_zone")
+
+	def draw_class_change_zones(self):
+		"""클래스 변경 영역 표시"""
+		self.canvas.delete("class_change_zone")
+
+		if not self.class_change_zone_manager:
+			return
+
+		# 등록된 클래스 변경 영역 표시
+		for i, zone in enumerate(self.class_change_zone_manager.zones):
+			if zone['points']:
+				# 폴리곤 색상 (활성화 여부에 따라)
+				color = 'lime' if zone['enabled'] else 'gray'
+				# 폴리곤 그리기 - 원본 좌표를 화면 좌표로 변환 (줌 비율 적용)
+				points = []
+				for point in zone['points']:
+					screen_x = point[0] * self.zoom_ratio
+					screen_y = point[1] * self.zoom_ratio
+					points.extend([screen_x, screen_y])
+				self.canvas.create_polygon(points, outline=color, fill='', width=2, dash=(5, 5), tags="class_change_zone")
+
+				# 영역 번호 및 모드 정보 표시
+				if zone['points']:
+					center_x = sum(p[0] * self.zoom_ratio for p in zone['points']) / len(zone['points'])
+					center_y = sum(p[1] * self.zoom_ratio for p in zone['points']) / len(zone['points'])
+
+					# 모드 정보 텍스트
+					target_class = self.class_config_manager.get_class_name(zone['target_class_id'])
+					if zone['mode'] == 'all':
+						mode_text = f"모두→{target_class}"
+					else:
+						source_class = self.class_config_manager.get_class_name(zone['source_class_id'])
+						mode_text = f"{source_class}→{target_class}"
+
+					self.canvas.create_text(center_x, center_y, text=f"클래스변경 {i+1}\n{mode_text}",
+											fill=color, font='Arial 10 bold', tags="class_change_zone")
+
+		# 현재 그리고 있는 클래스 변경 영역 표시 (이미 화면 좌표로 저장되어 있음)
+		if self.class_change_zone_mode and self.class_change_zone_points:
+			# 선택한 점들 연결
+			for i in range(len(self.class_change_zone_points)):
+				if i > 0:
+					x1, y1 = self.class_change_zone_points[i-1]
+					x2, y2 = self.class_change_zone_points[i]
+					self.canvas.create_line(x1, y1, x2, y2, fill='magenta', width=2, tags="class_change_zone")
+
+			# 점 표시
+			for point in self.class_change_zone_points:
+				x, y = point
+				self.canvas.create_oval(x-4, y-4, x+4, y+4, fill='magenta', outline='white', width=2, tags="class_change_zone")
 
 	def draw_pending_operation_markers(self):
 		"""삭제/변환된 라벨에 동그라미 표시"""
