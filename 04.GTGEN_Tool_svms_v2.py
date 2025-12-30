@@ -1456,8 +1456,8 @@ class MainApp:
 		self.copy_functions_frame = tk.Frame(self.master, bd=1, relief=tk.RAISED)
 		self.copy_functions_frame.pack(side=tk.TOP, fill="x", padx=5, pady=5)
 
-		# 마스킹 복사 UI 배치 (상단)
-		self.mask_copy_frame = tk.Frame(self.copy_functions_frame)
+		# 1. 마스킹 복사 프레임
+		self.mask_copy_frame = tk.Frame(self.copy_functions_frame, bd=1, relief=tk.GROOVE)
 		self.mask_copy_frame.pack(side=tk.TOP, padx=5, fill="x", expand=True, pady=2)
 
 		self.mask_copy_label = tk.Label(self.mask_copy_frame, text="마스킹 복사:", bd=0)
@@ -1478,33 +1478,6 @@ class MainApp:
 		self.copy_masking_btn = tk.Button(self.mask_copy_frame, text="실행", command=self.copy_masking_to_range, bd=1)
 		self.copy_masking_btn.pack(side=tk.LEFT, padx=5)
 
-		self.delete_range_label = tk.Label(self.mask_copy_frame, text="삭제:", bd=0)
-		self.delete_range_label.pack(side=tk.LEFT, padx=5)
-
-		self.delete_start_frame_label = tk.Label(self.mask_copy_frame, text="시작:", bd=0)
-		self.delete_start_frame_label.pack(side=tk.LEFT, padx=2)
-
-		self.delete_start_frame_entry = tk.Entry(self.mask_copy_frame, width=5)
-		self.delete_start_frame_entry.pack(side=tk.LEFT, padx=2)
-
-		self.delete_end_frame_label = tk.Label(self.mask_copy_frame, text="종료:", bd=0)
-		self.delete_end_frame_label.pack(side=tk.LEFT, padx=2)
-
-		self.delete_end_frame_entry = tk.Entry(self.mask_copy_frame, width=5)
-		self.delete_end_frame_entry.pack(side=tk.LEFT, padx=2)
-
-		self.delete_range_btn = tk.Button(self.mask_copy_frame, text="실행", command=self.delete_range, bd=1)
-		self.delete_range_btn.pack(side=tk.LEFT, padx=5)
-		
-		self.page_move_label = tk.Label(self.mask_copy_frame, text="이동:", bd=0)
-		self.page_move_label.pack(side=tk.LEFT, padx=10)
-
-		self.page_entry = tk.Entry(self.mask_copy_frame, width=5)
-		self.page_entry.pack(side=tk.LEFT, padx=2)
-
-		self.page_move_btn = tk.Button(self.mask_copy_frame, text="Go", command=self.move_to_page, bd=1)
-		self.page_move_btn.pack(side=tk.LEFT, padx=5)
-
 		# 마스킹 자동 복사 체크박스
 		self.auto_copy_masking_var = tk.BooleanVar()
 		self.auto_copy_masking_var.set(False)
@@ -1516,15 +1489,50 @@ class MainApp:
 		)
 		self.auto_copy_masking_chk.pack(side=tk.LEFT, padx=10)
 
-		# 라벨 복사 UI 배치 (하단)
-		self.label_copy_frame = tk.Frame(self.copy_functions_frame)
+		# 2. 범위 삭제 프레임
+		self.delete_range_frame = tk.Frame(self.copy_functions_frame, bd=1, relief=tk.GROOVE)
+		self.delete_range_frame.pack(side=tk.TOP, padx=5, fill="x", expand=True, pady=2)
+
+		self.delete_range_label = tk.Label(self.delete_range_frame, text="범위 삭제:", bd=0)
+		self.delete_range_label.pack(side=tk.LEFT, padx=5)
+
+		self.delete_start_frame_label = tk.Label(self.delete_range_frame, text="시작:", bd=0)
+		self.delete_start_frame_label.pack(side=tk.LEFT, padx=2)
+
+		self.delete_start_frame_entry = tk.Entry(self.delete_range_frame, width=5)
+		self.delete_start_frame_entry.pack(side=tk.LEFT, padx=2)
+
+		self.delete_end_frame_label = tk.Label(self.delete_range_frame, text="종료:", bd=0)
+		self.delete_end_frame_label.pack(side=tk.LEFT, padx=2)
+
+		self.delete_end_frame_entry = tk.Entry(self.delete_range_frame, width=5)
+		self.delete_end_frame_entry.pack(side=tk.LEFT, padx=2)
+
+		self.delete_range_btn = tk.Button(self.delete_range_frame, text="실행", command=self.delete_range, bd=1)
+		self.delete_range_btn.pack(side=tk.LEFT, padx=5)
+
+		# 3. 페이지 이동 프레임
+		self.page_move_frame = tk.Frame(self.copy_functions_frame, bd=1, relief=tk.GROOVE)
+		self.page_move_frame.pack(side=tk.TOP, padx=5, fill="x", expand=True, pady=2)
+
+		self.page_move_label = tk.Label(self.page_move_frame, text="페이지 이동:", bd=0)
+		self.page_move_label.pack(side=tk.LEFT, padx=5)
+
+		self.page_entry = tk.Entry(self.page_move_frame, width=5)
+		self.page_entry.pack(side=tk.LEFT, padx=2)
+
+		self.page_move_btn = tk.Button(self.page_move_frame, text="Go", command=self.move_to_page, bd=1)
+		self.page_move_btn.pack(side=tk.LEFT, padx=5)
+
+		# 4. 라벨 복사 프레임
+		self.label_copy_frame = tk.Frame(self.copy_functions_frame, bd=1, relief=tk.GROOVE)
 		self.label_copy_frame.pack(side=tk.TOP, padx=5, fill="x", expand=True, pady=2)
 
 		# 기존 코드를 대체하는 메서드 호출 - UI를 별도 함수로 분리
 		self.update_label_copy_ui()
 
-		# 연속 삭제 옵션 UI 배치
-		self.delete_mode_frame = tk.Frame(self.copy_functions_frame, bd=1, relief=tk.RAISED)
+		# 5. d키 연속 삭제 프레임
+		self.delete_mode_frame = tk.Frame(self.copy_functions_frame, bd=1, relief=tk.GROOVE)
 		self.delete_mode_frame.pack(side=tk.TOP, padx=5, fill="x", expand=True, pady=2)
 
 		self.delete_mode_label = tk.Label(self.delete_mode_frame, text="d키 삭제:", bd=0)
