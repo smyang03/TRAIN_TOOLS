@@ -1081,6 +1081,14 @@ class MainApp:
 		self.pending_masked_labels = []   # 마스킹으로 변환된 라벨 정보 (노란색 동그라미)
 		print("[CacheOptimization] Pending changes 시스템 초기화 완료")
 
+		# 자동 복사 기능 초기화
+		self.auto_copy_labels_enabled = False  # 라벨 자동 복사 활성화 여부
+		self.auto_copy_masking_enabled = False  # 마스킹 자동 복사 활성화 여부
+		self.prev_page_labels = None  # 이전 페이지의 라벨 정보
+		self.prev_page_masking = None  # 이전 페이지의 마스킹 정보
+		self.prev_page_polygon_points = None  # 이전 페이지의 폴리곤 포인트
+		print("[AutoCopy] 자동 복사 기능 초기화 완료")
+
 		# 메인 윈도우 초기 생성 (설정 다이얼로그를 띄우기 위해)
 		self.master = tk.Tk()
 		self.master.withdraw()  # 일시적으로 숨김
@@ -1463,6 +1471,17 @@ class MainApp:
 
 		self.page_move_btn = tk.Button(self.mask_copy_frame, text="Go", command=self.move_to_page, bd=1)
 		self.page_move_btn.pack(side=tk.LEFT, padx=5)
+
+		# 마스킹 자동 복사 체크박스
+		self.auto_copy_masking_var = tk.BooleanVar()
+		self.auto_copy_masking_var.set(False)
+		self.auto_copy_masking_chk = tk.Checkbutton(
+			self.mask_copy_frame,
+			text="자동복사",
+			variable=self.auto_copy_masking_var,
+			command=self.toggle_auto_copy_masking
+		)
+		self.auto_copy_masking_chk.pack(side=tk.LEFT, padx=10)
 
 		# 라벨 복사 UI 배치 (하단)
 		self.label_copy_frame = tk.Frame(self.copy_functions_frame)
@@ -2226,7 +2245,18 @@ class MainApp:
 			bd=1
 		)
 		self.copy_label_btn.pack(side=tk.LEFT, padx=5)
-		
+
+		# 라벨 자동 복사 체크박스
+		self.auto_copy_labels_var = tk.BooleanVar()
+		self.auto_copy_labels_var.set(False)
+		self.auto_copy_labels_chk = tk.Checkbutton(
+			self.label_copy_frame,
+			text="자동복사",
+			variable=self.auto_copy_labels_var,
+			command=self.toggle_auto_copy_labels
+		)
+		self.auto_copy_labels_chk.pack(side=tk.LEFT, padx=10)
+
 		# 초기 상태 설정
 		self.toggle_copy_mode()
 
@@ -3511,6 +3541,9 @@ class MainApp:
 		return r
 
 	def load_bbox(self):
+		# 페이지 이동 전 현재 페이지 데이터 저장 (자동 복사용)
+		self.save_current_page_data()
+
 		self.selid = -1
 		self.bbox = []
 
@@ -3579,6 +3612,9 @@ class MainApp:
 			self.write_bbox()
 			print(f"[Filter] 총 {total_deleted}개 라벨이 자동 삭제되어 파일에 저장됨")
 
+		# 자동 복사 적용 (라벨 및 마스킹)
+		self.apply_auto_copy_to_page()
+
 		if len(self.bbox) > 0:
 			self.bbox[0][0] = True
 			self.selid = 0
@@ -3597,6 +3633,93 @@ class MainApp:
 			print(f"ERROR: Failed to write bbox to {self.gt_fn}: {e}")
 			messagebox.showerror("File Write Error", f"Failed to save labels:\n{e}")
 		return
+
+	def toggle_auto_copy_labels(self):
+		"""라벨 자동 복사 기능 활성화/비활성화"""
+		self.auto_copy_labels_enabled = self.auto_copy_labels_var.get()
+		if self.auto_copy_labels_enabled:
+			print("[AutoCopy] 라벨 자동 복사 활성화")
+			messagebox.showinfo("라벨 자동 복사", "라벨 자동 복사가 활성화되었습니다.\n페이지 이동 시 현재 페이지의 라벨이 다음 페이지에 자동으로 복사됩니다.")
+		else:
+			print("[AutoCopy] 라벨 자동 복사 비활성화")
+			self.prev_page_labels = None
+
+	def toggle_auto_copy_masking(self):
+		"""마스킹 자동 복사 기능 활성화/비활성화"""
+		self.auto_copy_masking_enabled = self.auto_copy_masking_var.get()
+		if self.auto_copy_masking_enabled:
+			print("[AutoCopy] 마스킹 자동 복사 활성화")
+			messagebox.showinfo("마스킹 자동 복사", "마스킹 자동 복사가 활성화되었습니다.\n페이지 이동 시 현재 페이지의 마스킹이 다음 페이지에 자동으로 복사됩니다.")
+		else:
+			print("[AutoCopy] 마스킹 자동 복사 비활성화")
+			self.prev_page_masking = None
+			self.prev_page_polygon_points = None
+
+	def save_current_page_data(self):
+		"""페이지 이동 전 현재 페이지 데이터 저장"""
+		# 라벨 자동 복사가 활성화되어 있으면 현재 라벨 저장
+		if self.auto_copy_labels_enabled and len(self.bbox) > 0:
+			# 원본 좌표로 변환하여 저장 (줌 비율 고려)
+			self.prev_page_labels = []
+			for bbox in self.bbox:
+				original_bbox = [
+					bbox[0],  # sel
+					bbox[1],  # clsname
+					bbox[2],  # info (class_id)
+					bbox[3] / self.zoom_ratio,  # x1 (원본)
+					bbox[4] / self.zoom_ratio,  # y1 (원본)
+					bbox[5] / self.zoom_ratio,  # x2 (원본)
+					bbox[6] / self.zoom_ratio   # y2 (원본)
+				]
+				self.prev_page_labels.append(copy.deepcopy(original_bbox))
+			print(f"[AutoCopy] 라벨 저장됨: {len(self.prev_page_labels)}개")
+
+		# 마스킹 자동 복사가 활성화되어 있으면 현재 마스킹 저장
+		if self.auto_copy_masking_enabled and hasattr(self, 'masking') and self.has_saved_masking:
+			self.prev_page_masking = copy.deepcopy(self.masking)
+			# 폴리곤 포인트도 저장
+			if hasattr(self, 'saved_polygon_points') and self.saved_polygon_points:
+				self.prev_page_polygon_points = copy.deepcopy(self.saved_polygon_points)
+			print(f"[AutoCopy] 마스킹 저장됨")
+
+	def apply_auto_copy_to_page(self):
+		"""페이지 이동 후 자동 복사 적용"""
+		applied = False
+
+		# 라벨 자동 복사 적용
+		if self.auto_copy_labels_enabled and self.prev_page_labels:
+			# 원본 좌표를 현재 줌 비율로 변환하여 적용
+			for original_bbox in self.prev_page_labels:
+				screen_bbox = [
+					False,  # sel = False
+					original_bbox[1],  # clsname
+					original_bbox[2],  # info (class_id)
+					original_bbox[3] * self.zoom_ratio,  # x1 (화면)
+					original_bbox[4] * self.zoom_ratio,  # y1 (화면)
+					original_bbox[5] * self.zoom_ratio,  # x2 (화면)
+					original_bbox[6] * self.zoom_ratio   # y2 (화면)
+				]
+				self.bbox.append(copy.deepcopy(screen_bbox))
+
+			print(f"[AutoCopy] 라벨 자동 복사 적용: {len(self.prev_page_labels)}개")
+			applied = True
+
+		# 마스킹 자동 복사 적용
+		if self.auto_copy_masking_enabled and self.prev_page_masking is not None:
+			self.masking = copy.deepcopy(self.prev_page_masking)
+			self.has_saved_masking = True
+
+			# 폴리곤 포인트도 복사
+			if self.prev_page_polygon_points:
+				self.saved_polygon_points = copy.deepcopy(self.prev_page_polygon_points)
+
+			print(f"[AutoCopy] 마스킹 자동 복사 적용")
+			applied = True
+
+		# 자동 복사가 적용되었으면 파일 저장 및 화면 갱신
+		if applied:
+			self.write_bbox()
+			self.draw_bbox()
 
 	def draw_bbox(self):
 		self.canvas.delete("bbox")
