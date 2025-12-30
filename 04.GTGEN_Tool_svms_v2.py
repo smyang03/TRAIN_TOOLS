@@ -3692,27 +3692,10 @@ class MainApp:
 	def apply_auto_copy_to_page(self):
 		"""페이지 이동 후 자동 복사 적용"""
 		applied = False
+		label_copied = False
+		masking_copied = False
 
-		# 라벨 자동 복사 적용
-		if self.auto_copy_labels_enabled and self.prev_page_labels:
-			# 원본 좌표를 현재 줌 비율로 변환하여 적용
-			for original_bbox in self.prev_page_labels:
-				screen_bbox = [
-					False,  # sel = False
-					original_bbox[1],  # clsname
-					original_bbox[2],  # info (class_id)
-					original_bbox[3] * self.zoom_ratio,  # x1 (화면)
-					original_bbox[4] * self.zoom_ratio,  # y1 (화면)
-					original_bbox[5] * self.zoom_ratio,  # x2 (화면)
-					original_bbox[6] * self.zoom_ratio   # y2 (화면)
-				]
-				self.bbox.append(copy.deepcopy(screen_bbox))
-
-			print(f"[AutoCopy] 라벨 자동 복사 적용: {len(self.prev_page_labels)}개")
-			self.write_bbox()
-			applied = True
-
-		# 마스킹 자동 복사 적용
+		# 마스킹 자동 복사를 먼저 적용 (라벨 삭제 로직 실행)
 		if self.auto_copy_masking_enabled and self.prev_page_masking is not None:
 			# 마스킹 정보 복사
 			self.masking = copy.deepcopy(self.prev_page_masking)
@@ -3729,17 +3712,42 @@ class MainApp:
 				self.saved_polygon_points = copy.deepcopy(self.prev_page_polygon_points)
 
 			print(f"[AutoCopy] 마스킹 자동 복사 적용")
+			masking_copied = True
 
-			# load_masking() 함수를 호출하여 화면에 표시하고 파일에 저장
+		# 라벨 자동 복사 적용 (마스킹 이후)
+		if self.auto_copy_labels_enabled and self.prev_page_labels:
+			# 원본 좌표를 현재 줌 비율로 변환하여 적용
+			for original_bbox in self.prev_page_labels:
+				screen_bbox = [
+					False,  # sel = False
+					original_bbox[1],  # clsname
+					original_bbox[2],  # info (class_id)
+					original_bbox[3] * self.zoom_ratio,  # x1 (화면)
+					original_bbox[4] * self.zoom_ratio,  # y1 (화면)
+					original_bbox[5] * self.zoom_ratio,  # x2 (화면)
+					original_bbox[6] * self.zoom_ratio   # y2 (화면)
+				]
+				self.bbox.append(copy.deepcopy(screen_bbox))
+
+			print(f"[AutoCopy] 라벨 자동 복사 적용: {len(self.prev_page_labels)}개")
+			label_copied = True
+
+		# 마스킹이 복사된 경우 load_masking()으로 화면 표시 및 파일 저장
+		# 이때 내부에서 겹치는 라벨도 삭제됨
+		if masking_copied:
 			try:
-				self.load_masking()
+				self.load_masking()  # 내부에서 write_bbox() 호출됨
 				applied = True
 			except Exception as e:
 				print(f"[AutoCopy] 마스킹 적용 중 오류: {e}")
-
-		# 라벨 자동 복사만 적용된 경우 화면 갱신
-		if applied and not self.auto_copy_masking_enabled:
+				# 마스킹 적용 실패 시 라벨만이라도 저장
+				if label_copied:
+					self.write_bbox()
+		elif label_copied:
+			# 라벨만 복사된 경우 저장 및 화면 갱신
+			self.write_bbox()
 			self.draw_bbox()
+			applied = True
 
 	def draw_bbox(self):
 		self.canvas.delete("bbox")
@@ -4715,22 +4723,30 @@ class MainApp:
 			
 			# 마스킹과 겹치는 라벨 삭제 옵션이 켜져 있는 경우
 			if self.remove_overlapping_labels.get():
+				print(f"[AutoCopy] 마스킹과 겹치는 라벨 삭제 시작 - 현재 라벨 수: {len(self.bbox)}")
 				# 마스킹 영역 계산 (마스킹된 픽셀의 최소/최대 좌표)
 				if len(self.masking[0]) > 0:  # 마스킹된 픽셀이 있는 경우
 					mask_y1 = min(self.masking[0]) if len(self.masking[0]) > 0 else 0
 					mask_y2 = max(self.masking[0]) if len(self.masking[0]) > 0 else 0
 					mask_x1 = min(self.masking[1]) if len(self.masking[1]) > 0 else 0
 					mask_x2 = max(self.masking[1]) if len(self.masking[1]) > 0 else 0
-					
+
 					# 원본 이미지 좌표를 캔버스 좌표로 변환
 					view_x1, view_y1 = self.convert_original_to_view(mask_x1, mask_y1)
 					view_x2, view_y2 = self.convert_original_to_view(mask_x2, mask_y2)
-					
+
 					# 마스킹 영역 (캔버스 좌표)
 					mask_area = [view_x1, view_y1, view_x2, view_y2]
-					
+					print(f"[AutoCopy] 마스킹 영역: {mask_area}")
+
 					# 겹치는 라벨 삭제
+					before_count = len(self.bbox)
 					self.remove_labels_overlapping_with_mask(mask_area)
+					after_count = len(self.bbox)
+					deleted = before_count - after_count
+					print(f"[AutoCopy] 마스킹과 겹치는 라벨 삭제 완료 - 삭제된 라벨 수: {deleted}, 남은 라벨 수: {after_count}")
+				else:
+					print(f"[AutoCopy] 마스킹 영역이 비어있음")
 			
 			# === 화면 업데이트 ===
 			# 마스킹이 적용된 이미지로 화면 표시
