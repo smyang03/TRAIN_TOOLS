@@ -560,6 +560,7 @@ class ClassConfigManager:
 		self.config_file = os.path.join(self.base_dir, config_file)
 		self.last_config_file = os.path.join(self.base_dir, ".last_class_config.txt")
 		self.classes = []
+		self.enable_backup = True  # 백업 기본값
 		self.default_colors = [
 			'red', 'blue', 'green', 'yellow', 'orange', 'purple', 'cyan', 'magenta',
 			'lime', 'pink', 'teal', 'lavender', 'brown', 'beige', 'maroon', 'mint',
@@ -650,21 +651,27 @@ class ClassConfigManager:
 			with open(self.config_file, 'r', encoding='utf-8') as f:
 				data = json.load(f)
 				self.classes = data.get('classes', [])
+				# 백업 옵션 로드 (기본값: True)
+				self.enable_backup = data.get('enable_backup', True)
 			self.save_last_config()
 			return True
 		except Exception as e:
 			print(f"설정 파일 로드 실패: {e}")
 			return False
 
-	def save_config(self, classes, config_file=None):
+	def save_config(self, classes, config_file=None, enable_backup=True):
 		"""설정 파일 저장"""
 		if config_file:
 			self.set_config_file(config_file)
 
 		self.classes = classes
+		self.enable_backup = enable_backup
 		try:
 			with open(self.config_file, 'w', encoding='utf-8') as f:
-				json.dump({'classes': self.classes}, f, ensure_ascii=False, indent=2)
+				json.dump({
+					'classes': self.classes,
+					'enable_backup': self.enable_backup
+				}, f, ensure_ascii=False, indent=2)
 			self.save_last_config()
 			return True
 		except Exception as e:
@@ -742,6 +749,20 @@ class ClassConfigDialog:
 		if config_manager:
 			load_btn = tk.Button(filename_frame, text="기존 설정 로드", command=self.load_existing_config, bd=1)
 			load_btn.pack(side=tk.LEFT, padx=10)
+
+		# 백업 옵션 프레임
+		backup_frame = tk.Frame(self.dialog)
+		backup_frame.pack(fill=tk.X, padx=20, pady=5)
+
+		self.enable_backup_var = tk.BooleanVar()
+		self.enable_backup_var.set(config_manager.enable_backup if config_manager else True)
+		self.backup_checkbox = tk.Checkbutton(
+			backup_frame,
+			text="오리지널 백업 활성화 (original_backup 폴더에 백업)",
+			variable=self.enable_backup_var,
+			font=("Arial", 10)
+		)
+		self.backup_checkbox.pack(side=tk.LEFT, padx=5)
 
 		# 스크롤 가능한 프레임
 		canvas = tk.Canvas(self.dialog)
@@ -969,16 +990,21 @@ class ClassConfigDialog:
 
 		self.result = classes
 		self.config_filename = filename + '.json'
+		# 백업 설정 저장
+		self.enable_backup_result = self.enable_backup_var.get() if hasattr(self, 'enable_backup_var') else True
+		print(f"[ClassConfig] 백업 설정 저장: {self.enable_backup_result}")
 		self.dialog.destroy()
 
 	def cancel(self):
 		self.result = None
 		self.config_filename = None
+		self.enable_backup_result = True
 		self.dialog.destroy()
 
 	def show(self):
 		self.dialog.wait_window()
-		return (self.result, self.config_filename)
+		enable_backup = self.enable_backup_result if hasattr(self, 'enable_backup_result') else True
+		return (self.result, self.config_filename, enable_backup)
 
 # 기본 클래스 이름 (클래스 설정 파일을 사용하지 않을 경우의 기본값)
 class_name = [ 'person', 'Slip', 'head', 'Helmet', 'GasMask', 'Drum', 'car', 'bus', 'truck', 'forklift', 'motorcycle','chair','backpack','bird','animal','etc']
@@ -1091,6 +1117,10 @@ class MainApp:
 		self.prev_page_masking_height = None  # 이전 페이지의 마스킹 높이
 		print("[AutoCopy] 자동 복사 기능 초기화 완료")
 
+		# 연속 삭제 기능 초기화
+		self.delete_count = 1  # 기본값: 1장 삭제
+		print("[DeleteMode] 연속 삭제 기능 초기화 완료 - 기본값: 1장")
+
 		# 메인 윈도우 초기 생성 (설정 다이얼로그를 띄우기 위해)
 		self.master = tk.Tk()
 		self.master.withdraw()  # 일시적으로 숨김
@@ -1157,7 +1187,7 @@ class MainApp:
 			# config_loaded가 여전히 False면 다이얼로그에서 새 설정 입력받기
 			if not config_loaded:
 				print("새 설정을 입력하세요...")
-				classes, config_filename = dialog.show()
+				classes, config_filename, enable_backup = dialog.show()
 
 				if classes is None:
 					# 사용자가 취소한 경우 프로그램 종료
@@ -1166,8 +1196,9 @@ class MainApp:
 					sys.exit(0)
 
 				# 설정 저장
-				self.class_config_manager.save_config(classes, config_filename)
+				self.class_config_manager.save_config(classes, config_filename, enable_backup)
 				print(f"클래스 설정이 저장되었습니다: {self.class_config_manager.config_file}")
+				print(f"백업 설정: {'활성화' if enable_backup else '비활성화'}")
 
 				# 저장한 설정 로드
 				self.class_config_manager.load_config(config_filename)
@@ -1491,6 +1522,40 @@ class MainApp:
 
 		# 기존 코드를 대체하는 메서드 호출 - UI를 별도 함수로 분리
 		self.update_label_copy_ui()
+
+		# 연속 삭제 옵션 UI 배치
+		self.delete_mode_frame = tk.Frame(self.copy_functions_frame, bd=1, relief=tk.RAISED)
+		self.delete_mode_frame.pack(side=tk.TOP, padx=5, fill="x", expand=True, pady=2)
+
+		self.delete_mode_label = tk.Label(self.delete_mode_frame, text="d키 삭제:", bd=0)
+		self.delete_mode_label.pack(side=tk.LEFT, padx=5)
+
+		self.delete_count_var = tk.IntVar()
+		self.delete_count_var.set(1)  # 기본값: 1장
+
+		self.rb_delete_1 = tk.Radiobutton(
+			self.delete_mode_frame,
+			text="1장",
+			variable=self.delete_count_var,
+			value=1
+		)
+		self.rb_delete_1.pack(side=tk.LEFT, padx=2)
+
+		self.rb_delete_5 = tk.Radiobutton(
+			self.delete_mode_frame,
+			text="5장",
+			variable=self.delete_count_var,
+			value=5
+		)
+		self.rb_delete_5.pack(side=tk.LEFT, padx=2)
+
+		self.rb_delete_10 = tk.Radiobutton(
+			self.delete_mode_frame,
+			text="10장",
+			variable=self.delete_count_var,
+			value=10
+		)
+		self.rb_delete_10.pack(side=tk.LEFT, padx=2)
 		self.setup_label_list_ui()
 
 		# 3. 캔버스 프레임 (스크롤바 포함)
@@ -4578,35 +4643,86 @@ class MainApp:
 		return
 
 	def delete_current_file(self):
-		#var = tk.messagebox.askquestion("Confirm", "Do you want to really delete file?")
-		#if var == 'yes':
-		d_path = 'original_backup/JPEGImages/'			
-		if not(os.path.isdir(d_path)):
-			os.makedirs(os.path.join(d_path))
-		if not(os.path.isdir('original_backup/labels/')):
-			os.makedirs(os.path.join('original_backup/labels'))
-		img_path = d_path + self.make_path(self.im_fn)
-		curimg = self.im_fn.replace('\\','/')		
-		img = Image.open(curimg)
-		img.save(img_path)
-		gt_fn = self.make_path(self.gt_fn)
-		f = open("original_backup/labels/"+gt_fn, 'wt')
-		box = copy.deepcopy(self.bbox)
-		for rc in box:
-			f.write(' '.join(str(e) for e in self.convert_abs2rel(rc)) + '\n')
-		
-		os.remove(self.im_fn)
-		os.remove(self.gt_fn) if os.path.exists(self.gt_fn) else None
-		self.imlist = self.imlist[:self.ci] + self.imlist[self.ci+1:]
+		"""현재 파일 삭제 (연속 삭제 옵션 지원)"""
+		# 삭제할 장 수 가져오기
+		delete_count = self.delete_count_var.get() if hasattr(self, 'delete_count_var') else 1
+
+		# 실제 삭제 가능한 장 수 계산
+		remaining = len(self.imlist) - self.ci
+		actual_delete = min(delete_count, remaining)
+
+		if actual_delete <= 0:
+			messagebox.showwarning("경고", "삭제할 파일이 없습니다.")
+			return
+
+		# 확인 메시지
+		if actual_delete > 1:
+			msg = f"현재 페이지부터 {actual_delete}장을 삭제하시겠습니까?"
+			if not messagebox.askyesno("삭제 확인", msg):
+				return
+
+		# 백업 설정 확인
+		enable_backup = self.class_config_manager.enable_backup if hasattr(self.class_config_manager, 'enable_backup') else True
+
+		# 백업 디렉토리 생성 (백업이 활성화된 경우만)
+		if enable_backup:
+			d_path = 'original_backup/JPEGImages/'
+			if not(os.path.isdir(d_path)):
+				os.makedirs(os.path.join(d_path))
+			if not(os.path.isdir('original_backup/labels/')):
+				os.makedirs(os.path.join('original_backup/labels'))
+
+		# 연속 삭제
+		deleted_count = 0
+		for i in range(actual_delete):
+			if self.ci >= len(self.imlist):
+				break
+
+			# 현재 파일 경로
+			current_im_fn = self.imlist[self.ci]
+			current_gt_fn = current_im_fn.replace('JPEGImages', 'labels').replace('.jpg', '.txt').replace('.png', '.txt').replace('.jpeg', '.txt')
+
+			# 백업 (활성화된 경우만)
+			if enable_backup:
+				try:
+					img_path = d_path + self.make_path(current_im_fn)
+					curimg = current_im_fn.replace('\\','/')
+					img = Image.open(curimg)
+					img.save(img_path)
+
+					gt_fn = self.make_path(current_gt_fn)
+					if os.path.exists(current_gt_fn):
+						shutil.copyfile(current_gt_fn, "original_backup/labels/"+gt_fn)
+				except Exception as e:
+					print(f"[Backup] 백업 생성 오류: {e}")
+
+			# 파일 삭제
+			try:
+				os.remove(current_im_fn)
+				if os.path.exists(current_gt_fn):
+					os.remove(current_gt_fn)
+				deleted_count += 1
+			except Exception as e:
+				print(f"[Delete] 파일 삭제 오류: {e}")
+				break
+
+			# 리스트에서 제거
+			self.imlist = self.imlist[:self.ci] + self.imlist[self.ci+1:]
+
+		# UI 업데이트
 		if self.ci >= len(self.imlist):
-			self.ci -= 1
+			self.ci = len(self.imlist) - 1 if len(self.imlist) > 0 else 0
 
 		if len(self.imlist) > 0:
 			self.img_slider.config(to=len(self.imlist))
 			self.img_slider.set(self.ci + 1)
 			self.slider_info.config(text=f"{self.ci+1}/{len(self.imlist)}")
-		self.pi = -1
-		self.draw_image()
+			self.pi = -1
+			self.draw_image()
+		else:
+			messagebox.showinfo("완료", "모든 파일이 삭제되었습니다.")
+
+		print(f"[Delete] {deleted_count}장 삭제 완료 (백업: {'O' if enable_backup else 'X'})")
 		return
 
 	def zoom(self, is_zoom_in):
@@ -6907,13 +7023,14 @@ class MainApp:
 					entry['key'].insert(0, cls['key'])
 				entry['color'].set(cls['color'])
 
-		classes, config_filename = dialog.show()
+		classes, config_filename, enable_backup = dialog.show()
 
 		if classes is not None:
 			# 설정 저장
-			self.class_config_manager.save_config(classes, config_filename)
+			self.class_config_manager.save_config(classes, config_filename, enable_backup)
+			backup_status = "활성화" if enable_backup else "비활성화"
 			messagebox.showinfo("클래스 설정 변경",
-				f"클래스 설정이 저장되었습니다.\n설정 파일: {self.class_config_manager.config_file}\n\n변경사항을 적용하려면 프로그램을 재시작해주세요.")
+				f"클래스 설정이 저장되었습니다.\n설정 파일: {self.class_config_manager.config_file}\n백업 설정: {backup_status}\n\n변경사항을 적용하려면 프로그램을 재시작해주세요.")
 
 	def on_slider_change(self, value):
     # 슬라이더 값을 정수로 변환하고 0-인덱스로 조정
