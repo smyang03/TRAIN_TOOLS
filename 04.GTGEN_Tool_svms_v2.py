@@ -3565,6 +3565,15 @@ class MainApp:
 				print(f"[ExclusionZone] {deleted_count}개 라벨 제외 영역에서 삭제됨")
 				total_deleted += deleted_count
 
+		# 3. 클래스 변경 영역 자동 적용
+		if self.class_change_zone_manager and self.class_change_zone_manager.zones:
+			self.bbox, changed_count = self.class_change_zone_manager.apply_class_changes(
+				self.bbox, class_name, self.zoom_ratio
+			)
+			if changed_count > 0:
+				print(f"[ClassChangeZone] {changed_count}개 bbox 클래스가 자동 변경됨 (페이지 이동 시)")
+				total_deleted += 1  # 변경 플래그 설정 (파일 저장 트리거)
+
 		# 필터링으로 라벨이 삭제되었으면 파일에 반영
 		if total_deleted > 0:
 			self.write_bbox()
