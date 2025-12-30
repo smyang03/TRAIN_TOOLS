@@ -1087,6 +1087,8 @@ class MainApp:
 		self.prev_page_labels = None  # 이전 페이지의 라벨 정보
 		self.prev_page_masking = None  # 이전 페이지의 마스킹 정보
 		self.prev_page_polygon_points = None  # 이전 페이지의 폴리곤 포인트
+		self.prev_page_masking_width = None  # 이전 페이지의 마스킹 너비
+		self.prev_page_masking_height = None  # 이전 페이지의 마스킹 높이
 		print("[AutoCopy] 자동 복사 기능 초기화 완료")
 
 		# 메인 윈도우 초기 생성 (설정 다이얼로그를 띄우기 위해)
@@ -3677,6 +3679,11 @@ class MainApp:
 		# 마스킹 자동 복사가 활성화되어 있으면 현재 마스킹 저장
 		if self.auto_copy_masking_enabled and hasattr(self, 'masking') and self.has_saved_masking:
 			self.prev_page_masking = copy.deepcopy(self.masking)
+			# 마스킹 크기 정보 저장
+			if hasattr(self, 'maskingframewidth'):
+				self.prev_page_masking_width = self.maskingframewidth
+			if hasattr(self, 'maskingframeheight'):
+				self.prev_page_masking_height = self.maskingframeheight
 			# 폴리곤 포인트도 저장
 			if hasattr(self, 'saved_polygon_points') and self.saved_polygon_points:
 				self.prev_page_polygon_points = copy.deepcopy(self.saved_polygon_points)
@@ -3702,23 +3709,36 @@ class MainApp:
 				self.bbox.append(copy.deepcopy(screen_bbox))
 
 			print(f"[AutoCopy] 라벨 자동 복사 적용: {len(self.prev_page_labels)}개")
+			self.write_bbox()
 			applied = True
 
 		# 마스킹 자동 복사 적용
 		if self.auto_copy_masking_enabled and self.prev_page_masking is not None:
+			# 마스킹 정보 복사
 			self.masking = copy.deepcopy(self.prev_page_masking)
 			self.has_saved_masking = True
+
+			# 마스킹 크기 정보 복사
+			if hasattr(self, 'prev_page_masking_width'):
+				self.maskingframewidth = self.prev_page_masking_width
+			if hasattr(self, 'prev_page_masking_height'):
+				self.maskingframeheight = self.prev_page_masking_height
 
 			# 폴리곤 포인트도 복사
 			if self.prev_page_polygon_points:
 				self.saved_polygon_points = copy.deepcopy(self.prev_page_polygon_points)
 
 			print(f"[AutoCopy] 마스킹 자동 복사 적용")
-			applied = True
 
-		# 자동 복사가 적용되었으면 파일 저장 및 화면 갱신
-		if applied:
-			self.write_bbox()
+			# load_masking() 함수를 호출하여 화면에 표시하고 파일에 저장
+			try:
+				self.load_masking()
+				applied = True
+			except Exception as e:
+				print(f"[AutoCopy] 마스킹 적용 중 오류: {e}")
+
+		# 라벨 자동 복사만 적용된 경우 화면 갱신
+		if applied and not self.auto_copy_masking_enabled:
 			self.draw_bbox()
 
 	def draw_bbox(self):
