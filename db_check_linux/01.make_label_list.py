@@ -475,7 +475,7 @@ def find_images_without_class(input_path, output_path, target_class):
 
     return stats
 
-def create_limited_dataset(input_path, output_path, num_files, keyword=None):
+def create_limited_dataset(input_path, output_path, num_files, keyword=None, background_only=False):
     """
     전체 데이터셋에서 지정된 개수의 파일을 파일명 패턴 분포에 맞게 선택하여 리스트 생성
 
@@ -484,6 +484,7 @@ def create_limited_dataset(input_path, output_path, num_files, keyword=None):
         output_path: 출력 저장 경로
         num_files: 선택할 파일 개수
         keyword: 파일명 필터링 키워드 (None이면 모든 파일 포함, 한글/특수문자 지원)
+        background_only: True일 경우 배경 이미지(어노테이션 없음)만 추출
     """
     import random
     import numpy as np
@@ -498,6 +499,8 @@ def create_limited_dataset(input_path, output_path, num_files, keyword=None):
     logger.info(f"제한된 데이터셋 생성 시작: {num_files}개 파일")
     if keyword:
         logger.info(f"파일명 필터 키워드: '{keyword}'")
+    if background_only:
+        logger.info("배경 이미지(어노테이션 없음)만 추출 모드")
     
     # 결과 파일 경로 설정
     limited_list_path = output_path / 'limited_dataset.txt'
@@ -532,9 +535,39 @@ def create_limited_dataset(input_path, output_path, num_files, keyword=None):
                     continue
                 full_path = os.path.join(root, file)
                 all_files.append(full_path)
-    
+
     total_available = len(all_files)
     logger.info(f"총 {total_available}개의 이미지 파일 발견")
+
+    # 배경 이미지만 필터링
+    if background_only:
+        print(f"배경 이미지(어노테이션 없음)만 필터링 중...")
+        background_files = []
+        for i, full_path in enumerate(all_files):
+            if (i + 1) % 100 == 0:
+                print(f"\r배경 필터링 진행률: {(i+1)/len(all_files)*100:.1f}% ({i+1}/{len(all_files)})", end='')
+
+            label_path = get_label_path_from_image(full_path)
+            is_background = False
+
+            if not os.path.isfile(label_path):
+                is_background = True
+            else:
+                try:
+                    with open(label_path, 'r', encoding='utf-8') as f:
+                        lines = f.readlines()
+                        if not lines or all(not line.strip() for line in lines):
+                            is_background = True
+                except Exception:
+                    pass
+
+            if is_background:
+                background_files.append(full_path)
+
+        print(f"\r배경 필터링 완료: {len(background_files)}/{len(all_files)}개 배경 이미지 발견     ")
+        all_files = background_files
+        total_available = len(all_files)
+        logger.info(f"배경 이미지 필터링 완료: {total_available}개")
     
     if total_available == 0:
         logger.error("입력 경로에 이미지 파일이 없습니다.")
@@ -606,14 +639,20 @@ def create_limited_dataset(input_path, output_path, num_files, keyword=None):
     for group_name, files in groups.items():
         group_ratio = len(files) / total_files
         group_sample_count = int(num_files * group_ratio)
-        
+
         if group_sample_count == 0 and len(files) > 0:
             group_sample_count = 1
-        
+
         if group_sample_count > len(files):
             group_sample_count = len(files)
-        
-        sampled_files = random.sample(files, group_sample_count)
+
+        # 등간격 샘플링으로 전체 데이터에서 균등하게 분산 추출
+        if group_sample_count > 0:
+            indices = np.linspace(0, len(files) - 1, group_sample_count, dtype=int)
+            sampled_files = [files[i] for i in indices]
+        else:
+            sampled_files = []
+
         selected_files.extend(sampled_files)
         group_counts[group_name] = group_sample_count
     
@@ -1821,18 +1860,23 @@ def main():
                     if num_files <= 0:
                         print("오류: 파일 개수는 1 이상이어야 합니다.")
                         continue
-                        
+
                 except ValueError:
                     print("오류: 올바른 숫자를 입력하세요")
                     continue
-                
+
+                # 배경 이미지만 추출할지 선택
+                background_choice = input("배경 이미지(어노테이션 없음)만 추출하시겠습니까? (y/n, 기본값 n: Enter): ").strip().lower()
+                background_only = background_choice == 'y'
+
                 print(f"\n처리 시작...")
                 print(f"입력 경로: {input_path}")
                 print(f"출력 경로: {output_path}")
                 print(f"선택할 파일 개수: {num_files}개")
-                
+                print(f"배경 이미지만 추출: {'예' if background_only else '아니오'}")
+
                 try:
-                    stats = create_limited_dataset(input_path, output_path, num_files)
+                    stats = create_limited_dataset(input_path, output_path, num_files, background_only=background_only)
                     
                     if stats:
                         print("\n제한된 데이터셋 생성 완료!")
