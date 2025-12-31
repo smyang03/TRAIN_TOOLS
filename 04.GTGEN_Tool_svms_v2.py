@@ -3723,7 +3723,13 @@ class MainApp:
 		self.auto_copy_labels_enabled = self.auto_copy_labels_var.get()
 		if self.auto_copy_labels_enabled:
 			print("[AutoCopy] 라벨 자동 복사 활성화")
-			messagebox.showinfo("라벨 자동 복사", "라벨 자동 복사가 활성화되었습니다.\n페이지 이동 시 현재 페이지의 라벨이 다음 페이지에 자동으로 복사됩니다.")
+			messagebox.showinfo("라벨 자동 복사",
+				"라벨 자동 복사가 활성화되었습니다.\n\n"
+				"📌 선택된 라벨만 복사됩니다:\n"
+				"  - 단일 선택: 선택된 1개 라벨 복사\n"
+				"  - 다중 선택: 선택된 여러 라벨 복사\n"
+				"  - 선택 없음: 복사 안함\n\n"
+				"페이지 이동 시 다음 페이지에 자동으로 복사됩니다.")
 		else:
 			print("[AutoCopy] 라벨 자동 복사 비활성화")
 			self.prev_page_labels = None
@@ -3741,11 +3747,29 @@ class MainApp:
 
 	def save_current_page_data(self):
 		"""페이지 이동 전 현재 페이지 데이터 저장"""
-		# 라벨 자동 복사가 활성화되어 있으면 현재 라벨 저장
-		if self.auto_copy_labels_enabled and len(self.bbox) > 0:
-			# 원본 좌표로 변환하여 저장 (줌 비율 고려)
+		# 라벨 자동 복사가 활성화되어 있으면 선택된 라벨만 저장
+		if self.auto_copy_labels_enabled:
 			self.prev_page_labels = []
-			for bbox in self.bbox:
+
+			# 다중 선택된 라벨이 있으면 다중 선택된 라벨들만 복사
+			if hasattr(self, 'multi_selected') and self.multi_selected:
+				for idx in sorted(self.multi_selected):
+					if idx < len(self.bbox):
+						bbox = self.bbox[idx]
+						original_bbox = [
+							bbox[0],  # sel
+							bbox[1],  # clsname
+							bbox[2],  # info (class_id)
+							bbox[3] / self.zoom_ratio,  # x1 (원본)
+							bbox[4] / self.zoom_ratio,  # y1 (원본)
+							bbox[5] / self.zoom_ratio,  # x2 (원본)
+							bbox[6] / self.zoom_ratio   # y2 (원본)
+						]
+						self.prev_page_labels.append(copy.deepcopy(original_bbox))
+				print(f"[AutoCopy] 다중 선택된 라벨 저장됨: {len(self.prev_page_labels)}개")
+			# 단일 선택된 라벨이 있으면 선택된 라벨만 복사
+			elif self.selid >= 0 and self.selid < len(self.bbox):
+				bbox = self.bbox[self.selid]
 				original_bbox = [
 					bbox[0],  # sel
 					bbox[1],  # clsname
@@ -3756,7 +3780,10 @@ class MainApp:
 					bbox[6] / self.zoom_ratio   # y2 (원본)
 				]
 				self.prev_page_labels.append(copy.deepcopy(original_bbox))
-			print(f"[AutoCopy] 라벨 저장됨: {len(self.prev_page_labels)}개")
+				print(f"[AutoCopy] 선택된 라벨 저장됨: {bbox[1]}")
+			else:
+				# 선택된 라벨이 없으면 저장하지 않음
+				print(f"[AutoCopy] 선택된 라벨 없음 - 복사 안함")
 
 		# 마스킹 자동 복사가 활성화되어 있으면 현재 마스킹 저장
 		if self.auto_copy_masking_enabled and hasattr(self, 'masking') and self.has_saved_masking:
