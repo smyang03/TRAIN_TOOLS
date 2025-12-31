@@ -1274,6 +1274,9 @@ class MainApp:
 
 		# 버튼별 클래스 ID를 저장할 딕셔너리
 		self.button_class_map = {}
+		# zoom_ratio 명시적 초기화
+		self.zoom_ratio = 1.0
+
 		
 		# == UI 레이아웃 구성 시작 ==
 		
@@ -4237,6 +4240,10 @@ class MainApp:
 		return
 
 	def on_key_up(self, event):
+		# selid 범위 체크
+		if self.selid < 0 or self.selid >= len(self.bbox):
+			print("Not Exist Bbox")
+			return
 		try:
 			rc = self.convert_abs2rel(self.bbox[self.selid])
 			if self.pre_rc==None:
@@ -4254,11 +4261,15 @@ class MainApp:
 			if   self.ci == self.pi          : self.draw_bbox()
 			else                             : self.write_bbox(); self.draw_image()
 			self.pre_rc = rc
-		except:
-			print("Not Exist Bbox")
+		except Exception as e:
+			print(f"Error in on_key_up: {e}")
 		return
 
 	def on_key_down(self, event):
+		# selid 범위 체크
+		if self.selid < 0 or self.selid >= len(self.bbox):
+			print("Not Exist Bbox")
+			return
 		try:
 			rc = self.convert_abs2rel(self.bbox[self.selid])
 			if self.pre_rc==None:
@@ -4276,11 +4287,15 @@ class MainApp:
 			if   self.ci == self.pi          : self.draw_bbox()
 			else                             : self.write_bbox(); self.draw_image()
 			self.pre_rc = rc
-		except:
-			print("Not Exist Bbox")
+		except Exception as e:
+			print(f"Error in on_key_down: {e}")
 		return
 
 	def on_key_left(self, event):
+		# selid 범위 체크
+		if self.selid < 0 or self.selid >= len(self.bbox):
+			print("Not Exist Bbox")
+			return
 		try:
 			rc = self.convert_abs2rel(self.bbox[self.selid])
 			if self.pre_rc==None:
@@ -4298,11 +4313,15 @@ class MainApp:
 			if   self.ci == self.pi          : self.draw_bbox()
 			else                             : self.write_bbox(); self.draw_image()
 			self.pre_rc = rc
-		except:
-			print("Not Exist Bbox")
+		except Exception as e:
+			print(f"Error in on_key_left: {e}")
 		return
 
 	def on_key_right(self, event):
+		# selid 범위 체크
+		if self.selid < 0 or self.selid >= len(self.bbox):
+			print("Not Exist Bbox")
+			return
 		try:
 			rc = self.convert_abs2rel(self.bbox[self.selid])
 			if self.pre_rc==None:
@@ -4320,8 +4339,8 @@ class MainApp:
 			if   self.ci == self.pi          : self.draw_bbox()
 			else                             : self.write_bbox(); self.draw_image()
 			self.pre_rc = rc
-		except:
-			print("Not Exist Bbox")
+		except Exception as e:
+			print(f"Error in on_key_right: {e}")
 		return
 
 	def on_key_shift_up(self, event):
@@ -5369,8 +5388,7 @@ class MainApp:
 			self.ci = len(self.imlist)
 		elif ckey == keysetting[7]:
 			self.load_bbox()
-		elif ckey == keysetting[8]:
-			self.delete_current_file()
+		# keysetting[8] 중복 제거 - 위 5337-5348 라인에서 이미 처리됨
 		elif ckey == keysetting[14]:
 			self.zoom(True)
 		elif ckey == keysetting[15]:
@@ -5489,7 +5507,7 @@ class MainApp:
 		elif '\\' in p:
 			index = p.index('\\')
 		else:
-        # 처리할 슬래시가 없는 경우
+			# 처리할 슬래시가 없는 경우
 			return None
 		p = p[:index][::-1]
 		return p 
@@ -5690,10 +5708,10 @@ class MainApp:
 				img_path = 'original_backup/JPEGImages/'+path
 				self.img.save(img_path)
 			gt_fn = self.make_path(self.gt_fn)
-			f = open("original_backup/labels/"+gt_fn, 'wt')
-			box = copy.deepcopy(self.bbox)
-			for rc in box:
-				f.write(' '.join(str(e) for e in self.convert_abs2rel(rc)) + '\n')
+			with open("original_backup/labels/"+gt_fn, 'wt') as f:
+				box = copy.deepcopy(self.bbox)
+				for rc in box:
+					f.write(' '.join(str(e) for e in self.convert_abs2rel(rc)) + '\n')
 		elif self.mouse_masking:
 			self.bbox_move_start_pt = [x, y]
 			point_size = max(3, int(3 * self.zoom_ratio))
@@ -5715,10 +5733,10 @@ class MainApp:
 				img_path = 'original_backup/JPEGImages/'+path
 				self.img.save(img_path)
 			gt_fn = self.make_path(self.gt_fn)
-			f = open("original_backup/labels/"+gt_fn, 'wt')
-			box = copy.deepcopy(self.bbox)
-			for rc in box:
-				f.write(' '.join(str(e) for e in self.convert_abs2rel(rc)) + '\n')
+			with open("original_backup/labels/"+gt_fn, 'wt') as f:
+				box = copy.deepcopy(self.bbox)
+				for rc in box:
+					f.write(' '.join(str(e) for e in self.convert_abs2rel(rc)) + '\n')
 		elif self.polygon_masking:
 			# 폴리곤이 닫혀있지 않은 경우에만 점 추가
 			if not self.is_polygon_closed:
@@ -7103,27 +7121,7 @@ class MainApp:
 			self.write_bbox()
 			self.draw_image()
 
-	def show_class_menu(self, event, button, current_idx):
-		"""버튼 우클릭 시 클래스 선택 메뉴 표시"""
-		menu = tk.Menu(self.master, tearoff=0)
-
-		# 검색 옵션 추가
-		menu.add_command(label="🔍 Search Classes...",
-						command=lambda: self.open_class_search_dialog(button))
-		menu.add_separator()
-
-		# 모든 클래스를 평면 구조로 표시
-		for idx in range(len(class_name)):
-			menu.add_command(
-				label=f"{idx}: {class_name[idx]}",
-				command=lambda btn=button, idx=idx: self.set_button_class(btn, idx)
-			)
-
-		# 메뉴 표시
-		try:
-			menu.tk_popup(event.x_root, event.y_root)
-		finally:
-			menu.grab_release()
+	# show_class_menu 중복 함수 제거됨 (원본은 6078번 줄에 있음)
 
 	def set_button_class(self, button, class_idx):
 		if 0 <= class_idx < len(class_name):
@@ -7138,104 +7136,6 @@ class MainApp:
 			self.button_class_map[button] = class_idx
 
 
-	def open_class_search_dialog(self, button):
-		"""클래스 검색 다이얼로그 열기"""
-		search_dialog = tk.Toplevel(self.master)
-		search_dialog.title("Search Classes")
-		search_dialog.geometry("400x500")
-		search_dialog.resizable(False, False)
-		search_dialog.transient(self.master)  # 부모 윈도우에 종속
-		search_dialog.grab_set()  # 모달 다이얼로그로 설정
-		
-		# 검색 프레임
-		search_frame = tk.Frame(search_dialog)
-		search_frame.pack(fill="x", padx=10, pady=10)
-		
-		# 검색 레이블
-		search_label = tk.Label(search_frame, text="Search:")
-		search_label.pack(side=tk.LEFT, padx=5)
-		
-		# 검색어 입력 필드
-		search_var = tk.StringVar()
-		search_entry = tk.Entry(search_frame, textvariable=search_var, width=30)
-		search_entry.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
-		search_entry.focus_set()  # 자동 포커스
-		
-		# 결과 리스트박스 프레임
-		result_frame = tk.Frame(search_dialog)
-		result_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-		
-		# 결과 리스트박스
-		result_listbox = tk.Listbox(result_frame, width=50, height=20, font=("Courier", 10))
-		result_listbox.pack(side=tk.LEFT, fill="both", expand=True)
-		
-		# 스크롤바
-		scrollbar = tk.Scrollbar(result_frame, orient="vertical", command=result_listbox.yview)
-		scrollbar.pack(side=tk.RIGHT, fill="y")
-		result_listbox.config(yscrollcommand=scrollbar.set)
-		
-		# 버튼 프레임
-		button_frame = tk.Frame(search_dialog)
-		button_frame.pack(fill="x", padx=10, pady=(0, 10))
-		
-		# 선택 버튼
-		select_btn = tk.Button(
-			button_frame, 
-			text="Select", 
-			command=lambda: self.select_class_from_search(button, result_listbox, search_dialog)
-		)
-		select_btn.pack(side=tk.RIGHT, padx=5)
-		
-		# 취소 버튼
-		cancel_btn = tk.Button(button_frame, text="Cancel", command=search_dialog.destroy)
-		cancel_btn.pack(side=tk.RIGHT, padx=5)
-    
-    # 검색 함수
-		def perform_search(*args):
-			# 리스트박스 초기화
-			result_listbox.delete(0, tk.END)
-			
-			# 검색어
-			query = search_var.get().lower()
-			
-			# 검색 결과 추가
-			for idx, name in enumerate(class_name):
-				if query in name.lower() or query in str(idx):
-					result_listbox.insert(tk.END, f"{idx:3d}: {name}")
-		
-		# 리스트박스 더블 클릭 이벤트
-		def on_double_click(event):
-			self.select_class_from_search(button, result_listbox, search_dialog)
-		
-		# 리스트박스 엔터 키 이벤트
-		def on_enter(event):
-			self.select_class_from_search(button, result_listbox, search_dialog)
-		
-		# 이벤트 바인딩
-		search_var.trace("w", perform_search)  # 입력 시 실시간 검색
-		result_listbox.bind("<Double-Button-1>", on_double_click)  # 더블 클릭
-		result_listbox.bind("<Return>", on_enter)  # 엔터 키
-		search_entry.bind("<Return>", lambda e: result_listbox.focus_set())  # 검색 필드에서 엔터 키
-		
-		# 초기 검색 (모든 클래스 표시)
-		perform_search()
-
-	def select_class_from_search(self, button, listbox, dialog):
-		"""검색 결과에서 클래스 선택"""
-		# 선택된 항목 가져오기
-		selected = listbox.curselection()
-		if not selected:
-			return
-		
-		# 선택된 텍스트에서 클래스 인덱스 추출
-		selected_text = listbox.get(selected[0])
-		class_idx = int(selected_text.split(":")[0])
-		
-		# 버튼 클래스 설정
-		self.set_button_class(button, class_idx)
-		
-		# 다이얼로그 닫기
-		dialog.destroy()
 	def implement_multi_class_selection(self):
 		"""Adds multi-class selection functionality to the tool"""
 		
