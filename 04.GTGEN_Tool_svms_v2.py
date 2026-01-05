@@ -3785,13 +3785,9 @@ class MainApp:
 				]
 				self.prev_page_labels.append(copy.deepcopy(original_bbox))
 				print(f"[AutoCopy] 선택된 라벨 저장됨: {bbox[1]}")
-			# 선택된 라벨이 없지만 j로 복사한 라벨이 있으면 그것을 사용
-			elif hasattr(self, 'copied_label') and self.copied_label is not None:
-				self.prev_page_labels.append(copy.deepcopy(self.copied_label))
-				print(f"[AutoCopy] j로 복사된 라벨 사용: {self.copied_label[1]}")
 			else:
-				# 선택된 라벨도 없고 복사된 라벨도 없으면 복사 안함
-				print(f"[AutoCopy] 복사할 라벨 없음")
+				# 선택된 라벨이 없으면 복사 안함
+				print(f"[AutoCopy] 선택된 라벨 없음 - 복사 안함")
 
 		# 마스킹 자동 복사가 활성화되어 있으면 현재 마스킹 저장
 		if self.auto_copy_masking_enabled and hasattr(self, 'masking') and self.has_saved_masking:
