@@ -3728,10 +3728,11 @@ class MainApp:
 			print("[AutoCopy] 라벨 자동 복사 활성화")
 			messagebox.showinfo("라벨 자동 복사",
 				"라벨 자동 복사가 활성화되었습니다.\n\n"
-				"📌 선택된 라벨만 복사됩니다:\n"
-				"  - 단일 선택: 선택된 1개 라벨 복사\n"
-				"  - 다중 선택: 선택된 여러 라벨 복사\n"
-				"  - 선택 없음: 복사 안함\n\n"
+				"📌 복사 우선순위:\n"
+				"  1. 다중 선택: 선택된 여러 라벨 복사\n"
+				"  2. 단일 선택: 선택된 1개 라벨 복사\n"
+				"  3. j로 복사: j키로 복사해둔 라벨 사용\n"
+				"  4. 선택/복사 없음: 복사 안함\n\n"
 				"페이지 이동 시 다음 페이지에 자동으로 복사됩니다.")
 		else:
 			print("[AutoCopy] 라벨 자동 복사 비활성화")
@@ -3784,9 +3785,13 @@ class MainApp:
 				]
 				self.prev_page_labels.append(copy.deepcopy(original_bbox))
 				print(f"[AutoCopy] 선택된 라벨 저장됨: {bbox[1]}")
+			# 선택된 라벨이 없지만 j로 복사한 라벨이 있으면 그것을 사용
+			elif hasattr(self, 'copied_label') and self.copied_label is not None:
+				self.prev_page_labels.append(copy.deepcopy(self.copied_label))
+				print(f"[AutoCopy] j로 복사된 라벨 사용: {self.copied_label[1]}")
 			else:
-				# 선택된 라벨이 없으면 저장하지 않음
-				print(f"[AutoCopy] 선택된 라벨 없음 - 복사 안함")
+				# 선택된 라벨도 없고 복사된 라벨도 없으면 복사 안함
+				print(f"[AutoCopy] 복사할 라벨 없음")
 
 		# 마스킹 자동 복사가 활성화되어 있으면 현재 마스킹 저장
 		if self.auto_copy_masking_enabled and hasattr(self, 'masking') and self.has_saved_masking:
