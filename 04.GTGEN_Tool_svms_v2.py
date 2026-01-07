@@ -3696,7 +3696,8 @@ class MainApp:
 			w  = abs(float(r[2] - r[0])  / float(self.imsize[0]))
 			h  = abs(float(r[3] - r[1])  / float(self.imsize[1]))
 			# rc[2]에 저장된 원본 class_idx를 직접 사용 (rc[1] name에서 추출하지 않음)
-			return [int(rc[2]), cx, cy, w, h]
+			# 소수점 5자리까지 반올림
+			return [int(rc[2]), round(cx, 5), round(cy, 5), round(w, 5), round(h, 5)]
 		except (ValueError, ZeroDivisionError) as e:
 			print(f"ERROR in convert_abs2rel: {e}, rc={rc}")
 			return [0, 0.5, 0.5, 0.1, 0.1]
@@ -4043,8 +4044,13 @@ class MainApp:
 					tags='clsname'
 				)
 
-			if self.selid >= 0:
-				self.draw_bbox_rc(self.bbox[self.selid])
+			# 선택된 bbox 그리기 (필터 체크 적용)
+			if self.selid >= 0 and self.selid < len(self.bbox):
+				selected_bbox = self.bbox[self.selid]
+				selected_class_id = int(selected_bbox[2])
+				# 클래스 필터 체크 - 필터에 의해 숨겨진 클래스면 그리지 않음
+				if self.class_filter_manager.is_class_visible(selected_class_id):
+					self.draw_bbox_rc(self.bbox[self.selid])
 			if hasattr(self, 'show_label_list') and self.show_label_list.get():
 				self.update_label_list()
 				self.update_crop_preview()
