@@ -4915,6 +4915,46 @@ class MainApp:
 		self.draw_image()
 		return
 
+	def fit_to_window(self):
+		"""이미지를 캔버스(화면) 크기에 맞춰 자동 조정"""
+		self.pi = -1
+
+		# 캔버스 크기 가져오기
+		canvas_width = self.canvas.winfo_width()
+		canvas_height = self.canvas.winfo_height()
+
+		# 원본 이미지 크기 확인
+		if not hasattr(self, 'original_width') or not hasattr(self, 'original_height'):
+			print("원본 이미지 크기 정보 없음")
+			return
+
+		img_width = self.original_width
+		img_height = self.original_height
+
+		if img_width <= 0 or img_height <= 0:
+			print(f"잘못된 이미지 크기: {img_width}x{img_height}")
+			return
+
+		if canvas_width <= 0 or canvas_height <= 0:
+			print(f"잘못된 캔버스 크기: {canvas_width}x{canvas_height}")
+			return
+
+		# 비율 계산 (전체가 보이도록 작은 쪽 선택)
+		ratio_w = canvas_width / img_width
+		ratio_h = canvas_height / img_height
+
+		self.zoom_ratio = min(ratio_w, ratio_h)
+
+		# 최소/최대 제한 (너무 작거나 크지 않게)
+		if self.zoom_ratio < 0.1:
+			self.zoom_ratio = 0.1
+		elif self.zoom_ratio > 10.0:
+			self.zoom_ratio = 10.0
+
+		print(f'Fit to Window - 이미지: {img_width}x{img_height}, 캔버스: {canvas_width}x{canvas_height}, zoom: {int(self.zoom_ratio*100)}%')
+		self.draw_image()
+		return
+
 	def resize_bbox(self, ratio):
 		if not self.bbox : return
 		rc = self.convert_abs2rel(self.bbox[self.selid])
@@ -5498,6 +5538,8 @@ class MainApp:
 			self.zoom(True)
 		elif ckey == keysetting[15]:
 			self.zoom(False)
+		elif ckey == 'f':
+			self.fit_to_window()
 		elif ckey == keysetting[16]:
 			self.cross_line = not self.cross_line
 		elif ckey == keysetting[11]:
