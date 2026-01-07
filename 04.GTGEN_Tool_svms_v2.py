@@ -702,6 +702,36 @@ class ClassConfigManager:
 		"""버튼 생성에 필요한 정보 반환 [(name, id, key), ...]"""
 		return [(c['name'], c['id'], c.get('key', None)) for c in self.classes]
 
+# 클래스 필터 관리 클래스
+class ClassFilterManager:
+	def __init__(self):
+		self.visible_classes = set()  # 표시할 클래스 ID 집합 (비어있으면 전체 표시)
+		self.filter_enabled = False  # 필터 활성화 여부
+
+	def set_visible_classes(self, class_ids):
+		"""표시할 클래스 ID 목록 설정"""
+		self.visible_classes = set(class_ids) if class_ids else set()
+		self.filter_enabled = len(self.visible_classes) > 0
+
+	def is_class_visible(self, class_id):
+		"""특정 클래스가 표시 대상인지 확인"""
+		if not self.filter_enabled:
+			return True  # 필터 비활성화 시 모두 표시
+		return class_id in self.visible_classes
+
+	def clear_filter(self):
+		"""필터 초기화 (전체 표시)"""
+		self.visible_classes.clear()
+		self.filter_enabled = False
+
+	def get_visible_classes(self):
+		"""현재 표시 중인 클래스 ID 목록 반환"""
+		return list(self.visible_classes)
+
+	def is_filter_active(self):
+		"""필터가 활성화되어 있는지 확인"""
+		return self.filter_enabled
+
 # 클래스 설정 다이얼로그
 class ClassConfigDialog:
 	def __init__(self, parent, config_manager=None):
@@ -1078,6 +1108,9 @@ class MainApp:
 		# 클래스 설정 관리자 초기화
 		self.class_config_manager = ClassConfigManager()
 
+		# 클래스 필터 관리자 초기화
+		self.class_filter_manager = ClassFilterManager()
+
 		# 제외 영역 관리자 초기화
 		self.exclusion_zone_manager = ExclusionZoneManager()
 		# 제외 영역 활성화 상태 로드
@@ -1370,6 +1403,10 @@ class MainApp:
 
 		self.btnConfigClass = tk.Button(self.button_frame, text="클래스 설정", command=self.change_class_config, bd=1)
 		self.btnConfigClass.pack(side=tk.RIGHT, padx=2)
+
+		# 클래스 필터 버튼
+		self.btnClassFilter = tk.Button(self.button_frame, text="클래스 필터", command=self.manage_class_filter, bd=1)
+		self.btnClassFilter.pack(side=tk.RIGHT, padx=2)
 
 		# 현재 설정 파일명 표시
 		config_filename = self.class_config_manager.get_config_filename()
@@ -2928,22 +2965,27 @@ class MainApp:
 		
 		# 각 라벨을 리스트에 추가
 		for i, bbox in enumerate(self.bbox):
+			# 클래스 필터 적용 - 필터에 해당하는 클래스만 표시
+			class_id = int(bbox[2])
+			if not self.class_filter_manager.is_class_visible(class_id):
+				continue
+
 			class_name_str = bbox[1]
 			width = int(bbox[5] - bbox[3])
 			height = int(bbox[6] - bbox[4])
-			
+
 			# 클래스별 개수 카운트
 			if class_name_str in class_counts:
 				class_counts[class_name_str] += 1
 			else:
 				class_counts[class_name_str] = 1
-			
+
 			# 선택된 라벨 표시용 마커
 			marker = "●" if bbox[0] else "○"
-			
+
 			# 리스트 항목 텍스트 생성 (더 간결하게)
 			item_text = f"{marker} {i+1:2d}. {class_name_str} ({width}x{height})"
-			
+
 			self.label_listbox.insert(tk.END, item_text)
 			
 			# 현재 선택된 라벨이면 리스트박스에서도 선택하고 색상 변경
@@ -3589,13 +3631,14 @@ class MainApp:
 			if y+h>self.imsize[1]:
 				h=self.imsize[1]-y-1
 
-			# 클래스 인덱스 범위 체크
+			# 클래스 인덱스 범위 체크 - 원본 ID 유지
 			class_idx = int(rc[0])
 			if 0 <= class_idx < len(class_name):
 				name = class_name[class_idx]
 			else:
-				print(f"WARNING: Invalid class index {class_idx}, using default")
-				name = class_name[0] if class_name else "unknown"
+				# 설정에 없는 클래스는 원본 ID를 유지하고 Unknown으로 표시
+				print(f"WARNING: Class index {class_idx} not in config, keeping original ID")
+				name = f"Unknown({class_idx})"
 
 			return [False, name, class_idx, (x), (y), (x+w), (y+h)]
 		except (IndexError, ValueError, TypeError) as e:
@@ -3615,7 +3658,8 @@ class MainApp:
 			cy = 0.5 * (float(r[1]) + float(r[3])) / float(self.imsize[1])
 			w  = abs(float(r[2] - r[0])  / float(self.imsize[0]))
 			h  = abs(float(r[3] - r[1])  / float(self.imsize[1]))
-			return [class_name.index(rc[1]), cx, cy, w, h]
+			# rc[2]에 저장된 원본 class_idx를 직접 사용 (rc[1] name에서 추출하지 않음)
+			return [int(rc[2]), cx, cy, w, h]
 		except (ValueError, ZeroDivisionError) as e:
 			print(f"ERROR in convert_abs2rel: {e}, rc={rc}")
 			return [0, 0.5, 0.5, 0.1, 0.1]
@@ -3884,6 +3928,11 @@ class MainApp:
 		else:
 			labellst = []
 			for i, rc in enumerate(self.bbox):
+				# 클래스 필터 적용 - 필터에 해당하는 클래스만 표시
+				class_id = int(rc[2])
+				if not self.class_filter_manager.is_class_visible(class_id):
+					continue
+
 				self.draw_bbox_rc(rc, i) if rc[0] == False else None
 				labellst.append(rc[1])
 			if len(labellst) > 0:
@@ -7107,6 +7156,115 @@ class MainApp:
 			backup_status = "활성화" if enable_backup else "비활성화"
 			messagebox.showinfo("클래스 설정 변경",
 				f"클래스 설정이 저장되었습니다.\n설정 파일: {self.class_config_manager.config_file}\n백업 설정: {backup_status}\n\n변경사항을 적용하려면 프로그램을 재시작해주세요.")
+
+	def manage_class_filter(self):
+		"""클래스 필터 관리 다이얼로그"""
+		dialog = tk.Toplevel(self.master)
+		dialog.title("클래스 필터 설정")
+		dialog.geometry("500x550")
+		dialog.transient(self.master)
+		dialog.grab_set()
+
+		# 설명 레이블
+		tk.Label(dialog, text="화면에 표시할 클래스를 선택하세요", font=("맑은 고딕", 10, "bold")).pack(pady=10)
+		tk.Label(dialog, text="체크된 클래스만 화면에 표시됩니다 (저장되는 파일에는 영향 없음)", fg="blue").pack()
+
+		# 클래스 리스트
+		list_frame = tk.LabelFrame(dialog, text="클래스 목록")
+		list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+		# 체크박스를 위한 스크롤 가능 프레임
+		canvas = tk.Canvas(list_frame)
+		scrollbar = tk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
+		scrollable_frame = tk.Frame(canvas)
+
+		scrollable_frame.bind(
+			"<Configure>",
+			lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+		)
+
+		canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+		canvas.configure(yscrollcommand=scrollbar.set)
+
+		# 각 클래스에 대한 체크박스
+		class_check_vars = {}  # {class_id: BooleanVar}
+
+		# 현재 필터 설정 가져오기
+		current_visible_classes = self.class_filter_manager.get_visible_classes()
+		filter_active = self.class_filter_manager.is_filter_active()
+
+		for cls in self.class_config_manager.classes:
+			class_id = cls['id']
+			class_name_str = cls['name']
+
+			# 현재 필터가 활성화되어 있으면 현재 필터 설정을 따르고,
+			# 비활성화되어 있으면 모두 선택
+			is_checked = class_id in current_visible_classes if filter_active else True
+
+			# 체크박스
+			check_var = tk.BooleanVar()
+			check_var.set(is_checked)
+			class_check_vars[class_id] = check_var
+
+			chk = tk.Checkbutton(
+				scrollable_frame,
+				text=f"{class_name_str} (ID: {class_id})",
+				variable=check_var,
+				font=("맑은 고딕", 9),
+				anchor='w'
+			)
+			chk.pack(fill=tk.X, padx=10, pady=2)
+
+		canvas.pack(side="left", fill="both", expand=True)
+		scrollbar.pack(side="right", fill="y")
+
+		# 버튼 프레임
+		button_frame = tk.Frame(dialog)
+		button_frame.pack(pady=10)
+
+		def apply_filter():
+			"""필터 적용"""
+			selected_classes = [class_id for class_id, var in class_check_vars.items() if var.get()]
+
+			if not selected_classes:
+				messagebox.showwarning("경고", "최소 1개 이상의 클래스를 선택해야 합니다.")
+				return
+
+			# 필터 적용
+			self.class_filter_manager.set_visible_classes(selected_classes)
+
+			# 화면 갱신
+			self.draw_bbox()
+			self.update_listbox()
+
+			# 결과 메시지
+			class_names = [self.class_config_manager.get_class_name(cid) for cid in selected_classes]
+			messagebox.showinfo("필터 적용", f"선택된 {len(selected_classes)}개 클래스만 표시됩니다:\n\n" + ", ".join(class_names))
+			dialog.destroy()
+
+		def reset_filter():
+			"""필터 초기화 (전체 표시)"""
+			self.class_filter_manager.clear_filter()
+			self.draw_bbox()
+			self.update_listbox()
+			messagebox.showinfo("필터 초기화", "모든 클래스가 표시됩니다.")
+			dialog.destroy()
+
+		def select_all():
+			"""모두 선택"""
+			for var in class_check_vars.values():
+				var.set(True)
+
+		def deselect_all():
+			"""모두 선택 해제"""
+			for var in class_check_vars.values():
+				var.set(False)
+
+		tk.Button(button_frame, text="모두 선택", command=select_all, width=10).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="모두 해제", command=deselect_all, width=10).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="적용", command=apply_filter, width=10).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="초기화", command=reset_filter, width=10).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="닫기", command=dialog.destroy, width=10).pack(side=tk.LEFT, padx=2)
 
 	def on_slider_change(self, value):
     # 슬라이더 값을 정수로 변환하고 0-인덱스로 조정
