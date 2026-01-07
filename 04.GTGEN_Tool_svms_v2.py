@@ -4320,6 +4320,16 @@ class MainApp:
 		self.draw_bbox()
 
 	def on_mouse_wheel(self, event):
+		# Ctrl 키와 함께 사용 시 확대/축소
+		if event.state & 0x4:  # Ctrl 키가 눌린 경우 (0x4 = Control modifier)
+			# 마우스 휠 위: 확대, 아래: 축소
+			if event.num == 4 or event.delta == 120:  # wheel up
+				self.zoom(True)
+			elif event.num == 5 or event.delta == -120:  # wheel down
+				self.zoom(False)
+			return
+
+		# 일반 마우스 휠: 페이지 이동 (기존 동작)
 		if   event.num == 5 or event.delta == -120: self.ci += 1 # wheel down
 		elif event.num == 4 or event.delta ==  120: self.ci -= 1 # wheel up
 		if   self.ci >= len(self.imlist) : self.ci = len(self.imlist) - 1
