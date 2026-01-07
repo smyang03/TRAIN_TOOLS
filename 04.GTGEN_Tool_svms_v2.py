@@ -4654,12 +4654,14 @@ class MainApp:
 
 		# 클래스 인덱스가 유효한지 확인
 		if 0 <= clsid < len(class_name):
-			# 선택된 바운딩 박스의 클래스 이름을 업데이트
+			# 선택된 바운딩 박스의 클래스 이름과 ID를 업데이트
 			self.bbox[self.selid][1] = class_name[clsid]
+			self.bbox[self.selid][2] = clsid  # class_id도 함께 업데이트
 
 			# pre_rc가 있는 경우 업데이트
 			if self.pre_rc is not None:
 				self.pre_rc[1] = class_name[clsid]
+				self.pre_rc[2] = clsid  # class_id도 함께 업데이트
 
 			# 화면에 바운딩 박스 다시 그리기 (라벨만 업데이트, 전체 갱신 X)
 			self.draw_bbox()
