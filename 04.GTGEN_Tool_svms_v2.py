@@ -3958,17 +3958,23 @@ class MainApp:
 		if self.bbox_resize_anchor != None or self.bbox_move:
 			# selid 범위 체크
 			if 0 <= self.selid < len(self.bbox):
-				self.draw_bbox_rc(self.bbox[self.selid])
-				rc = self.bbox[self.selid]
-				s = str(rc[5]-rc[3]) + 'x' + str(rc[6]-rc[4])
-				self.canvas.create_text(rc[5]-3,rc[6]+14, font='Arial 7', fill='black', text=s, anchor='se', tags='bbox')
+				# 클래스 필터 체크 - 필터에 의해 숨겨진 클래스는 표시 안함
+				selected_class_id = int(self.bbox[self.selid][2])
+				if self.class_filter_manager.is_class_visible(selected_class_id):
+					self.draw_bbox_rc(self.bbox[self.selid])
+					rc = self.bbox[self.selid]
+					s = str(rc[5]-rc[3]) + 'x' + str(rc[6]-rc[4])
+					self.canvas.create_text(rc[5]-3,rc[6]+14, font='Arial 7', fill='black', text=s, anchor='se', tags='bbox')
 		elif self.onlyselect is True:
 			# selid 범위 체크
 			if 0 <= self.selid < len(self.bbox):
-				self.draw_bbox_rc(self.bbox[self.selid])
-				rc = self.bbox[self.selid]
-				s = str(rc[5]-rc[3]) + 'x' + str(rc[6]-rc[4])
-				self.canvas.create_text(rc[5]-3,rc[6]+14, font='Arial 7', fill='black', text=s, anchor='se', tags='bbox')
+				# 클래스 필터 체크 - 필터에 의해 숨겨진 클래스는 표시 안함
+				selected_class_id = int(self.bbox[self.selid][2])
+				if self.class_filter_manager.is_class_visible(selected_class_id):
+					self.draw_bbox_rc(self.bbox[self.selid])
+					rc = self.bbox[self.selid]
+					s = str(rc[5]-rc[3]) + 'x' + str(rc[6]-rc[4])
+					self.canvas.create_text(rc[5]-3,rc[6]+14, font='Arial 7', fill='black', text=s, anchor='se', tags='bbox')
 		else:
 			labellst = []
 			drawn_count = 0
