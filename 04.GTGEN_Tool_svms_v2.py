@@ -3320,7 +3320,7 @@ class MainApp:
 										view_x2, view_y2 = self.convert_original_to_view(abs_x2, abs_y2)
 
 										# 바운딩 박스 (캔버스 좌표)
-										bbox = [False, class_name[int(cls_id)], -1, view_x1, view_y1, view_x2, view_y2]
+										bbox = [False, class_name[int(cls_id)], int(cls_id), view_x1, view_y1, view_x2, view_y2]
 
 										# 바운딩 박스가 마스킹 영역과 겹치는지 확인 (면적 기반)
 										if not self.check_bbox_mask_overlap(mask_area, bbox):
@@ -5722,8 +5722,9 @@ class MainApp:
 		elif self.bbox_add:
 			for rc in self.bbox: rc[0] = False
 			#self.bbox.append([True, class_name[0], -1, x, y, x+10, y+10])
+			default_class_idx = self.get_default_class_for_new_bbox()
 			default_class_name = self.get_default_class_name_for_new_bbox()
-			self.bbox.append([True, default_class_name, -1, x, y, x+10, y+10])
+			self.bbox.append([True, default_class_name, default_class_idx, x, y, x+10, y+10])
 			self.selid = len(self.bbox) - 1
 			self.bbox_resize_anchor = ('se', )
 
