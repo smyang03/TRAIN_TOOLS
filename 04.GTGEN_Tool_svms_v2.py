@@ -2665,6 +2665,10 @@ class MainApp:
 			self.pending_operation_count = 0
 			self.pending_deleted_labels = []
 			self.pending_masked_labels = []
+
+			# 페이지 전환 시 onlyselect 모드 해제 (클래스 필터가 작동하도록)
+			self.onlyselect = False
+
 			print(f"[CacheOptimization] 페이지 전환 - pending 카운터 및 작업 내역 초기화")
 
 			if len(self.imlist) > 0:
