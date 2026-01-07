@@ -3044,28 +3044,32 @@ class MainApp:
 			if orig_x2 > orig_x1 and orig_y2 > orig_y1:
 				crop_region = (orig_x1, orig_y1, orig_x2, orig_y2)
 				cropped_img = original_img.crop(crop_region)
-				
-				# 비율 유지하면서 리사이즈
-				canvas_width = 250
-				canvas_height = 180
-				
+
+				# 비율 유지하면서 리사이즈 (실제 crop_canvas 크기에 맞춤)
+				canvas_width = 260
+				canvas_height = 150
+
 				img_ratio = cropped_img.width / cropped_img.height
 				canvas_ratio = canvas_width / canvas_height
-				
+
+				# 여백을 고려하여 약간 작게 리사이즈
+				max_width = canvas_width - 10
+				max_height = canvas_height - 10
+
 				if img_ratio > canvas_ratio:
-					new_width = canvas_width
-					new_height = int(canvas_width / img_ratio)
+					new_width = max_width
+					new_height = int(max_width / img_ratio)
 				else:
-					new_height = canvas_height
-					new_width = int(canvas_height * img_ratio)
-				
+					new_height = max_height
+					new_width = int(max_height * img_ratio)
+
 				resized_img = cropped_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-				
-				# 캔버스에 표시
+
+				# 캔버스에 표시 (중앙 정렬)
 				self.crop_image_tk = ImageTk.PhotoImage(resized_img)
-				
-				x_offset = (260 - new_width) // 2
-				y_offset = (180 - new_height) // 2
+
+				x_offset = (canvas_width - new_width) // 2
+				y_offset = (canvas_height - new_height) // 2
 				
 				self.crop_canvas.create_image(
 					x_offset, y_offset, 
