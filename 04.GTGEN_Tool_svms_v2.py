@@ -712,17 +712,25 @@ class ClassFilterManager:
 		"""표시할 클래스 ID 목록 설정"""
 		self.visible_classes = set(class_ids) if class_ids else set()
 		self.filter_enabled = len(self.visible_classes) > 0
+		print(f"[FILTER DEBUG] set_visible_classes() called")
+		print(f"[FILTER DEBUG] Filter enabled: {self.filter_enabled}")
+		print(f"[FILTER DEBUG] Visible classes: {sorted(self.visible_classes)}")
 
 	def is_class_visible(self, class_id):
 		"""특정 클래스가 표시 대상인지 확인"""
 		if not self.filter_enabled:
 			return True  # 필터 비활성화 시 모두 표시
-		return class_id in self.visible_classes
+		result = class_id in self.visible_classes
+		# 디버깅: 필터링된 클래스만 로그 출력
+		if not result:
+			print(f"[FILTER DEBUG] Class {class_id} is HIDDEN by filter")
+		return result
 
 	def clear_filter(self):
 		"""필터 초기화 (전체 표시)"""
 		self.visible_classes.clear()
 		self.filter_enabled = False
+		print(f"[FILTER DEBUG] clear_filter() called - Filter disabled, all classes visible")
 
 	def get_visible_classes(self):
 		"""현재 표시 중인 클래스 ID 목록 반환"""
@@ -2955,26 +2963,33 @@ class MainApp:
 		"""전체 라벨 리스트 업데이트 - 개선된 버전"""
 		if not hasattr(self, 'label_listbox') or not self.show_label_list.get():
 			return
-		
+
 		if not self.right_panel.winfo_viewable():
 			return
-		
+
 		# 리스트박스 초기화
 		self.label_listbox.delete(0, tk.END)
-		
+
 		if not self.bbox:
 			self.stats_label.config(text="Total: 0 labels")
 			return
-		
+
+		# 디버깅: 필터 상태 출력
+		print(f"\n[FILTER DEBUG] update_label_list() - Total bboxes: {len(self.bbox)}")
+		print(f"[FILTER DEBUG] Filter active: {self.class_filter_manager.is_filter_active()}")
+		if self.class_filter_manager.is_filter_active():
+			print(f"[FILTER DEBUG] Visible classes in filter: {sorted(self.class_filter_manager.get_visible_classes())}")
+
 		# 클래스별 개수 카운트
 		class_counts = {}
-		
+
 		# 각 라벨을 리스트에 추가
 		listbox_index = 0  # listbox에 실제로 추가된 항목의 인덱스
 		self.listbox_to_bbox_map = {}  # listbox 인덱스 → bbox 인덱스 매핑
 		for i, bbox in enumerate(self.bbox):
 			# 클래스 필터 적용 - 필터에 해당하는 클래스만 표시
 			class_id = int(bbox[2])
+			print(f"[FILTER DEBUG] Checking bbox[{i}]: class_id={class_id}, class_name={bbox[1]}")
 			if not self.class_filter_manager.is_class_visible(class_id):
 				continue
 
@@ -3933,6 +3948,12 @@ class MainApp:
 		self.canvas.delete("anchor")
 		self.canvas.delete("clsname")
 
+		# 디버깅: draw_bbox 호출 시 필터 상태 출력
+		print(f"\n[FILTER DEBUG] draw_bbox() called - Total bboxes: {len(self.bbox)}")
+		print(f"[FILTER DEBUG] Filter active: {self.class_filter_manager.is_filter_active()}")
+		if self.class_filter_manager.is_filter_active():
+			print(f"[FILTER DEBUG] Visible classes in filter: {sorted(self.class_filter_manager.get_visible_classes())}")
+
 		if self.bbox_resize_anchor != None or self.bbox_move:
 			# selid 범위 체크
 			if 0 <= self.selid < len(self.bbox):
@@ -3949,14 +3970,18 @@ class MainApp:
 				self.canvas.create_text(rc[5]-3,rc[6]+14, font='Arial 7', fill='black', text=s, anchor='se', tags='bbox')
 		else:
 			labellst = []
+			drawn_count = 0
 			for i, rc in enumerate(self.bbox):
 				# 클래스 필터 적용 - 필터에 해당하는 클래스만 표시
 				class_id = int(rc[2])
+				print(f"[FILTER DEBUG] draw_bbox: bbox[{i}] class_id={class_id}, class_name={rc[1]}")
 				if not self.class_filter_manager.is_class_visible(class_id):
 					continue
 
 				self.draw_bbox_rc(rc, i) if rc[0] == False else None
 				labellst.append(rc[1])
+				drawn_count += 1
+			print(f"[FILTER DEBUG] draw_bbox: Drew {drawn_count} out of {len(self.bbox)} bboxes")
 			if len(labellst) > 0:
 				counted_items = Counter(labellst)
 				cnt = 0
@@ -7250,6 +7275,13 @@ class MainApp:
 		def apply_filter():
 			"""필터 적용"""
 			selected_classes = [class_id for class_id, var in class_check_vars.items() if var.get()]
+
+			# 디버깅: 사용자가 선택한 클래스 출력
+			print(f"\n[FILTER DEBUG] ===== apply_filter() called =====")
+			print(f"[FILTER DEBUG] User selected {len(selected_classes)} classes:")
+			for cid in sorted(selected_classes):
+				cname = self.class_config_manager.get_class_name(cid)
+				print(f"[FILTER DEBUG]   - class_id={cid}, class_name={cname}")
 
 			if not selected_classes:
 				messagebox.showwarning("경고", "최소 1개 이상의 클래스를 선택해야 합니다.")
