@@ -1496,122 +1496,112 @@ class MainApp:
 		self.copy_functions_frame = tk.Frame(self.master, bd=1, relief=tk.RAISED)
 		self.copy_functions_frame.pack(side=tk.TOP, fill="x", padx=5, pady=5)
 
-		# 마스킹 복사 UI 배치 (상단)
-		self.mask_copy_frame = tk.Frame(self.copy_functions_frame)
-		self.mask_copy_frame.pack(side=tk.TOP, padx=5, fill="x", expand=True, pady=2)
+		# ========== 1줄: 복사 기능 (마스킹 + 라벨) ==========
+		self.copy_row_frame = tk.Frame(self.copy_functions_frame)
+		self.copy_row_frame.pack(side=tk.TOP, padx=5, fill="x", expand=True, pady=2)
 
-		self.mask_copy_label = tk.Label(self.mask_copy_frame, text="마스킹 복사:", bd=0)
-		self.mask_copy_label.pack(side=tk.LEFT, padx=5)
+		# 마스킹 복사 섹션
+		self.mask_copy_label = tk.Label(self.copy_row_frame, text="[마스킹]", bd=0, fg="blue")
+		self.mask_copy_label.pack(side=tk.LEFT, padx=2)
 
-		self.start_frame_label = tk.Label(self.mask_copy_frame, text="시작:", bd=0)
-		self.start_frame_label.pack(side=tk.LEFT, padx=2)
+		self.start_frame_label = tk.Label(self.copy_row_frame, text="시작:", bd=0)
+		self.start_frame_label.pack(side=tk.LEFT, padx=1)
 
-		self.start_frame_entry = tk.Entry(self.mask_copy_frame, width=5)
-		self.start_frame_entry.pack(side=tk.LEFT, padx=2)
+		self.start_frame_entry = tk.Entry(self.copy_row_frame, width=5)
+		self.start_frame_entry.pack(side=tk.LEFT, padx=1)
 
-		self.end_frame_label = tk.Label(self.mask_copy_frame, text="종료:", bd=0)
-		self.end_frame_label.pack(side=tk.LEFT, padx=2)
+		self.end_frame_label = tk.Label(self.copy_row_frame, text="종료:", bd=0)
+		self.end_frame_label.pack(side=tk.LEFT, padx=1)
 
-		self.end_frame_entry = tk.Entry(self.mask_copy_frame, width=5)
-		self.end_frame_entry.pack(side=tk.LEFT, padx=2)
+		self.end_frame_entry = tk.Entry(self.copy_row_frame, width=5)
+		self.end_frame_entry.pack(side=tk.LEFT, padx=1)
 
-		self.copy_masking_btn = tk.Button(self.mask_copy_frame, text="실행", command=self.copy_masking_to_range, bd=1)
-		self.copy_masking_btn.pack(side=tk.LEFT, padx=5)
+		self.copy_masking_btn = tk.Button(self.copy_row_frame, text="실행", command=self.copy_masking_to_range, bd=1)
+		self.copy_masking_btn.pack(side=tk.LEFT, padx=2)
 
-		self.delete_range_label = tk.Label(self.mask_copy_frame, text="삭제:", bd=0)
-		self.delete_range_label.pack(side=tk.LEFT, padx=5)
-
-		self.delete_start_frame_label = tk.Label(self.mask_copy_frame, text="시작:", bd=0)
-		self.delete_start_frame_label.pack(side=tk.LEFT, padx=2)
-
-		self.delete_start_frame_entry = tk.Entry(self.mask_copy_frame, width=5)
-		self.delete_start_frame_entry.pack(side=tk.LEFT, padx=2)
-
-		self.delete_end_frame_label = tk.Label(self.mask_copy_frame, text="종료:", bd=0)
-		self.delete_end_frame_label.pack(side=tk.LEFT, padx=2)
-
-		self.delete_end_frame_entry = tk.Entry(self.mask_copy_frame, width=5)
-		self.delete_end_frame_entry.pack(side=tk.LEFT, padx=2)
-
-		self.delete_range_btn = tk.Button(self.mask_copy_frame, text="실행", command=self.delete_range, bd=1)
-		self.delete_range_btn.pack(side=tk.LEFT, padx=5)
-		
-		self.page_move_label = tk.Label(self.mask_copy_frame, text="이동:", bd=0)
-		self.page_move_label.pack(side=tk.LEFT, padx=10)
-
-		self.page_entry = tk.Entry(self.mask_copy_frame, width=5)
-		self.page_entry.pack(side=tk.LEFT, padx=2)
-
-		self.page_move_btn = tk.Button(self.mask_copy_frame, text="Go", command=self.move_to_page, bd=1)
-		self.page_move_btn.pack(side=tk.LEFT, padx=5)
-
-		# 마스킹 자동 복사 체크박스
+		# 마스킹 자동복사 체크박스
 		self.auto_copy_masking_var = tk.BooleanVar()
 		self.auto_copy_masking_var.set(False)
 		self.auto_copy_masking_chk = tk.Checkbutton(
-			self.mask_copy_frame,
-			text="자동복사",
+			self.copy_row_frame,
+			text="자동",
 			variable=self.auto_copy_masking_var,
 			command=self.toggle_auto_copy_masking
 		)
-		self.auto_copy_masking_chk.pack(side=tk.LEFT, padx=10)
+		self.auto_copy_masking_chk.pack(side=tk.LEFT, padx=2)
 
-		# 라벨 복사 UI 배치 (하단)
-		self.label_copy_frame = tk.Frame(self.copy_functions_frame)
-		self.label_copy_frame.pack(side=tk.TOP, padx=5, fill="x", expand=True, pady=2)
+		# 구분선
+		tk.Label(self.copy_row_frame, text="|", fg="gray").pack(side=tk.LEFT, padx=5)
 
-		# 기존 코드를 대체하는 메서드 호출 - UI를 별도 함수로 분리
+		# 라벨 복사 섹션
+		tk.Label(self.copy_row_frame, text="[라벨]", bd=0, fg="blue").pack(side=tk.LEFT, padx=2)
+
+		# 라벨 복사 UI를 담을 별도 프레임 생성 (update_label_copy_ui에서 파괴하지 않도록)
+		self.label_copy_frame = tk.Frame(self.copy_row_frame)
+		self.label_copy_frame.pack(side=tk.LEFT, fill="x", expand=True)
 		self.update_label_copy_ui()
 
-		# 연속 삭제 옵션 UI 배치
-		self.delete_mode_frame = tk.Frame(self.copy_functions_frame, bd=1, relief=tk.RAISED)
-		self.delete_mode_frame.pack(side=tk.TOP, padx=5, fill="x", expand=True, pady=2)
+		# ========== 2줄: 기타 작업 (d키 삭제 + 범위삭제 + 이동) ==========
+		self.actions_row_frame = tk.Frame(self.copy_functions_frame)
+		self.actions_row_frame.pack(side=tk.TOP, padx=5, fill="x", expand=True, pady=2)
 
-		self.delete_mode_label = tk.Label(self.delete_mode_frame, text="d키 삭제:", bd=0)
-		self.delete_mode_label.pack(side=tk.LEFT, padx=5)
+		# d키 삭제 섹션
+		self.delete_mode_label = tk.Label(self.actions_row_frame, text="[d키삭제]", bd=0, fg="blue")
+		self.delete_mode_label.pack(side=tk.LEFT, padx=2)
 
 		self.delete_count_var = tk.IntVar()
-		self.delete_count_var.set(1)  # 기본값: 1장
+		self.delete_count_var.set(1)
 
-		self.rb_delete_1 = tk.Radiobutton(
-			self.delete_mode_frame,
-			text="1장",
-			variable=self.delete_count_var,
-			value=1
-		)
-		self.rb_delete_1.pack(side=tk.LEFT, padx=2)
+		self.rb_delete_1 = tk.Radiobutton(self.actions_row_frame, text="1장", variable=self.delete_count_var, value=1)
+		self.rb_delete_1.pack(side=tk.LEFT, padx=1)
 
-		self.rb_delete_5 = tk.Radiobutton(
-			self.delete_mode_frame,
-			text="5장",
-			variable=self.delete_count_var,
-			value=5
-		)
-		self.rb_delete_5.pack(side=tk.LEFT, padx=2)
+		self.rb_delete_5 = tk.Radiobutton(self.actions_row_frame, text="5장", variable=self.delete_count_var, value=5)
+		self.rb_delete_5.pack(side=tk.LEFT, padx=1)
 
-		self.rb_delete_10 = tk.Radiobutton(
-			self.delete_mode_frame,
-			text="10장",
-			variable=self.delete_count_var,
-			value=10
-		)
-		self.rb_delete_10.pack(side=tk.LEFT, padx=2)
+		self.rb_delete_10 = tk.Radiobutton(self.actions_row_frame, text="10장", variable=self.delete_count_var, value=10)
+		self.rb_delete_10.pack(side=tk.LEFT, padx=1)
 
-		self.rb_delete_custom = tk.Radiobutton(
-			self.delete_mode_frame,
-			text="직접입력:",
-			variable=self.delete_count_var,
-			value=0
-		)
-		self.rb_delete_custom.pack(side=tk.LEFT, padx=2)
+		self.rb_delete_custom = tk.Radiobutton(self.actions_row_frame, text="직접:", variable=self.delete_count_var, value=0)
+		self.rb_delete_custom.pack(side=tk.LEFT, padx=1)
 
-		# 직접 입력 Entry
-		self.delete_custom_entry = tk.Entry(
-			self.delete_mode_frame,
-			width=5
-		)
-		self.delete_custom_entry.pack(side=tk.LEFT, padx=2)
-		self.delete_custom_entry.insert(0, "1")  # 기본값
+		self.delete_custom_entry = tk.Entry(self.actions_row_frame, width=5)
+		self.delete_custom_entry.pack(side=tk.LEFT, padx=1)
+		self.delete_custom_entry.insert(0, "1")
+
+		# 구분선
+		tk.Label(self.actions_row_frame, text="|", fg="gray").pack(side=tk.LEFT, padx=5)
+
+		# 범위삭제 섹션
+		self.delete_range_label = tk.Label(self.actions_row_frame, text="[범위삭제]", bd=0, fg="blue")
+		self.delete_range_label.pack(side=tk.LEFT, padx=2)
+
+		self.delete_start_frame_label = tk.Label(self.actions_row_frame, text="시작:", bd=0)
+		self.delete_start_frame_label.pack(side=tk.LEFT, padx=1)
+
+		self.delete_start_frame_entry = tk.Entry(self.actions_row_frame, width=5)
+		self.delete_start_frame_entry.pack(side=tk.LEFT, padx=1)
+
+		self.delete_end_frame_label = tk.Label(self.actions_row_frame, text="종료:", bd=0)
+		self.delete_end_frame_label.pack(side=tk.LEFT, padx=1)
+
+		self.delete_end_frame_entry = tk.Entry(self.actions_row_frame, width=5)
+		self.delete_end_frame_entry.pack(side=tk.LEFT, padx=1)
+
+		self.delete_range_btn = tk.Button(self.actions_row_frame, text="실행", command=self.delete_range, bd=1)
+		self.delete_range_btn.pack(side=tk.LEFT, padx=2)
+
+		# 구분선
+		tk.Label(self.actions_row_frame, text="|", fg="gray").pack(side=tk.LEFT, padx=5)
+
+		# 이동 섹션
+		self.page_move_label = tk.Label(self.actions_row_frame, text="[이동]", bd=0, fg="blue")
+		self.page_move_label.pack(side=tk.LEFT, padx=2)
+
+		self.page_entry = tk.Entry(self.actions_row_frame, width=5)
+		self.page_entry.pack(side=tk.LEFT, padx=1)
+
+		self.page_move_btn = tk.Button(self.actions_row_frame, text="Go", command=self.move_to_page, bd=1)
+		self.page_move_btn.pack(side=tk.LEFT, padx=2)
 
 		self.setup_label_list_ui()
 
@@ -2262,124 +2252,115 @@ class MainApp:
 		self.draw_image()
 	def update_label_copy_ui(self):
 		"""라벨 복사 UI 업데이트 및 확장"""
-		
+
 		# 기존 label_copy_frame 내용을 지우기
 		for widget in self.label_copy_frame.winfo_children():
 			widget.destroy()
-		
-		# 라벨 복사 기본 UI 재생성
-		self.label_copy_label = tk.Label(self.label_copy_frame, text="라벨 복사:", bd=0)
-		self.label_copy_label.pack(side=tk.LEFT, padx=5)
-		
+
 		# 복사 모드 선택을 위한 라디오 버튼
 		self.copy_mode = tk.StringVar(value="all")  # 기본값: 모든 라벨 복사
-		
-		# 라디오 버튼을 담을 프레임
-		self.copy_mode_frame = tk.Frame(self.label_copy_frame)
-		self.copy_mode_frame.pack(side=tk.LEFT, padx=2)
-		
+
 		# 모든 라벨 모드 라디오 버튼
 		self.rb_all = tk.Radiobutton(
-			self.copy_mode_frame, 
-			text="전체", 
-			variable=self.copy_mode, 
+			self.label_copy_frame,
+			text="전체",
+			variable=self.copy_mode,
 			value="all",
 			command=self.toggle_copy_mode
 		)
-		self.rb_all.pack(side=tk.LEFT)
-		
+		self.rb_all.pack(side=tk.LEFT, padx=1)
+
 		# 선택 라벨 모드 라디오 버튼
 		self.rb_selected = tk.Radiobutton(
-			self.copy_mode_frame, 
-			text="선택", 
-			variable=self.copy_mode, 
+			self.label_copy_frame,
+			text="선택",
+			variable=self.copy_mode,
 			value="selected",
 			command=self.toggle_copy_mode
 		)
-		self.rb_selected.pack(side=tk.LEFT)
-		# 다중 선택 라벨 모드 라디오 버튼 (새로 추가)
+		self.rb_selected.pack(side=tk.LEFT, padx=1)
+
+		# 다중 선택 라벨 모드 라디오 버튼
 		self.rb_multi = tk.Radiobutton(
-			self.copy_mode_frame, 
-			text="다중선택", 
-			variable=self.copy_mode, 
+			self.label_copy_frame,
+			text="다중",
+			variable=self.copy_mode,
 			value="selected_multi",
 			command=self.toggle_copy_mode
 		)
-		self.rb_multi.pack(side=tk.LEFT)
+		self.rb_multi.pack(side=tk.LEFT, padx=1)
 
-		# 다중 선택 정보 표시 라벨 (새로 추가)
-		self.multi_info_label = tk.Label(
-			self.label_copy_frame, 
-			text="선택된 라벨: 0개", 
-			font=("Arial", 8),
-			fg="blue"
-		)
-		self.multi_info_label.pack(side=tk.LEFT, padx=5)
-
-		# 다중 선택 모드 토글 버튼 (새로 추가)
-		self.multi_mode_btn = tk.Button(
-			self.label_copy_frame,  # ✅ 수정: button_frame → label_copy_frame
-			text="다중선택모드: OFF",
-			command=self.toggle_multi_select_mode,
-			bd=1,
-			bg="lightgray"
-		)
-		self.multi_mode_btn.pack(side=tk.LEFT, padx=5)
-		# 대상 이미지의 기존 라벨 처리 옵션 (선택 모드일 때만 활성화)
-		self.label_preserve_frame = tk.Frame(self.label_copy_frame)
-		self.label_preserve_frame.pack(side=tk.LEFT, padx=5)
-		
+		# 대상 이미지의 기존 라벨 처리 옵션
 		self.preserve_mode = tk.StringVar(value="preserve")  # 기본값: 기존 라벨 유지
-		
-		# 유지/삭제 라디오 버튼 그룹
+
 		self.rb_preserve = tk.Radiobutton(
-			self.label_preserve_frame,
+			self.label_copy_frame,
 			text="유지",
 			variable=self.preserve_mode,
 			value="preserve"
 		)
-		self.rb_preserve.pack(side=tk.LEFT)
-		
+		self.rb_preserve.pack(side=tk.LEFT, padx=1)
+
 		self.rb_replace = tk.Radiobutton(
-			self.label_preserve_frame,
+			self.label_copy_frame,
 			text="삭제",
 			variable=self.preserve_mode,
 			value="replace"
 		)
-		self.rb_replace.pack(side=tk.LEFT)
-		
+		self.rb_replace.pack(side=tk.LEFT, padx=1)
+
 		# 시작/종료 프레임 입력 UI
 		self.label_start_frame_label = tk.Label(self.label_copy_frame, text="시작:", bd=0)
-		self.label_start_frame_label.pack(side=tk.LEFT, padx=2)
-		
+		self.label_start_frame_label.pack(side=tk.LEFT, padx=1)
+
 		self.label_start_frame_entry = tk.Entry(self.label_copy_frame, width=5)
-		self.label_start_frame_entry.pack(side=tk.LEFT, padx=2)
-		
+		self.label_start_frame_entry.pack(side=tk.LEFT, padx=1)
+
 		self.label_end_frame_label = tk.Label(self.label_copy_frame, text="종료:", bd=0)
-		self.label_end_frame_label.pack(side=tk.LEFT, padx=2)
-		
+		self.label_end_frame_label.pack(side=tk.LEFT, padx=1)
+
 		self.label_end_frame_entry = tk.Entry(self.label_copy_frame, width=5)
-		self.label_end_frame_entry.pack(side=tk.LEFT, padx=2)
-		
+		self.label_end_frame_entry.pack(side=tk.LEFT, padx=1)
+
 		# 실행 버튼
 		self.copy_label_btn = tk.Button(
-			self.label_copy_frame, 
-			text="실행", 
-			command=self.copy_label_to_range, 
+			self.label_copy_frame,
+			text="실행",
+			command=self.copy_label_to_range,
 			bd=1
 		)
-		self.copy_label_btn.pack(side=tk.LEFT, padx=5)
+		self.copy_label_btn.pack(side=tk.LEFT, padx=2)
 
 		# 라벨 자동 복사 체크박스
 		self.auto_copy_labels_var = tk.BooleanVar()
 		self.auto_copy_labels_var.set(False)
 		self.auto_copy_labels_chk = tk.Checkbutton(
 			self.label_copy_frame,
-			text="자동복사",
+			text="자동",
 			variable=self.auto_copy_labels_var,
 			command=self.toggle_auto_copy_labels
 		)
-		self.auto_copy_labels_chk.pack(side=tk.LEFT, padx=10)
+		self.auto_copy_labels_chk.pack(side=tk.LEFT, padx=2)
+
+		# 다중 선택 정보 표시 라벨 (간결하게)
+		self.multi_info_label = tk.Label(
+			self.label_copy_frame,
+			text="",
+			font=("Arial", 7),
+			fg="green"
+		)
+		self.multi_info_label.pack(side=tk.LEFT, padx=2)
+
+		# 다중 선택 모드 토글 버튼 (간결하게)
+		self.multi_mode_btn = tk.Button(
+			self.label_copy_frame,
+			text="다중모드",
+			command=self.toggle_multi_select_mode,
+			bd=1,
+			bg="lightgray",
+			width=8
+		)
+		self.multi_mode_btn.pack(side=tk.LEFT, padx=2)
 
 		# 초기 상태 설정
 		self.toggle_copy_mode()
@@ -7685,16 +7666,15 @@ class MainApp:
 	def toggle_multi_select_mode(self, event=None):
 		"""다중 선택 모드 토글"""
 		self.multi_select_mode = not self.multi_select_mode
-		
+
 		if not self.multi_select_mode:
 			# 다중 선택 모드 해제 시 선택 해제
 			self.multi_selected.clear()
-		
-		# UI 업데이트
-		mode_text = "ON" if self.multi_select_mode else "OFF"
+
+		# UI 업데이트 (간결하게)
 		bg_color = "lightblue" if self.multi_select_mode else "lightgray"
-		self.multi_mode_btn.config(text=f"다중선택모드: {mode_text}", bg=bg_color)
-		
+		self.multi_mode_btn.config(bg=bg_color)
+
 		self.update_multi_info()
 		self.draw_bbox()
 
@@ -7709,17 +7689,12 @@ class MainApp:
 		self.draw_bbox()
 
 	def update_multi_info(self):
-		"""다중 선택 정보 표시 업데이트"""
+		"""다중 선택 정보 표시 업데이트 (간결하게)"""
 		count = len(self.multi_selected)
 		if count > 0:
-			selected_classes = []
-			for idx in sorted(self.multi_selected):
-				if idx < len(self.bbox):
-					selected_classes.append(self.bbox[idx][1])
-			class_text = ", ".join(set(selected_classes))
-			self.multi_info_label.config(text=f"선택된 라벨: {count}개 ({class_text})")
+			self.multi_info_label.config(text=f"({count}개)")
 		else:
-			self.multi_info_label.config(text="선택된 라벨: 0개")
+			self.multi_info_label.config(text="")
 
 	def copy_multi_selected(self, event=None):
 		"""다중 선택된 라벨들을 복사"""
