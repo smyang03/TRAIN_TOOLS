@@ -7227,7 +7227,7 @@ class MainApp:
 
 			# 화면 갱신
 			self.draw_bbox()
-			self.update_listbox()
+			self.update_label_list()
 
 			# 결과 메시지
 			class_names = [self.class_config_manager.get_class_name(cid) for cid in selected_classes]
@@ -7238,7 +7238,7 @@ class MainApp:
 			"""필터 초기화 (전체 표시)"""
 			self.class_filter_manager.clear_filter()
 			self.draw_bbox()
-			self.update_listbox()
+			self.update_label_list()
 			messagebox.showinfo("필터 초기화", "모든 클래스가 표시됩니다.")
 			dialog.destroy()
 
