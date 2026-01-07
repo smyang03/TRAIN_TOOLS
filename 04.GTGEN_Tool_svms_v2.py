@@ -2824,10 +2824,16 @@ class MainApp:
 		selection = self.label_listbox.curselection()
 		if not selection:
 			return
-		
-		selected_index = selection[0]
-		if selected_index < len(self.bbox):
-			bbox = self.bbox[selected_index]
+
+		listbox_index = selection[0]
+
+		# listbox 인덱스를 bbox 인덱스로 변환
+		if not hasattr(self, 'listbox_to_bbox_map') or listbox_index not in self.listbox_to_bbox_map:
+			return
+
+		bbox_index = self.listbox_to_bbox_map[listbox_index]
+		if bbox_index < len(self.bbox):
+			bbox = self.bbox[bbox_index]
 			# 바운딩 박스 중앙 계산
 			center_x = (bbox[3] + bbox[5]) / 2
 			center_y = (bbox[4] + bbox[6]) / 2
@@ -2864,22 +2870,37 @@ class MainApp:
 		finally:
 			context_menu.grab_release()
 
-	def delete_label_from_list(self, index):
+	def delete_label_from_list(self, listbox_index):
 		"""라벨 리스트에서 라벨 삭제"""
-		if 0 <= index < len(self.bbox):
-			self.selid = index
+		# listbox 인덱스를 bbox 인덱스로 변환
+		if not hasattr(self, 'listbox_to_bbox_map') or listbox_index not in self.listbox_to_bbox_map:
+			return
+
+		bbox_index = self.listbox_to_bbox_map[listbox_index]
+		if 0 <= bbox_index < len(self.bbox):
+			self.selid = bbox_index
 			self.remove_bbox_rc()
 
-	def center_view_on_label(self, index):
+	def center_view_on_label(self, listbox_index):
 		"""라벨을 화면 중앙으로 이동"""
-		if 0 <= index < len(self.bbox):
-			self.selid = index
+		# listbox 인덱스를 bbox 인덱스로 변환
+		if not hasattr(self, 'listbox_to_bbox_map') or listbox_index not in self.listbox_to_bbox_map:
+			return
+
+		bbox_index = self.listbox_to_bbox_map[listbox_index]
+		if 0 <= bbox_index < len(self.bbox):
+			self.selid = bbox_index
 			self.on_label_list_double_click(None)
 
-	def copy_label_from_list(self, index):
+	def copy_label_from_list(self, listbox_index):
 		"""라벨 리스트에서 라벨 복사"""
-		if 0 <= index < len(self.bbox):
-			self.selid = index
+		# listbox 인덱스를 bbox 인덱스로 변환
+		if not hasattr(self, 'listbox_to_bbox_map') or listbox_index not in self.listbox_to_bbox_map:
+			return
+
+		bbox_index = self.listbox_to_bbox_map[listbox_index]
+		if 0 <= bbox_index < len(self.bbox):
+			self.selid = bbox_index
 			self.copy_selected_label()
 	def toggle_label_list_view(self):
 		"""라벨 리스트 뷰 표시/숨기기 - 개선된 버전"""
@@ -2949,6 +2970,8 @@ class MainApp:
 		class_counts = {}
 		
 		# 각 라벨을 리스트에 추가
+		listbox_index = 0  # listbox에 실제로 추가된 항목의 인덱스
+		self.listbox_to_bbox_map = {}  # listbox 인덱스 → bbox 인덱스 매핑
 		for i, bbox in enumerate(self.bbox):
 			# 클래스 필터 적용 - 필터에 해당하는 클래스만 표시
 			class_id = int(bbox[2])
@@ -2972,13 +2995,17 @@ class MainApp:
 			item_text = f"{marker} {i+1:2d}. {class_name_str} ({width}x{height})"
 
 			self.label_listbox.insert(tk.END, item_text)
-			
+
 			# 현재 선택된 라벨이면 리스트박스에서도 선택하고 색상 변경
 			if bbox[0]:
-				self.label_listbox.select_set(i)
-				self.label_listbox.see(i)
+				self.label_listbox.select_set(listbox_index)
+				self.label_listbox.see(listbox_index)
 				# 선택된 항목 배경색 변경
-				self.label_listbox.itemconfig(i, {'bg': 'lightblue'})
+				self.label_listbox.itemconfig(listbox_index, {'bg': 'lightblue'})
+
+			# listbox 인덱스와 bbox 인덱스 매핑 저장
+			self.listbox_to_bbox_map[listbox_index] = i
+			listbox_index += 1  # listbox 인덱스 증가
 		
 		# 통계 정보 업데이트
 		total_labels = len(self.bbox)
@@ -3090,17 +3117,23 @@ class MainApp:
 		selection = self.label_listbox.curselection()
 		if not selection:
 			return
-		
-		selected_index = selection[0]
-		
+
+		listbox_index = selection[0]
+
+		# listbox 인덱스를 bbox 인덱스로 변환
+		if not hasattr(self, 'listbox_to_bbox_map') or listbox_index not in self.listbox_to_bbox_map:
+			return
+
+		bbox_index = self.listbox_to_bbox_map[listbox_index]
+
 		# 기존 선택 해제
 		for bbox in self.bbox:
 			bbox[0] = False
-		
+
 		# 새로 선택
-		if selected_index < len(self.bbox):
-			self.bbox[selected_index][0] = True
-			self.selid = selected_index
+		if bbox_index < len(self.bbox):
+			self.bbox[bbox_index][0] = True
+			self.selid = bbox_index
 			
 			# 메인 화면 업데이트
 			self.draw_bbox()
