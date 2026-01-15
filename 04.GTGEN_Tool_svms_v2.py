@@ -4126,15 +4126,16 @@ class MainApp:
 			
 			# 크기 정보 표시
 			self.canvas.create_text(rc[5]-3, rc[6]+14, font='Arial 7', fill='white', text=size_info, anchor='se', tags='bbox')
-		
+	
 		if self.bbox_resize_anchor == None and self.bbox_move == False and self.viewclass == True:
 			self.canvas.create_rectangle([rc[3]-3,rc[4]-10,rc[3]+(len(rc[1])*6)+2,rc[4]], fill=color, outline='', tags='clsname')
 			c = 'black' if color not in anchor_color else anchor_color[color]
 			self.canvas.create_text(rc[3],rc[4]-10, font='Arial 6 bold', fill=c, text=rc[1].upper(), anchor='nw', tags='clsname')
 
-		if self.onlybox == True:
-			print(f"[ANCHOR DEBUG] Checking anchor draw - rc[0]={rc[0]}, selid={self.selid}")
-			self.draw_bbox_anchor(rc, color) if rc[0] else print(f"[ANCHOR DEBUG] Skipped - rc[0] is False")
+		# 선택된 라벨에는 항상 앵커 표시 (onlybox와 무관)
+		if rc[0]:
+			print(f"[ANCHOR DEBUG] Drawing anchors for selected bbox - rc[0]={rc[0]}, selid={self.selid}")
+			self.draw_bbox_anchor(rc, color)
 
 	def draw_bbox_anchor(self, rc, color):
 		print(f"[ANCHOR DEBUG] draw_bbox_anchor called - rc[0]={rc[0]}, onlybox={self.onlybox}, color={color}")
