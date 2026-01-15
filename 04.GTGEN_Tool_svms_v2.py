@@ -3954,6 +3954,7 @@ class MainApp:
 		print(f"[FILTER DEBUG] Filter active: {self.class_filter_manager.is_filter_active()}")
 		if self.class_filter_manager.is_filter_active():
 			print(f"[FILTER DEBUG] Visible classes in filter: {sorted(self.class_filter_manager.get_visible_classes())}")
+		print(f"[ANCHOR DEBUG] onlybox={self.onlybox}, selid={self.selid}")
 
 		if self.bbox_resize_anchor != None or self.bbox_move:
 			# selid 범위 체크
@@ -4132,11 +4133,14 @@ class MainApp:
 			self.canvas.create_text(rc[3],rc[4]-10, font='Arial 6 bold', fill=c, text=rc[1].upper(), anchor='nw', tags='clsname')
 
 		if self.onlybox == True:
-			self.draw_bbox_anchor(rc, color) if rc[0] else None
+			print(f"[ANCHOR DEBUG] Checking anchor draw - rc[0]={rc[0]}, selid={self.selid}")
+			self.draw_bbox_anchor(rc, color) if rc[0] else print(f"[ANCHOR DEBUG] Skipped - rc[0] is False")
 
 	def draw_bbox_anchor(self, rc, color):
+		print(f"[ANCHOR DEBUG] draw_bbox_anchor called - rc[0]={rc[0]}, onlybox={self.onlybox}, color={color}")
 		margin = [-3,-3,3,3]
 		x1,y1,x2,y2 = rc[3:]
+		print(f"[ANCHOR DEBUG] bbox coords: x1={x1}, y1={y1}, x2={x2}, y2={y2}")
 		anchor_rc = [
 			[x1,y1], [(x1+x2)/2,y1], [x2,y1], [x2,(y1+y2)/2],
 			[x2,y2], [(x1+x2)/2,y2], [x1,y2], [x1,(y1+y2)/2]
@@ -4144,9 +4148,12 @@ class MainApp:
 		anchor_rc = [ e*2 for e in anchor_rc ]
 		anchor_rc = zip(anchor_name, anchor_rc)
 		# [ ['nw', [x1, y1, x2, y2], .. ]
+		anchor_count = 0
 		for r in anchor_rc:
 			c = 'black' if color not in anchor_color else anchor_color[color]
 			self.canvas.create_rectangle([a + b for a, b in zip(r[1], margin)], outline=c, fill=color, width=1, tags=("anchor", r[0]))
+			anchor_count += 1
+		print(f"[ANCHOR DEBUG] Drew {anchor_count} anchors")
 		return
 
 	def draw_exclusion_zones(self):
@@ -5921,7 +5928,9 @@ class MainApp:
 		else:
 			h = self.canvas.find_withtag("current")
 			t = self.canvas.gettags(h)
+			print(f"[ANCHOR DEBUG] Mouse down - canvas tags: {t}")
 			if 'anchor'in t:
+				print(f"[ANCHOR DEBUG] Anchor clicked! tags={t}")
 				self.bbox_resize_anchor = t
 			elif self.selid >= 0:
 				if self.pt_in_current_rc(x, y):
