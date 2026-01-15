@@ -5929,7 +5929,19 @@ class MainApp:
 		else:
 			h = self.canvas.find_withtag("current")
 			t = self.canvas.gettags(h)
-			print(f"[ANCHOR DEBUG] Mouse down - canvas tags: {t}")
+			print(f"[ANCHOR DEBUG] Mouse down at ({x},{y}) - canvas handle: {h}, tags: {t}")
+
+			# 마우스 위치에서 모든 겹치는 객체 찾기
+			overlapping = self.canvas.find_overlapping(x-2, y-2, x+2, y+2)
+			print(f"[ANCHOR DEBUG] Overlapping objects: {overlapping}")
+			for obj in overlapping:
+				obj_tags = self.canvas.gettags(obj)
+				print(f"[ANCHOR DEBUG]   Object {obj}: {obj_tags}")
+				if 'anchor' in obj_tags:
+					print(f"[ANCHOR DEBUG] ✓ Found anchor in overlapping! tags={obj_tags}")
+					self.bbox_resize_anchor = obj_tags
+					return
+
 			if 'anchor'in t:
 				print(f"[ANCHOR DEBUG] Anchor clicked! tags={t}")
 				self.bbox_resize_anchor = t
@@ -6104,6 +6116,8 @@ class MainApp:
 			self.masking_img()
 		self.bbox_add = False
 		self.cross_line = False
+		if self.bbox_resize_anchor is not None:
+			print(f"[RESIZE DEBUG] Mouse up - resetting anchor from {self.bbox_resize_anchor}")
 		self.bbox_resize_anchor = None
 		self.bbox_move = False
 		if len(self.bbox) != 0:
@@ -6177,8 +6191,10 @@ class MainApp:
 			)
 			return
 		if self.bbox_resize_anchor != None:
+			print(f"[RESIZE DEBUG] Mouse move - anchor={self.bbox_resize_anchor}, x={x}, y={y}")
 			rc = self.bbox[self.selid][3:]
 			a = self.bbox_resize_anchor
+			print(f"[RESIZE DEBUG] Before resize - rc={rc}")
 			self.cross_line = True
 			if   'nw' in a: rc[0] = x; rc[1] = y
 			elif 'n'  in a:           rc[1] = y
@@ -6188,8 +6204,12 @@ class MainApp:
 			elif 's'  in a:           rc[3] = y
 			elif 'sw' in a: rc[0] = x; rc[3] = y
 			elif 'w'  in a: rc[0] = x
+			print(f"[RESIZE DEBUG] After resize - rc={rc}")
 			if rc[0] >= 0 and rc[1] >= 0 and rc[2] < self.imsize[0] and rc[3] < self.imsize[1]:
 				self.bbox[self.selid][3:] = self.bound_box_coord(rc)
+				print(f"[RESIZE DEBUG] Applied resize")
+			else:
+				print(f"[RESIZE DEBUG] Out of bounds - imsize={self.imsize}")
 			self.draw_bbox()
 		elif self.bbox_move:
 			rc = self.bbox[self.selid][3:]
