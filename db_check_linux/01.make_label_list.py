@@ -745,6 +745,333 @@ def create_limited_dataset(input_path, output_path, num_files, keyword=None, bac
     logger.info("제한된 데이터셋 생성 완료")
     return stats
 
+def create_balanced_class_dataset(input_path, output_path, num_files, target_classes):
+    """
+    클래스 분포와 DB 분포를 균등하게 맞춰서 제한된 데이터셋 생성
+
+    Args:
+        input_path: 입력 데이터셋 경로
+        output_path: 출력 저장 경로
+        num_files: 선택할 총 파일 개수
+        target_classes: 균등화할 클래스 ID 리스트 (예: [0, 1, 2, 3])
+
+    Returns:
+        stats: 처리 통계 딕셔너리
+    """
+    import random
+    import numpy as np
+    from pathlib import Path
+    from collections import defaultdict
+
+    def extract_db_name(image_path, input_path):
+        """이미지 경로에서 DB 폴더명 추출"""
+        try:
+            rel_path = os.path.relpath(image_path, input_path)
+            # 첫 번째 폴더명을 DB 이름으로 사용
+            db_name = rel_path.split(os.sep)[0]
+            return db_name
+        except:
+            return "unknown"
+
+    output_path = Path(output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # 로깅 설정
+    logger = setup_logging(output_path)
+    logger.info(f"클래스 분포 균등화 데이터셋 생성 시작: {num_files}개 파일")
+    logger.info(f"균등화 대상 클래스: {target_classes}")
+
+    # 결과 파일 경로 설정
+    balanced_list_path = output_path / 'balanced_dataset.txt'
+    balanced_annotation_path = output_path / 'balanced_annotation.txt'
+    balanced_stats_path = output_path / 'balanced_stats.txt'
+
+    # 통계 변수 초기화
+    obj_annotation = np.zeros(90)
+
+    stats = {
+        'total_cnt': 0,
+        'selected_cnt': 0,
+        'error_cnt': 0,
+        'total_annotations': 0,
+        'obj_annotation': obj_annotation,
+        'class_stats': {},  # 클래스별 선택된 이미지 수
+        'class_distribution': {},  # 전체 클래스 분포
+        'db_distribution': {},  # DB별 분포
+    }
+
+    # 1단계: 전체 이미지 수집
+    print(f"입력 경로에서 이미지 파일 찾는 중...")
+    all_files = []
+    for root, _, files in os.walk(input_path):
+        for file in files:
+            if file.lower().endswith(('.jpg', '.jpeg')):
+                full_path = os.path.join(root, file)
+                all_files.append(full_path)
+
+    total_available = len(all_files)
+    logger.info(f"총 {total_available}개의 이미지 파일 발견")
+
+    if total_available == 0:
+        logger.error("입력 경로에 이미지 파일이 없습니다.")
+        return None
+
+    # 2단계: 각 이미지가 포함하는 클래스 및 DB 분석
+    print(f"\n각 이미지의 클래스 및 DB 정보 분석 중...")
+    # {class_id: {db_name: [image_paths]}} 구조
+    class_db_to_images = defaultdict(lambda: defaultdict(list))
+    image_class_count = defaultdict(int)  # 각 클래스를 포함하는 이미지 개수
+    db_set = set()  # 발견된 모든 DB 이름
+
+    for i, image_path in enumerate(all_files):
+        if (i + 1) % 100 == 0:
+            print(f"\r진행률: {(i+1)/total_available*100:.1f}% ({i+1}/{total_available})", end='')
+
+        # DB 이름 추출
+        db_name = extract_db_name(image_path, input_path)
+        db_set.add(db_name)
+
+        label_path = get_label_path_from_image(image_path)
+
+        if not os.path.isfile(label_path):
+            continue
+
+        try:
+            with open(label_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                if not lines:
+                    continue
+
+                # 이 이미지가 포함하는 클래스 수집
+                image_classes = set()
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split()
+                    if len(parts) >= 5:
+                        class_id = int(parts[0])
+                        image_classes.add(class_id)
+
+                # 각 클래스별, DB별로 이미지 기록
+                for class_id in image_classes:
+                    if class_id in target_classes:
+                        class_db_to_images[class_id][db_name].append(image_path)
+                        image_class_count[class_id] += 1
+
+        except Exception as e:
+            logger.warning(f"라벨 파일 읽기 실패: {label_path} - {e}")
+            continue
+
+    print(f"\r클래스 및 DB 분석 완료: 100.0%                    ")
+
+    # 발견된 DB 출력
+    print(f"\n발견된 DB: {sorted(db_set)}")
+    logger.info(f"발견된 DB 개수: {len(db_set)}, DB 목록: {sorted(db_set)}")
+
+    # 클래스별 분포 출력
+    print(f"\n클래스별 이미지 분포:")
+    for class_id in sorted(target_classes):
+        count = image_class_count.get(class_id, 0)
+        stats['class_distribution'][class_id] = count
+        print(f"  클래스 {class_id}: {count}개 이미지")
+
+        # 클래스별 DB 분포도 출력
+        if class_id in class_db_to_images:
+            for db_name in sorted(class_db_to_images[class_id].keys()):
+                db_count = len(class_db_to_images[class_id][db_name])
+                print(f"    └─ {db_name}: {db_count}개")
+
+    if not class_db_to_images:
+        logger.error("균등화 대상 클래스를 포함하는 이미지가 없습니다.")
+        return None
+
+    # 3단계: 클래스별 + DB별 균등 샘플링
+    print(f"\n클래스별 + DB별 균등 샘플링 시작...")
+    selected_images = set()
+
+    # 각 클래스, 각 DB에서 이미지를 랜덤하게 섞기
+    for class_id in target_classes:
+        for db_name in class_db_to_images[class_id]:
+            random.shuffle(class_db_to_images[class_id][db_name])
+
+    # 각 클래스, 각 DB별 인덱스 관리
+    class_db_indices = defaultdict(lambda: defaultdict(int))
+
+    # 목표 개수에 도달할 때까지 반복 (라운드 로빈)
+    round_num = 0
+    while len(selected_images) < num_files:
+        added_this_round = 0
+
+        # 각 클래스를 순회
+        for class_id in target_classes:
+            if len(selected_images) >= num_files:
+                break
+
+            # 이 클래스의 각 DB를 순회
+            db_names = sorted(class_db_to_images[class_id].keys())
+            for db_name in db_names:
+                if len(selected_images) >= num_files:
+                    break
+
+                # 이 클래스, 이 DB에서 아직 선택할 이미지가 있는지 확인
+                images_in_class_db = class_db_to_images[class_id][db_name]
+                current_index = class_db_indices[class_id][db_name]
+
+                if current_index < len(images_in_class_db):
+                    image_path = images_in_class_db[current_index]
+
+                    # 중복 체크 후 추가
+                    if image_path not in selected_images:
+                        selected_images.add(image_path)
+                        added_this_round += 1
+
+                    class_db_indices[class_id][db_name] += 1
+
+        round_num += 1
+
+        # 더 이상 추가할 이미지가 없으면 종료
+        if added_this_round == 0:
+            logger.warning(f"목표 개수({num_files})에 도달하지 못했습니다. 선택된 개수: {len(selected_images)}")
+            break
+
+    selected_files = list(selected_images)
+    logger.info(f"{len(selected_files)}개 이미지 선택 완료 (Round: {round_num})")
+
+    # 4단계: 선택된 이미지의 클래스별, DB별 통계
+    selected_class_count = defaultdict(int)
+    selected_db_count = defaultdict(int)
+    selected_class_db_count = defaultdict(lambda: defaultdict(int))
+
+    for image_path in selected_files:
+        # DB 이름 추출
+        db_name = extract_db_name(image_path, input_path)
+        selected_db_count[db_name] += 1
+
+        label_path = get_label_path_from_image(image_path)
+
+        if not os.path.isfile(label_path):
+            continue
+
+        try:
+            with open(label_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                image_classes = set()
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split()
+                    if len(parts) >= 5:
+                        class_id = int(parts[0])
+                        image_classes.add(class_id)
+
+                for class_id in image_classes:
+                    if class_id in target_classes:
+                        selected_class_count[class_id] += 1
+                        selected_class_db_count[class_id][db_name] += 1
+        except:
+            pass
+
+    print(f"\n선택된 이미지의 클래스별 분포:")
+    for class_id in sorted(target_classes):
+        count = selected_class_count.get(class_id, 0)
+        stats['class_stats'][class_id] = count
+        percentage = count / len(selected_files) * 100 if selected_files else 0
+        print(f"  클래스 {class_id}: {count}개 ({percentage:.1f}%)")
+
+        # 클래스별 DB 분포 출력
+        for db_name in sorted(selected_class_db_count[class_id].keys()):
+            db_count = selected_class_db_count[class_id][db_name]
+            print(f"    └─ {db_name}: {db_count}개")
+
+    print(f"\n선택된 이미지의 DB별 분포:")
+    for db_name in sorted(selected_db_count.keys()):
+        count = selected_db_count[db_name]
+        stats['db_distribution'][db_name] = count
+        percentage = count / len(selected_files) * 100 if selected_files else 0
+        print(f"  {db_name}: {count}개 ({percentage:.1f}%)")
+
+    # 5단계: 선택된 파일 처리 및 저장
+    print(f"\n선택된 파일 처리 중...")
+    with open(balanced_list_path, 'w', encoding='utf-8') as f:
+        pass
+
+    for i, full_path in enumerate(selected_files):
+        if (i + 1) % 100 == 0:
+            print(f"\r처리 진행률: {(i+1)/len(selected_files)*100:.1f}% ({i+1}/{len(selected_files)})", end='')
+
+        stats['total_cnt'] += 1
+        stats['selected_cnt'] += 1
+
+        # 라벨 파일 경로
+        label_path = get_label_path_from_image(full_path)
+
+        # 어노테이션 처리
+        current_annotation = np.zeros(90)
+        try:
+            if os.path.isfile(label_path):
+                with open(label_path, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                    for line in lines:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        parts = line.split()
+                        if len(parts) >= 5:
+                            class_id = int(parts[0])
+                            if 0 <= class_id < 90:
+                                current_annotation[class_id] += 1
+                                stats['obj_annotation'][class_id] += 1
+                                stats['total_annotations'] += 1
+        except Exception as e:
+            logger.warning(f"어노테이션 처리 실패: {label_path} - {e}")
+            stats['error_cnt'] += 1
+
+        # 리스트 파일에 추가
+        with open(balanced_list_path, 'a', encoding='utf-8') as f:
+            f.write(full_path + '\n')
+
+        # 어노테이션 파일에 추가
+        with open(balanced_annotation_path, 'a', encoding='utf-8') as f:
+            annotation_str = ' '.join(map(str, current_annotation.astype(int)))
+            f.write(f"{full_path} {annotation_str}\n")
+
+    print(f"\r처리 완료: 100.0%                    ")
+
+    # 통계 파일 저장
+    with open(balanced_stats_path, 'w', encoding='utf-8') as f:
+        f.write("=== 클래스 분포 균등화 데이터셋 통계 ===\n\n")
+        f.write(f"총 선택된 파일 수: {stats['selected_cnt']}\n")
+        f.write(f"총 어노테이션 수: {stats['total_annotations']}\n")
+        f.write(f"에러 발생 수: {stats['error_cnt']}\n\n")
+
+        f.write("전체 클래스 분포 (분석 전):\n")
+        for class_id in sorted(target_classes):
+            count = stats['class_distribution'].get(class_id, 0)
+            f.write(f"  클래스 {class_id}: {count}개\n")
+
+        f.write("\n선택된 데이터의 클래스 분포:\n")
+        for class_id in sorted(target_classes):
+            count = stats['class_stats'].get(class_id, 0)
+            percentage = count / stats['selected_cnt'] * 100 if stats['selected_cnt'] > 0 else 0
+            f.write(f"  클래스 {class_id}: {count}개 ({percentage:.1f}%)\n")
+
+            # 클래스별 DB 분포
+            if class_id in selected_class_db_count:
+                for db_name in sorted(selected_class_db_count[class_id].keys()):
+                    db_count = selected_class_db_count[class_id][db_name]
+                    f.write(f"    └─ {db_name}: {db_count}개\n")
+
+        f.write("\n선택된 데이터의 DB 분포:\n")
+        for db_name in sorted(stats['db_distribution'].keys()):
+            count = stats['db_distribution'][db_name]
+            percentage = count / stats['selected_cnt'] * 100 if stats['selected_cnt'] > 0 else 0
+            f.write(f"  {db_name}: {count}개 ({percentage:.1f}%)\n")
+
+    logger.info("클래스 분포 균등화 데이터셋 생성 완료")
+    return stats
+
 def extract_background_images(input_path, output_path):
     """어노테이션이 없는 배경 이미지만 추출하는 함수"""
     output_path = Path(output_path)
@@ -1784,9 +2111,10 @@ def main():
             print("9. 클래스별 리스트 파일 분리 (NEW!)")
             print("10. 파일명 키워드 필터링 리스트 생성 (NEW!)")
             print("11. 특정 클래스 없는 파일 리스트 생성 (NEW!)")
-            print("12. 종료")
+            print("12. 클래스 분포 균등화 데이터셋 생성 (NEW!)")
+            print("13. 종료")
 
-            choice = input("\n작업을 선택하세요 (1-12): ")
+            choice = input("\n작업을 선택하세요 (1-13): ")
             
             if choice == '1':
                 # 데이터셋 처리 기능
@@ -2284,6 +2612,78 @@ def main():
                     traceback.print_exc()
 
             elif choice == '12':
+                # 클래스 분포 균등화 데이터셋 생성
+                input_path = input("입력 데이터셋 경로를 입력하세요 (기본 경로: Enter): ")
+                if not input_path:
+                    input_path = get_default_input_path()
+
+                if not os.path.exists(input_path):
+                    print(f"오류: 입력한 경로가 존재하지 않습니다: {input_path}")
+                    continue
+
+                output_path = input("출력 저장 경로를 입력하세요 (기본 경로: Enter): ")
+                if not output_path:
+                    output_path = get_default_output_path(input_path)
+
+                try:
+                    num_files = int(input("생성할 파일 개수를 입력하세요 (예: 5000): "))
+                    if num_files <= 0:
+                        print("오류: 파일 개수는 1 이상이어야 합니다.")
+                        continue
+                except ValueError:
+                    print("오류: 올바른 숫자를 입력하세요")
+                    continue
+
+                class_input = input("균등화할 클래스 ID를 입력하세요 (쉼표로 구분, 예: 0,1,2,3): ").strip()
+                if not class_input:
+                    print("오류: 클래스 ID를 입력해야 합니다.")
+                    continue
+
+                try:
+                    target_classes = [int(c.strip()) for c in class_input.split(',')]
+                    if not target_classes:
+                        print("오류: 최소 1개 이상의 클래스를 입력해야 합니다.")
+                        continue
+
+                    # 클래스 ID 유효성 검사
+                    for class_id in target_classes:
+                        if not (0 <= class_id <= 88):
+                            print(f"오류: 클래스 ID {class_id}는 유효하지 않습니다 (0~88 범위).")
+                            continue
+                except ValueError:
+                    print("오류: 올바른 형식으로 클래스 ID를 입력하세요 (예: 0,1,2,3)")
+                    continue
+
+                print(f"\n처리 시작...")
+                print(f"입력 경로: {input_path}")
+                print(f"출력 경로: {output_path}")
+                print(f"생성 파일 개수: {num_files}")
+                print(f"대상 클래스: {target_classes}")
+
+                try:
+                    stats = create_balanced_class_dataset(input_path, output_path, num_files, target_classes)
+
+                    if stats:
+                        print("\n클래스 분포 균등화 데이터셋 생성 완료!")
+                        print(f"총 선택된 파일: {stats['total_selected']}개")
+                        print(f"목표 파일 수: {num_files}개")
+                        print(f"처리된 클래스 수: {len(stats['class_distribution'])}개")
+
+                        print(f"\n클래스별 분포:")
+                        for class_id in sorted(stats['class_distribution'].keys()):
+                            count = stats['class_distribution'][class_id]
+                            print(f"  클래스 {class_id}: {count}개 이미지")
+
+                        print(f"\n생성된 파일:")
+                        print(f"  - balanced_dataset.txt: 선택된 이미지 경로 목록")
+                        print(f"  - balanced_annotation.txt: 이미지별 어노테이션 수")
+                        print(f"  - balanced_stats.txt: 상세 통계 정보")
+
+                except Exception as e:
+                    print(f"\n데이터 처리 중 오류 발생: {e}")
+                    traceback.print_exc()
+
+            elif choice == '13':
                 print("프로그램을 종료합니다.")
                 return 0
 
