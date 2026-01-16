@@ -2665,14 +2665,21 @@ def main():
 
                     if stats:
                         print("\n클래스 분포 균등화 데이터셋 생성 완료!")
-                        print(f"총 선택된 파일: {stats['total_selected']}개")
+                        print(f"총 선택된 파일: {stats['selected_cnt']}개")
                         print(f"목표 파일 수: {num_files}개")
-                        print(f"처리된 클래스 수: {len(stats['class_distribution'])}개")
+                        print(f"처리된 클래스 수: {len(stats['class_stats'])}개")
 
-                        print(f"\n클래스별 분포:")
-                        for class_id in sorted(stats['class_distribution'].keys()):
-                            count = stats['class_distribution'][class_id]
-                            print(f"  클래스 {class_id}: {count}개 이미지")
+                        print(f"\n선택된 데이터의 클래스별 분포:")
+                        for class_id in sorted(stats['class_stats'].keys()):
+                            count = stats['class_stats'][class_id]
+                            percentage = count / stats['selected_cnt'] * 100 if stats['selected_cnt'] > 0 else 0
+                            print(f"  클래스 {class_id}: {count}개 ({percentage:.1f}%)")
+
+                        print(f"\n선택된 데이터의 DB별 분포:")
+                        for db_name in sorted(stats['db_distribution'].keys()):
+                            count = stats['db_distribution'][db_name]
+                            percentage = count / stats['selected_cnt'] * 100 if stats['selected_cnt'] > 0 else 0
+                            print(f"  {db_name}: {count}개 ({percentage:.1f}%)")
 
                         print(f"\n생성된 파일:")
                         print(f"  - balanced_dataset.txt: 선택된 이미지 경로 목록")
