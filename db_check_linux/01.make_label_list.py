@@ -747,7 +747,7 @@ def create_limited_dataset(input_path, output_path, num_files, keyword=None, bac
 
 def create_balanced_class_dataset(input_path, output_path, num_files, target_classes):
     """
-    클래스 분포를 균등하게 맞춰서 제한된 데이터셋 생성
+    클래스 분포와 DB 분포를 균등하게 맞춰서 제한된 데이터셋 생성
 
     Args:
         input_path: 입력 데이터셋 경로
@@ -762,6 +762,16 @@ def create_balanced_class_dataset(input_path, output_path, num_files, target_cla
     import numpy as np
     from pathlib import Path
     from collections import defaultdict
+
+    def extract_db_name(image_path, input_path):
+        """이미지 경로에서 DB 폴더명 추출"""
+        try:
+            rel_path = os.path.relpath(image_path, input_path)
+            # 첫 번째 폴더명을 DB 이름으로 사용
+            db_name = rel_path.split(os.sep)[0]
+            return db_name
+        except:
+            return "unknown"
 
     output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -787,6 +797,7 @@ def create_balanced_class_dataset(input_path, output_path, num_files, target_cla
         'obj_annotation': obj_annotation,
         'class_stats': {},  # 클래스별 선택된 이미지 수
         'class_distribution': {},  # 전체 클래스 분포
+        'db_distribution': {},  # DB별 분포
     }
 
     # 1단계: 전체 이미지 수집
@@ -805,14 +816,20 @@ def create_balanced_class_dataset(input_path, output_path, num_files, target_cla
         logger.error("입력 경로에 이미지 파일이 없습니다.")
         return None
 
-    # 2단계: 각 이미지가 포함하는 클래스 분석
-    print(f"\n각 이미지의 클래스 정보 분석 중...")
-    class_to_images = defaultdict(list)  # {class_id: [image_paths]}
+    # 2단계: 각 이미지가 포함하는 클래스 및 DB 분석
+    print(f"\n각 이미지의 클래스 및 DB 정보 분석 중...")
+    # {class_id: {db_name: [image_paths]}} 구조
+    class_db_to_images = defaultdict(lambda: defaultdict(list))
     image_class_count = defaultdict(int)  # 각 클래스를 포함하는 이미지 개수
+    db_set = set()  # 발견된 모든 DB 이름
 
     for i, image_path in enumerate(all_files):
         if (i + 1) % 100 == 0:
             print(f"\r진행률: {(i+1)/total_available*100:.1f}% ({i+1}/{total_available})", end='')
+
+        # DB 이름 추출
+        db_name = extract_db_name(image_path, input_path)
+        db_set.add(db_name)
 
         label_path = get_label_path_from_image(image_path)
 
@@ -836,17 +853,21 @@ def create_balanced_class_dataset(input_path, output_path, num_files, target_cla
                         class_id = int(parts[0])
                         image_classes.add(class_id)
 
-                # 각 클래스별로 이미지 기록
+                # 각 클래스별, DB별로 이미지 기록
                 for class_id in image_classes:
                     if class_id in target_classes:
-                        class_to_images[class_id].append(image_path)
+                        class_db_to_images[class_id][db_name].append(image_path)
                         image_class_count[class_id] += 1
 
         except Exception as e:
             logger.warning(f"라벨 파일 읽기 실패: {label_path} - {e}")
             continue
 
-    print(f"\r클래스 분석 완료: 100.0%                    ")
+    print(f"\r클래스 및 DB 분석 완료: 100.0%                    ")
+
+    # 발견된 DB 출력
+    print(f"\n발견된 DB: {sorted(db_set)}")
+    logger.info(f"발견된 DB 개수: {len(db_set)}, DB 목록: {sorted(db_set)}")
 
     # 클래스별 분포 출력
     print(f"\n클래스별 이미지 분포:")
@@ -855,41 +876,57 @@ def create_balanced_class_dataset(input_path, output_path, num_files, target_cla
         stats['class_distribution'][class_id] = count
         print(f"  클래스 {class_id}: {count}개 이미지")
 
-    if not class_to_images:
+        # 클래스별 DB 분포도 출력
+        if class_id in class_db_to_images:
+            for db_name in sorted(class_db_to_images[class_id].keys()):
+                db_count = len(class_db_to_images[class_id][db_name])
+                print(f"    └─ {db_name}: {db_count}개")
+
+    if not class_db_to_images:
         logger.error("균등화 대상 클래스를 포함하는 이미지가 없습니다.")
         return None
 
-    # 3단계: 클래스 균등 샘플링
-    print(f"\n클래스 균등 샘플링 시작...")
+    # 3단계: 클래스별 + DB별 균등 샘플링
+    print(f"\n클래스별 + DB별 균등 샘플링 시작...")
     selected_images = set()
-    target_per_class = num_files // len(target_classes)
 
-    # 라운드 로빈 방식으로 각 클래스에서 순차적으로 선택
-    class_indices = {class_id: 0 for class_id in target_classes}
-
-    # 각 클래스에서 랜덤하게 섞기
+    # 각 클래스, 각 DB에서 이미지를 랜덤하게 섞기
     for class_id in target_classes:
-        random.shuffle(class_to_images[class_id])
+        for db_name in class_db_to_images[class_id]:
+            random.shuffle(class_db_to_images[class_id][db_name])
 
-    # 목표 개수에 도달할 때까지 반복
+    # 각 클래스, 각 DB별 인덱스 관리
+    class_db_indices = defaultdict(lambda: defaultdict(int))
+
+    # 목표 개수에 도달할 때까지 반복 (라운드 로빈)
     round_num = 0
     while len(selected_images) < num_files:
         added_this_round = 0
 
+        # 각 클래스를 순회
         for class_id in target_classes:
             if len(selected_images) >= num_files:
                 break
 
-            # 이 클래스에서 아직 선택할 이미지가 있는지 확인
-            if class_indices[class_id] < len(class_to_images[class_id]):
-                image_path = class_to_images[class_id][class_indices[class_id]]
+            # 이 클래스의 각 DB를 순회
+            db_names = sorted(class_db_to_images[class_id].keys())
+            for db_name in db_names:
+                if len(selected_images) >= num_files:
+                    break
 
-                # 중복 체크 후 추가
-                if image_path not in selected_images:
-                    selected_images.add(image_path)
-                    added_this_round += 1
+                # 이 클래스, 이 DB에서 아직 선택할 이미지가 있는지 확인
+                images_in_class_db = class_db_to_images[class_id][db_name]
+                current_index = class_db_indices[class_id][db_name]
 
-                class_indices[class_id] += 1
+                if current_index < len(images_in_class_db):
+                    image_path = images_in_class_db[current_index]
+
+                    # 중복 체크 후 추가
+                    if image_path not in selected_images:
+                        selected_images.add(image_path)
+                        added_this_round += 1
+
+                    class_db_indices[class_id][db_name] += 1
 
         round_num += 1
 
@@ -899,11 +936,18 @@ def create_balanced_class_dataset(input_path, output_path, num_files, target_cla
             break
 
     selected_files = list(selected_images)
-    logger.info(f"{len(selected_files)}개 이미지 선택 완료")
+    logger.info(f"{len(selected_files)}개 이미지 선택 완료 (Round: {round_num})")
 
-    # 4단계: 선택된 이미지의 클래스별 통계
+    # 4단계: 선택된 이미지의 클래스별, DB별 통계
     selected_class_count = defaultdict(int)
+    selected_db_count = defaultdict(int)
+    selected_class_db_count = defaultdict(lambda: defaultdict(int))
+
     for image_path in selected_files:
+        # DB 이름 추출
+        db_name = extract_db_name(image_path, input_path)
+        selected_db_count[db_name] += 1
+
         label_path = get_label_path_from_image(image_path)
 
         if not os.path.isfile(label_path):
@@ -925,6 +969,7 @@ def create_balanced_class_dataset(input_path, output_path, num_files, target_cla
                 for class_id in image_classes:
                     if class_id in target_classes:
                         selected_class_count[class_id] += 1
+                        selected_class_db_count[class_id][db_name] += 1
         except:
             pass
 
@@ -934,6 +979,18 @@ def create_balanced_class_dataset(input_path, output_path, num_files, target_cla
         stats['class_stats'][class_id] = count
         percentage = count / len(selected_files) * 100 if selected_files else 0
         print(f"  클래스 {class_id}: {count}개 ({percentage:.1f}%)")
+
+        # 클래스별 DB 분포 출력
+        for db_name in sorted(selected_class_db_count[class_id].keys()):
+            db_count = selected_class_db_count[class_id][db_name]
+            print(f"    └─ {db_name}: {db_count}개")
+
+    print(f"\n선택된 이미지의 DB별 분포:")
+    for db_name in sorted(selected_db_count.keys()):
+        count = selected_db_count[db_name]
+        stats['db_distribution'][db_name] = count
+        percentage = count / len(selected_files) * 100 if selected_files else 0
+        print(f"  {db_name}: {count}개 ({percentage:.1f}%)")
 
     # 5단계: 선택된 파일 처리 및 저장
     print(f"\n선택된 파일 처리 중...")
@@ -999,6 +1056,18 @@ def create_balanced_class_dataset(input_path, output_path, num_files, target_cla
             count = stats['class_stats'].get(class_id, 0)
             percentage = count / stats['selected_cnt'] * 100 if stats['selected_cnt'] > 0 else 0
             f.write(f"  클래스 {class_id}: {count}개 ({percentage:.1f}%)\n")
+
+            # 클래스별 DB 분포
+            if class_id in selected_class_db_count:
+                for db_name in sorted(selected_class_db_count[class_id].keys()):
+                    db_count = selected_class_db_count[class_id][db_name]
+                    f.write(f"    └─ {db_name}: {db_count}개\n")
+
+        f.write("\n선택된 데이터의 DB 분포:\n")
+        for db_name in sorted(stats['db_distribution'].keys()):
+            count = stats['db_distribution'][db_name]
+            percentage = count / stats['selected_cnt'] * 100 if stats['selected_cnt'] > 0 else 0
+            f.write(f"  {db_name}: {count}개 ({percentage:.1f}%)\n")
 
     logger.info("클래스 분포 균등화 데이터셋 생성 완료")
     return stats
