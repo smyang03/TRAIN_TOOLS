@@ -475,7 +475,7 @@ def find_images_without_class(input_path, output_path, target_class):
 
     return stats
 
-def create_limited_dataset(input_path, output_path, num_files, keyword=None, background_only=False):
+def create_limited_dataset(input_path, output_path, num_files, keyword=None, background_only=False, target_classes=None, class_filter_mode='or'):
     """
     전체 데이터셋에서 지정된 개수의 파일을 파일명 패턴 분포에 맞게 선택하여 리스트 생성
 
@@ -485,6 +485,8 @@ def create_limited_dataset(input_path, output_path, num_files, keyword=None, bac
         num_files: 선택할 파일 개수
         keyword: 파일명 필터링 키워드 (None이면 모든 파일 포함, 한글/특수문자 지원)
         background_only: True일 경우 배경 이미지(어노테이션 없음)만 추출
+        target_classes: 필터링할 클래스 ID 리스트 (None이면 모든 클래스 포함)
+        class_filter_mode: 'and' - 모든 클래스 포함 이미지만 선택, 'or' - 각 클래스별 균등 분배
     """
     import random
     import numpy as np
@@ -501,6 +503,8 @@ def create_limited_dataset(input_path, output_path, num_files, keyword=None, bac
         logger.info(f"파일명 필터 키워드: '{keyword}'")
     if background_only:
         logger.info("배경 이미지(어노테이션 없음)만 추출 모드")
+    if target_classes:
+        logger.info(f"클래스 필터링: {target_classes} (모드: {class_filter_mode})")
     
     # 결과 파일 경로 설정
     limited_list_path = output_path / 'limited_dataset.txt'
@@ -568,7 +572,103 @@ def create_limited_dataset(input_path, output_path, num_files, keyword=None, bac
         all_files = background_files
         total_available = len(all_files)
         logger.info(f"배경 이미지 필터링 완료: {total_available}개")
-    
+
+    # 클래스 필터링
+    if target_classes:
+        print(f"클래스 필터링 중 (모드: {class_filter_mode})...")
+
+        # 각 파일의 클래스 정보 수집
+        file_classes = {}  # {file_path: set(class_ids)}
+        for i, full_path in enumerate(all_files):
+            if (i + 1) % 100 == 0:
+                print(f"\r클래스 분석 진행률: {(i+1)/len(all_files)*100:.1f}% ({i+1}/{len(all_files)})", end='')
+
+            label_path = get_label_path_from_image(full_path)
+            classes_in_file = set()
+
+            if os.path.isfile(label_path):
+                try:
+                    with open(label_path, 'r', encoding='utf-8') as f:
+                        lines = f.readlines()
+                        for line in lines:
+                            split_line = line.strip().split()
+                            if split_line and len(split_line) >= 5:
+                                try:
+                                    class_id = int(float(split_line[0]))
+                                    if 0 <= class_id < 89:
+                                        classes_in_file.add(class_id)
+                                except (ValueError, IndexError):
+                                    continue
+                except Exception:
+                    pass
+
+            if classes_in_file:  # 클래스가 있는 파일만 저장
+                file_classes[full_path] = classes_in_file
+
+        print(f"\r클래스 분석 완료: {len(file_classes)}개 파일에서 클래스 발견     ")
+
+        if class_filter_mode == 'and':
+            # AND 모드: 모든 지정 클래스가 포함된 파일만 선택
+            target_set = set(target_classes)
+            filtered_files = []
+
+            for file_path, classes in file_classes.items():
+                if target_set.issubset(classes):  # 모든 target_classes가 포함되어 있는지 확인
+                    filtered_files.append(file_path)
+
+            all_files = filtered_files
+            logger.info(f"AND 모드 필터링: {len(all_files)}개 파일이 모든 클래스 {target_classes} 포함")
+            print(f"AND 모드 필터링 완료: {len(all_files)}개 파일이 클래스 {target_classes}를 모두 포함")
+
+        elif class_filter_mode == 'or':
+            # OR 모드: 각 클래스별로 균등하게 파일 분배
+            class_files = {cls: [] for cls in target_classes}  # {class_id: [file_paths]}
+
+            # 각 클래스별로 파일 분류
+            for file_path, classes in file_classes.items():
+                for cls in target_classes:
+                    if cls in classes:
+                        class_files[cls].append(file_path)
+
+            # 각 클래스별 파일 수 로깅
+            for cls, files in class_files.items():
+                logger.info(f"클래스 {cls}: {len(files)}개 파일")
+                print(f"클래스 {cls}: {len(files)}개 파일")
+
+            # 각 클래스당 선택할 파일 수 계산
+            files_per_class = num_files // len(target_classes)
+            remainder = num_files % len(target_classes)
+
+            # 각 클래스별로 파일 선택 (OR 모드에서는 그룹화 없이 바로 선택)
+            selected_files = []
+            for i, cls in enumerate(target_classes):
+                # 나머지는 앞쪽 클래스에 분배
+                count_to_select = files_per_class + (1 if i < remainder else 0)
+
+                available_files = class_files[cls]
+                if len(available_files) == 0:
+                    logger.warning(f"클래스 {cls}에 해당하는 파일이 없습니다.")
+                    continue
+
+                # 등간격 샘플링
+                if count_to_select > len(available_files):
+                    count_to_select = len(available_files)
+                    logger.warning(f"클래스 {cls}: 요청 파일 수보다 가용 파일이 적음 ({len(available_files)}개)")
+
+                indices = np.linspace(0, len(available_files) - 1, count_to_select, dtype=int)
+                sampled_files = [available_files[idx] for idx in indices]
+                selected_files.extend(sampled_files)
+
+                logger.info(f"클래스 {cls}: {count_to_select}개 파일 선택")
+
+            # OR 모드에서는 선택된 파일로 all_files를 대체하고,
+            # 이후 그룹화/샘플링을 건너뛰기 위해 플래그 설정
+            all_files = selected_files
+            logger.info(f"OR 모드 필터링 완료: 총 {len(all_files)}개 파일 선택")
+            print(f"OR 모드 필터링 완료: 총 {len(all_files)}개 파일 선택")
+
+        total_available = len(all_files)
+
     if total_available == 0:
         logger.error("입력 경로에 이미지 파일이 없습니다.")
         return None
@@ -580,93 +680,98 @@ def create_limited_dataset(input_path, output_path, num_files, keyword=None, bac
         if choice.lower() != 'y':
             return None
         num_files = total_available
-    
-    # 파일 그룹화 (자동 감지)
-    groups = defaultdict(list)
-    
-    # 샘플 파일로 패턴 감지
-    sample_size = min(50, len(all_files))
-    sample_files = random.sample(all_files, sample_size)
-    sample_names = [os.path.basename(f) for f in sample_files]
-    
-    # 패턴 시도
-    patterns = [
-        (r'Auto_([\d\.]+)-\d+_(\d+)_', '아이피_날짜'),
-        (r'(\[\d\])[\w_-]+', '접두어'),
-        (r'(\d{14})', '날짜시간'),
-        (r'_(\d+)_(\d+)_(\d+)\.jpg$', '일련번호')
-    ]
-    
-    best_pattern = None
-    best_success_rate = 0
-    
-    for pattern, pattern_name in patterns:
-        success_count = 0
-        for name in sample_names:
-            if re.search(pattern, name):
-                success_count += 1
-        
-        success_rate = success_count / sample_size
-        if success_rate > best_success_rate:
-            best_success_rate = success_rate
-            best_pattern = pattern
-    
-    # 최적 패턴으로 그룹화
-    if best_pattern and best_success_rate > 0.5:
-        for file_path in all_files:
-            file_name = os.path.basename(file_path)
-            match = re.search(best_pattern, file_name)
-            if match:
-                group_key = '_'.join(match.groups())
-                groups[group_key].append(file_path)
-            else:
-                groups['기타'].append(file_path)
+
+    # OR 모드에서는 이미 파일 선택이 완료되었으므로 그룹화 건너뛰기
+    if target_classes and class_filter_mode == 'or':
+        selected_files = all_files
+        group_counts = {}
     else:
-        # 패턴이 불분명하면 파일명 접두어로 그룹화
-        for file_path in all_files:
-            file_name = os.path.basename(file_path)
-            prefix = file_name[:min(15, len(file_name))]
-            groups[prefix].append(file_path)
-    
-    logger.info(f"파일명 패턴에 따라 {len(groups)}개의 그룹으로 분류")
-    
-    # 각 그룹에서 비율에 맞게 샘플링
-    selected_files = []
-    group_counts = {}
-    
-    total_files = sum(len(files) for files in groups.values())
-    
-    for group_name, files in groups.items():
-        group_ratio = len(files) / total_files
-        group_sample_count = int(num_files * group_ratio)
+        # 파일 그룹화 (자동 감지)
+        groups = defaultdict(list)
 
-        if group_sample_count == 0 and len(files) > 0:
-            group_sample_count = 1
+        # 샘플 파일로 패턴 감지
+        sample_size = min(50, len(all_files))
+        sample_files = random.sample(all_files, sample_size)
+        sample_names = [os.path.basename(f) for f in sample_files]
 
-        if group_sample_count > len(files):
-            group_sample_count = len(files)
+        # 패턴 시도
+        patterns = [
+            (r'Auto_([\d\.]+)-\d+_(\d+)_', '아이피_날짜'),
+            (r'(\[\d\])[\w_-]+', '접두어'),
+            (r'(\d{14})', '날짜시간'),
+            (r'_(\d+)_(\d+)_(\d+)\.jpg$', '일련번호')
+        ]
 
-        # 등간격 샘플링으로 전체 데이터에서 균등하게 분산 추출
-        if group_sample_count > 0:
-            indices = np.linspace(0, len(files) - 1, group_sample_count, dtype=int)
-            sampled_files = [files[i] for i in indices]
+        best_pattern = None
+        best_success_rate = 0
+
+        for pattern, pattern_name in patterns:
+            success_count = 0
+            for name in sample_names:
+                if re.search(pattern, name):
+                    success_count += 1
+
+            success_rate = success_count / sample_size
+            if success_rate > best_success_rate:
+                best_success_rate = success_rate
+                best_pattern = pattern
+
+        # 최적 패턴으로 그룹화
+        if best_pattern and best_success_rate > 0.5:
+            for file_path in all_files:
+                file_name = os.path.basename(file_path)
+                match = re.search(best_pattern, file_name)
+                if match:
+                    group_key = '_'.join(match.groups())
+                    groups[group_key].append(file_path)
+                else:
+                    groups['기타'].append(file_path)
         else:
-            sampled_files = []
+            # 패턴이 불분명하면 파일명 접두어로 그룹화
+            for file_path in all_files:
+                file_name = os.path.basename(file_path)
+                prefix = file_name[:min(15, len(file_name))]
+                groups[prefix].append(file_path)
 
-        selected_files.extend(sampled_files)
-        group_counts[group_name] = group_sample_count
-    
-    # 반올림 오차 조정
-    if len(selected_files) < num_files:
-        remaining = num_files - len(selected_files)
-        remaining_files = [f for group in groups.values() for f in group if f not in selected_files]
-        if remaining_files:
-            additional = random.sample(remaining_files, min(remaining, len(remaining_files)))
-            selected_files.extend(additional)
-    elif len(selected_files) > num_files:
-        selected_files = random.sample(selected_files, num_files)
-    
-    stats['group_stats'] = group_counts
+        logger.info(f"파일명 패턴에 따라 {len(groups)}개의 그룹으로 분류")
+
+        # 각 그룹에서 비율에 맞게 샘플링
+        selected_files = []
+        group_counts = {}
+
+        total_files = sum(len(files) for files in groups.values())
+
+        for group_name, files in groups.items():
+            group_ratio = len(files) / total_files
+            group_sample_count = int(num_files * group_ratio)
+
+            if group_sample_count == 0 and len(files) > 0:
+                group_sample_count = 1
+
+            if group_sample_count > len(files):
+                group_sample_count = len(files)
+
+            # 등간격 샘플링으로 전체 데이터에서 균등하게 분산 추출
+            if group_sample_count > 0:
+                indices = np.linspace(0, len(files) - 1, group_sample_count, dtype=int)
+                sampled_files = [files[i] for i in indices]
+            else:
+                sampled_files = []
+
+            selected_files.extend(sampled_files)
+            group_counts[group_name] = group_sample_count
+
+        # 반올림 오차 조정
+        if len(selected_files) < num_files:
+            remaining = num_files - len(selected_files)
+            remaining_files = [f for group in groups.values() for f in group if f not in selected_files]
+            if remaining_files:
+                additional = random.sample(remaining_files, min(remaining, len(remaining_files)))
+                selected_files.extend(additional)
+        elif len(selected_files) > num_files:
+            selected_files = random.sample(selected_files, num_files)
+
+        stats['group_stats'] = group_counts
     
     # 선택된 파일 처리
     with open(limited_list_path, 'w', encoding='utf-8') as f:
@@ -2197,14 +2302,44 @@ def main():
                 background_choice = input("배경 이미지(어노테이션 없음)만 추출하시겠습니까? (y/n, 기본값 n: Enter): ").strip().lower()
                 background_only = background_choice == 'y'
 
+                # 클래스 필터링 옵션
+                target_classes = None
+                class_filter_mode = 'or'
+
+                class_filter_choice = input("특정 클래스만 필터링하시겠습니까? (y/n, 기본값 n: Enter): ").strip().lower()
+                if class_filter_choice == 'y':
+                    try:
+                        class_input = input("필터링할 클래스 ID를 쉼표로 구분해서 입력하세요 (예: 0,1,5): ").strip()
+                        target_classes = [int(x.strip()) for x in class_input.split(',')]
+
+                        if not target_classes:
+                            print("경고: 클래스가 입력되지 않았습니다. 필터링하지 않습니다.")
+                            target_classes = None
+                        else:
+                            print(f"필터링 모드 선택:")
+                            print("  1. AND 모드 - 모든 클래스가 함께 있는 이미지만 선택")
+                            print("  2. OR 모드 - 각 클래스별로 균등하게 분배")
+                            mode_choice = input("모드를 선택하세요 (1/2, 기본값 2: Enter): ").strip()
+
+                            if mode_choice == '1':
+                                class_filter_mode = 'and'
+                            else:
+                                class_filter_mode = 'or'
+
+                    except ValueError:
+                        print("경고: 올바른 클래스 ID 형식이 아닙니다. 필터링하지 않습니다.")
+                        target_classes = None
+
                 print(f"\n처리 시작...")
                 print(f"입력 경로: {input_path}")
                 print(f"출력 경로: {output_path}")
                 print(f"선택할 파일 개수: {num_files}개")
                 print(f"배경 이미지만 추출: {'예' if background_only else '아니오'}")
+                if target_classes:
+                    print(f"클래스 필터링: {target_classes} (모드: {class_filter_mode})")
 
                 try:
-                    stats = create_limited_dataset(input_path, output_path, num_files, background_only=background_only)
+                    stats = create_limited_dataset(input_path, output_path, num_files, background_only=background_only, target_classes=target_classes, class_filter_mode=class_filter_mode)
                     
                     if stats:
                         print("\n제한된 데이터셋 생성 완료!")
