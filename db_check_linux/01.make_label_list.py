@@ -162,7 +162,7 @@ def validate_paths(image_path, label_path, logger=None):
     
     return issues
 
-def create_complete_dataset_list(input_path, output_path, keyword=None):
+def create_complete_dataset_list(input_path, output_path, keyword=None, output_prefix=None):
     """
     입력 경로의 모든 이미지 파일을 하나의 리스트로 생성하는 함수
 
@@ -170,20 +170,28 @@ def create_complete_dataset_list(input_path, output_path, keyword=None):
         input_path: 입력 데이터셋 경로
         output_path: 출력 저장 경로
         keyword: 파일명 필터링 키워드 (None이면 모든 파일 포함, 한글/특수문자 지원)
+        output_prefix: 출력 파일명 prefix (여러 폴더 일괄 처리시 폴더명 구분용)
     """
     output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
-    
+
     # 로깅 설정
     logger = setup_logging(output_path)
     logger.info(f"전체 데이터셋 리스트 생성 시작: {input_path}")
     if keyword:
         logger.info(f"파일명 필터 키워드: '{keyword}'")
-    
-    # 결과 파일 경로 설정
-    complete_list_path = output_path / 'complete_dataset.txt'
-    complete_annotation_path = output_path / 'complete_annotation.txt'
-    error_log_path = output_path / 'errors.txt'
+    if output_prefix:
+        logger.info(f"출력 파일 prefix: '{output_prefix}'")
+
+    # 결과 파일 경로 설정 (prefix가 있으면 파일명에 추가)
+    if output_prefix:
+        complete_list_path = output_path / f'{output_prefix}_complete_dataset.txt'
+        complete_annotation_path = output_path / f'{output_prefix}_complete_annotation.txt'
+        error_log_path = output_path / f'{output_prefix}_errors.txt'
+    else:
+        complete_list_path = output_path / 'complete_dataset.txt'
+        complete_annotation_path = output_path / 'complete_annotation.txt'
+        error_log_path = output_path / 'errors.txt'
     
     # 통계 변수 초기화
     obj_annotation = np.zeros(90)
@@ -2358,33 +2366,134 @@ def main():
                 input_path = input("입력 데이터셋 경로를 입력하세요 (기본 경로: Enter): ")
                 if not input_path:
                     input_path = get_default_input_path()
-                
+
                 if not os.path.exists(input_path):
                     print(f"오류: 입력한 경로가 존재하지 않습니다: {input_path}")
                     continue
-                
-                output_path = input("출력 저장 경로를 입력하세요 (기본 경로: Enter): ")
-                if not output_path:
-                    output_path = get_default_output_path(input_path)
-                
-                print(f"\n처리 시작...")
-                print(f"입력 경로: {input_path}")
-                print(f"출력 경로: {output_path}")
-                
-                try:
-                    stats = create_complete_dataset_list(input_path, output_path)
-                    
-                    if stats:
-                        print("\n전체 데이터셋 리스트 생성 완료!")
-                        print(f"처리된 파일 개수: {stats['total_cnt']}개")
-                        print(f"에러 발생 수: {stats['error_cnt']}개")
-                        print(f"생성된 라벨: {stats['created_labels']}개")
-                        
-                        print_class_statistics(stats['obj_annotation'], "클래스별 통계")
-                
-                except Exception as e:
-                    print(f"\n데이터 처리 중 오류 발생: {e}")
-                    traceback.print_exc()
+
+                # 여러 폴더 일괄 처리 옵션
+                multi_folder = input("하위 폴더들을 각각 처리하시겠습니까? (y/n, 기본값 n: Enter): ").strip().lower()
+
+                if multi_folder == 'y':
+                    # 하위 폴더 목록 조회
+                    subfolders = [f for f in os.listdir(input_path)
+                                  if os.path.isdir(os.path.join(input_path, f)) and not f.startswith('.')]
+                    subfolders.sort()
+
+                    if not subfolders:
+                        print(f"오류: '{input_path}'에 하위 폴더가 없습니다.")
+                        continue
+
+                    print(f"\n발견된 하위 폴더 ({len(subfolders)}개):")
+                    for i, folder in enumerate(subfolders, 1):
+                        print(f"  {i}. {folder}")
+
+                    # 출력 방식 선택
+                    print(f"\n출력 방식을 선택하세요:")
+                    print("  1. 각 폴더 내 output 폴더에 저장 (폴더명/output/complete_dataset.txt)")
+                    print("  2. 공통 출력 폴더에 저장 (출력폴더/폴더명_complete_dataset.txt)")
+                    output_mode = input("선택 (1/2, 기본값 1: Enter): ").strip()
+
+                    common_output_path = None
+                    if output_mode == '2':
+                        common_output_path = input("공통 출력 폴더 경로를 입력하세요: ").strip()
+                        if not common_output_path:
+                            common_output_path = os.path.join(input_path, 'output_all')
+                        os.makedirs(common_output_path, exist_ok=True)
+
+                    # 각 폴더 처리
+                    print(f"\n{'='*60}")
+                    print(f"총 {len(subfolders)}개 폴더 처리 시작")
+                    print(f"{'='*60}")
+
+                    total_stats = {
+                        'processed_folders': 0,
+                        'total_files': 0,
+                        'total_errors': 0,
+                        'folder_results': []
+                    }
+
+                    for i, folder in enumerate(subfolders, 1):
+                        folder_path = os.path.join(input_path, folder)
+
+                        if output_mode == '2' and common_output_path:
+                            # 공통 출력 폴더에 폴더명 prefix로 저장
+                            folder_output_path = common_output_path
+                        else:
+                            # 각 폴더 내 output에 저장
+                            folder_output_path = os.path.join(folder_path, 'output')
+
+                        print(f"\n[{i}/{len(subfolders)}] 처리 중: {folder}")
+                        print(f"  입력: {folder_path}")
+                        print(f"  출력: {folder_output_path}")
+
+                        try:
+                            # 공통 출력 폴더 사용시 파일명에 폴더명 prefix 추가
+                            if output_mode == '2' and common_output_path:
+                                stats = create_complete_dataset_list(folder_path, folder_output_path,
+                                                                      output_prefix=folder)
+                            else:
+                                stats = create_complete_dataset_list(folder_path, folder_output_path)
+
+                            if stats:
+                                total_stats['processed_folders'] += 1
+                                total_stats['total_files'] += stats['total_cnt']
+                                total_stats['total_errors'] += stats['error_cnt']
+                                total_stats['folder_results'].append({
+                                    'folder': folder,
+                                    'files': stats['total_cnt'],
+                                    'errors': stats['error_cnt']
+                                })
+                                print(f"  완료: {stats['total_cnt']}개 파일 처리")
+
+                        except Exception as e:
+                            print(f"  오류 발생: {e}")
+                            total_stats['folder_results'].append({
+                                'folder': folder,
+                                'files': 0,
+                                'errors': -1,
+                                'error_msg': str(e)
+                            })
+
+                    # 전체 결과 요약
+                    print(f"\n{'='*60}")
+                    print(f"전체 처리 완료!")
+                    print(f"{'='*60}")
+                    print(f"처리된 폴더: {total_stats['processed_folders']}/{len(subfolders)}개")
+                    print(f"총 파일 수: {total_stats['total_files']}개")
+                    print(f"총 에러 수: {total_stats['total_errors']}개")
+
+                    print(f"\n폴더별 결과:")
+                    for result in total_stats['folder_results']:
+                        if result['errors'] == -1:
+                            print(f"  {result['folder']}: 처리 실패 - {result.get('error_msg', 'Unknown error')}")
+                        else:
+                            print(f"  {result['folder']}: {result['files']}개 파일, {result['errors']}개 에러")
+
+                else:
+                    # 기존 단일 폴더 처리 방식
+                    output_path = input("출력 저장 경로를 입력하세요 (기본 경로: Enter): ")
+                    if not output_path:
+                        output_path = get_default_output_path(input_path)
+
+                    print(f"\n처리 시작...")
+                    print(f"입력 경로: {input_path}")
+                    print(f"출력 경로: {output_path}")
+
+                    try:
+                        stats = create_complete_dataset_list(input_path, output_path)
+
+                        if stats:
+                            print("\n전체 데이터셋 리스트 생성 완료!")
+                            print(f"처리된 파일 개수: {stats['total_cnt']}개")
+                            print(f"에러 발생 수: {stats['error_cnt']}개")
+                            print(f"생성된 라벨: {stats['created_labels']}개")
+
+                            print_class_statistics(stats['obj_annotation'], "클래스별 통계")
+
+                    except Exception as e:
+                        print(f"\n데이터 처리 중 오류 발생: {e}")
+                        traceback.print_exc()
                   
             elif choice == '4':
                 # 리스트 파일 검증 기능
