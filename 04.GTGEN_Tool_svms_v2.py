@@ -699,8 +699,8 @@ class ClassConfigManager:
 		return f"Unknown({class_id})"  # 찾지 못한 경우
 
 	def get_button_configs(self):
-		"""버튼 생성에 필요한 정보 반환 [(name, id, key), ...]"""
-		return [(c['name'], c['id'], c.get('key', None)) for c in self.classes]
+		"""버튼 생성에 필요한 정보 반환 [(name, id, key), ...] - key가 설정된 클래스만"""
+		return [(c['name'], c['id'], c['key']) for c in self.classes if c.get('key')]
 
 # 클래스 필터 관리 클래스
 class ClassFilterManager:
