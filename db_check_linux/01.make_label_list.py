@@ -483,6 +483,121 @@ def find_images_without_class(input_path, output_path, target_class):
 
     return stats
 
+def find_missing_labels(input_path, output_path):
+    """
+    JPEGImages에 이미지는 있지만 labels에 대응하는 txt 파일이 없는 데이터 리스트를 생성하는 함수
+
+    Args:
+        input_path: 입력 데이터셋 경로 (JPEGImages 폴더가 포함된 상위 경로)
+        output_path: 출력 저장 경로
+
+    Returns:
+        stats: 처리 통계 딕셔너리
+    """
+    output_path = Path(output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # 로깅 설정
+    logger = setup_logging(output_path)
+    logger.info(f"라벨 미존재 이미지 검색 시작: {input_path}")
+
+    # 결과 파일 경로 설정
+    missing_label_list_path = output_path / 'missing_labels.txt'
+    has_label_list_path = output_path / 'has_labels.txt'
+    missing_label_detail_path = output_path / 'missing_labels_detail.txt'
+
+    # 통계 변수 초기화
+    stats = {
+        'total_cnt': 0,              # 전체 처리한 이미지 파일 수
+        'missing_label_cnt': 0,      # 라벨 파일이 없는 이미지 수
+        'has_label_cnt': 0,          # 라벨 파일이 있는 이미지 수
+        'error_cnt': 0,              # 에러 발생 수
+        'dir_stats': defaultdict(lambda: {'total': 0, 'missing': 0}),  # 디렉토리별 통계
+    }
+
+    # 파일 리스트 초기화
+    with open(missing_label_list_path, 'w', encoding='utf-8') as f:
+        f.write("# JPEGImages에 이미지는 있지만 labels에 txt 파일이 없는 목록\n")
+
+    with open(has_label_list_path, 'w', encoding='utf-8') as f:
+        f.write("# JPEGImages에 이미지가 있고 labels에 txt 파일도 있는 목록\n")
+
+    with open(missing_label_detail_path, 'w', encoding='utf-8') as f:
+        f.write("# 라벨 미존재 이미지 상세 정보\n")
+        f.write("# 형식: 이미지경로 | 예상라벨경로\n")
+        f.write("=" * 80 + "\n")
+
+    # 전체 파일 수 계산
+    total_files = count_jpg_files(input_path)
+    logger.info(f"입력 경로에서 총 {total_files}개의 이미지 파일 발견")
+
+    if total_files == 0:
+        logger.error("입력 경로에 이미지 파일이 없습니다.")
+        return None
+
+    # 입력 경로 순회
+    logger.info(f"전체 {total_files}개 파일 처리 시작...")
+
+    for root, _, files in os.walk(input_path):
+        for file in files:
+            if not file.lower().endswith(('.jpg', '.jpeg')):
+                continue
+
+            stats['total_cnt'] += 1
+            progress = (stats['total_cnt'] / total_files) * 100
+
+            # 파일 경로 설정
+            full_path = os.path.join(root, file)
+            label_path = get_label_path_from_image(full_path)
+
+            # 디렉토리별 통계를 위한 상대 경로 추출
+            rel_dir = os.path.relpath(root, input_path)
+            stats['dir_stats'][rel_dir]['total'] += 1
+
+            # 라벨 파일 존재 확인
+            if not os.path.isfile(label_path):
+                stats['missing_label_cnt'] += 1
+                stats['dir_stats'][rel_dir]['missing'] += 1
+
+                with open(missing_label_list_path, 'a', encoding='utf-8') as f:
+                    f.write(f"{full_path}\n")
+
+                with open(missing_label_detail_path, 'a', encoding='utf-8') as f:
+                    f.write(f"{full_path} | {label_path}\n")
+            else:
+                stats['has_label_cnt'] += 1
+                with open(has_label_list_path, 'a', encoding='utf-8') as f:
+                    f.write(f"{full_path}\n")
+
+            # 진행률 표시 (1000개마다 로그)
+            if stats['total_cnt'] % 1000 == 0:
+                logger.info(f"진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files})")
+
+            print(f"\r진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files}) | "
+                  f"라벨 없음: {stats['missing_label_cnt']} | "
+                  f"라벨 있음: {stats['has_label_cnt']}", end='')
+
+    print("\n")  # 진행률 표시 줄바꿈
+
+    # 디렉토리별 통계 로그 및 파일 출력
+    if stats['missing_label_cnt'] > 0:
+        with open(missing_label_detail_path, 'a', encoding='utf-8') as f:
+            f.write("\n" + "=" * 80 + "\n")
+            f.write("# 디렉토리별 라벨 미존재 통계\n")
+            f.write("=" * 80 + "\n")
+            for dir_name in sorted(stats['dir_stats'].keys()):
+                dir_stat = stats['dir_stats'][dir_name]
+                if dir_stat['missing'] > 0:
+                    f.write(f"{dir_name}: {dir_stat['missing']}/{dir_stat['total']}개 "
+                            f"({dir_stat['missing']/dir_stat['total']*100:.1f}%)\n")
+
+    logger.info(f"라벨 미존재 이미지 검색 완료")
+    logger.info(f"전체 파일: {stats['total_cnt']}개")
+    logger.info(f"라벨 없음: {stats['missing_label_cnt']}개")
+    logger.info(f"라벨 있음: {stats['has_label_cnt']}개")
+
+    return stats
+
 def create_limited_dataset(input_path, output_path, num_files, keyword=None, background_only=False, target_classes=None, class_filter_mode='or'):
     """
     전체 데이터셋에서 지정된 개수의 파일을 파일명 패턴 분포에 맞게 선택하여 리스트 생성
@@ -2225,9 +2340,10 @@ def main():
             print("10. 파일명 키워드 필터링 리스트 생성 (NEW!)")
             print("11. 특정 클래스 없는 파일 리스트 생성 (NEW!)")
             print("12. 클래스 분포 균등화 데이터셋 생성 (NEW!)")
-            print("13. 종료")
+            print("13. 라벨 미존재 이미지 리스트 생성 (NEW!)")
+            print("14. 종료")
 
-            choice = input("\n작업을 선택하세요 (1-13): ")
+            choice = input("\n작업을 선택하세요 (1-14): ")
             
             if choice == '1':
                 # 데이터셋 처리 기능
@@ -2935,6 +3051,53 @@ def main():
                     traceback.print_exc()
 
             elif choice == '13':
+                # 라벨 미존재 이미지 리스트 생성
+                input_path = input("입력 데이터셋 경로를 입력하세요 (기본 경로: Enter): ")
+                if not input_path:
+                    input_path = get_default_input_path()
+
+                if not os.path.exists(input_path):
+                    print(f"오류: 입력한 경로가 존재하지 않습니다: {input_path}")
+                    continue
+
+                output_path = input("출력 저장 경로를 입력하세요 (기본 경로: Enter): ")
+                if not output_path:
+                    output_path = os.path.join(get_default_output_path(input_path), 'missing_labels')
+
+                print(f"\n처리 시작...")
+                print(f"입력 경로: {input_path}")
+                print(f"출력 경로: {output_path}")
+                print(f"JPEGImages에 이미지는 있지만 labels에 txt 파일이 없는 데이터를 검색합니다.")
+
+                try:
+                    stats = find_missing_labels(input_path, output_path)
+
+                    if stats:
+                        print("\n라벨 미존재 이미지 검색 완료!")
+                        print(f"전체 이미지 수: {stats['total_cnt']}개")
+                        print(f"라벨 없는 이미지: {stats['missing_label_cnt']}개 ({stats['missing_label_cnt']/stats['total_cnt']*100:.1f}%)")
+                        print(f"라벨 있는 이미지: {stats['has_label_cnt']}개 ({stats['has_label_cnt']/stats['total_cnt']*100:.1f}%)")
+                        print(f"에러 발생: {stats['error_cnt']}개")
+
+                        # 디렉토리별 통계 출력
+                        missing_dirs = {k: v for k, v in stats['dir_stats'].items() if v['missing'] > 0}
+                        if missing_dirs:
+                            print(f"\n라벨 없는 이미지가 있는 디렉토리 ({len(missing_dirs)}개):")
+                            for dir_name in sorted(missing_dirs.keys()):
+                                dir_stat = missing_dirs[dir_name]
+                                print(f"  {dir_name}: {dir_stat['missing']}/{dir_stat['total']}개 "
+                                      f"({dir_stat['missing']/dir_stat['total']*100:.1f}%)")
+
+                        print(f"\n생성된 파일:")
+                        print(f"  - missing_labels.txt: 라벨 없는 이미지 경로 목록")
+                        print(f"  - has_labels.txt: 라벨 있는 이미지 경로 목록")
+                        print(f"  - missing_labels_detail.txt: 상세 정보 (이미지경로 | 예상라벨경로)")
+
+                except Exception as e:
+                    print(f"\n데이터 처리 중 오류 발생: {e}")
+                    traceback.print_exc()
+
+            elif choice == '14':
                 print("프로그램을 종료합니다.")
                 return 0
 
