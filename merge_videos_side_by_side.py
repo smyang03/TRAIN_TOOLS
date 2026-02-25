@@ -94,6 +94,9 @@ class MergeOptions:
     crf: int = 18
     audio: str = "left"           # "left" | "right" | "mix" | "none"
     output_suffix: str = "_merged"
+    label_left: str = ""          # 왼쪽 영상 좌측 상단 라벨
+    label_right: str = ""         # 오른쪽 영상 좌측 상단 라벨
+    label_font: str = ""          # 폰트 파일 경로 (빈 문자열=자동 탐색)
 
 
 def resolve_fps(left: VideoInfo, right: VideoInfo, opts: MergeOptions) -> float:
@@ -120,6 +123,52 @@ def resolve_height(left: VideoInfo, right: VideoInfo, opts: MergeOptions) -> int
         return right.height
     else:
         return opts.height_custom
+
+
+_KOREAN_FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf",
+    "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+    "/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/unfonts-core/UnDotumBold.ttf",
+    "/usr/share/fonts/truetype/unfonts-core/UnDotum.ttf",
+    "/System/Library/Fonts/AppleSDGothicNeo.ttc",   # macOS
+    "C:/Windows/Fonts/malgunbd.ttf",                # Windows
+    "C:/Windows/Fonts/malgun.ttf",
+]
+
+
+def _find_korean_font() -> str:
+    for p in _KOREAN_FONT_CANDIDATES:
+        if os.path.isfile(p):
+            return p
+    return ""
+
+
+def _escape_drawtext(text: str) -> str:
+    """ffmpeg drawtext 텍스트 이스케이프 (특수문자 처리)."""
+    return text.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
+
+
+def _make_drawtext_step(text: str, font_file: str, h: int) -> str:
+    """drawtext 필터 문자열 반환 (입출력 태그 없음, 체인 내 삽입용)."""
+    font_size = max(24, h // 20)
+    escaped = _escape_drawtext(text)
+    parts = [
+        f"text='{escaped}'",
+        f"fontsize={font_size}",
+        "fontcolor=white",
+        "x=10",
+        "y=10",
+        "box=1",
+        "boxcolor=black@0.6",
+        "boxborderw=6",
+    ]
+    if font_file:
+        parts.insert(1, f"fontfile='{font_file}'")
+    return "drawtext=" + ":".join(parts)
 
 
 def _build_atempo_chain(speed: float) -> str:
@@ -162,16 +211,21 @@ def build_ffmpeg_cmd(
 
     fps_str = f"{target_fps:.4f}".rstrip("0").rstrip(".")
 
-    def build_video_chain(idx, info, h, chain_out):
+    # 라벨 → 레이아웃에 따라 a/b 매핑
+    if opts.layout == "right_left":
+        a_label, b_label = opts.label_right, opts.label_left
+    else:
+        a_label, b_label = opts.label_left, opts.label_right
+
+    font_file = opts.label_font or _find_korean_font()
+
+    def build_video_chain(idx, info, label, h, chain_out):
         steps = []
         if is_speed_mode:
-            # pts_ratio = target / original → >1 슬로우, <1 가속
             pts_ratio = duration / info.duration
             steps.append(f"[{idx}:v]setpts={pts_ratio:.6f}*PTS")
             steps.append(f"fps={fps_str}")
             steps.append(f"scale=-2:{h}")
-            steps.append(f"trim=duration={duration:.6f}")
-            steps.append(f"setpts=PTS-STARTPTS[{chain_out}]")
         else:
             steps.append(f"[{idx}:v]fps={fps_str}")
             steps.append(f"scale=-2:{h}")
@@ -180,8 +234,13 @@ def build_ffmpeg_cmd(
                 if extra > 0:
                     pad_frames = int(extra * target_fps) + 2
                     steps.append(f"tpad=stop={pad_frames}:stop_mode=clone")
-            steps.append(f"trim=duration={duration:.6f}")
-            steps.append(f"setpts=PTS-STARTPTS[{chain_out}]")
+
+        # 스케일 후 라벨 삽입
+        if label.strip():
+            steps.append(_make_drawtext_step(label.strip(), font_file, h))
+
+        steps.append(f"trim=duration={duration:.6f}")
+        steps.append(f"setpts=PTS-STARTPTS[{chain_out}]")
         return ",".join(steps[:-1]) + "," + steps[-1]
 
     def build_audio_for(src_idx, src_info, out_tag):
@@ -201,8 +260,8 @@ def build_ffmpeg_cmd(
                 f"asetpts=PTS-STARTPTS[{out_tag}]"
             )
 
-    v0 = build_video_chain(0, a_info, target_h, "v0")
-    v1 = build_video_chain(1, b_info, target_h, "v1")
+    v0 = build_video_chain(0, a_info, a_label, target_h, "v0")
+    v1 = build_video_chain(1, b_info, b_label, target_h, "v1")
     hstack = "[v0][v1]hstack=inputs=2[vout]"
 
     filter_complex = f"{v0};{v1};{hstack}"
@@ -416,11 +475,11 @@ class App(tk.Tk):
         self._height_entry = ttk.Entry(opt_frame, textvariable=self._height_custom, width=8, state="disabled")
         self._height_entry.grid(row=1, column=3, **pad, sticky="w")
 
-        # 동기화
+        # 동기화 (row=2, col=0-1) / 배치 순서 (row=2, col=2-3)
         ttk.Label(opt_frame, text="길이 동기화:").grid(row=2, column=0, **pad, sticky="w")
         self._sync_mode = tk.StringVar(value="speed_to_longer")
         ttk.Combobox(
-            opt_frame, textvariable=self._sync_mode, width=22,
+            opt_frame, textvariable=self._sync_mode, width=28,
             values=[
                 "trim (짧은 쪽 기준 자르기)",
                 "pad (긴 쪽 기준 검정채움)",
@@ -428,9 +487,8 @@ class App(tk.Tk):
                 "speed_to_shorter (긴 쪽 가속→짧은 쪽 맞춤)",
             ],
             state="readonly",
-        ).grid(row=2, column=1, columnspan=3, **pad, sticky="w")
+        ).grid(row=2, column=1, **pad, sticky="w")
 
-        # 레이아웃
         ttk.Label(opt_frame, text="배치 순서:").grid(row=2, column=2, **pad, sticky="w")
         self._layout = tk.StringVar(value="left_right")
         ttk.Combobox(
@@ -438,7 +496,7 @@ class App(tk.Tk):
             values=["left_right (A|B)", "right_left (B|A)"], state="readonly",
         ).grid(row=2, column=3, **pad, sticky="w")
 
-        # 오디오
+        # 오디오 (row=3)
         ttk.Label(opt_frame, text="오디오:").grid(row=3, column=0, **pad, sticky="w")
         self._audio = tk.StringVar(value="left")
         ttk.Combobox(
@@ -446,7 +504,6 @@ class App(tk.Tk):
             values=["left", "right", "mix", "none"], state="readonly",
         ).grid(row=3, column=1, **pad, sticky="w")
 
-        # 코덱 / CRF
         ttk.Label(opt_frame, text="코덱:").grid(row=3, column=2, **pad, sticky="w")
         self._vcodec = tk.StringVar(value="libx264")
         ttk.Combobox(
@@ -454,6 +511,7 @@ class App(tk.Tk):
             values=["libx264", "libx265", "libvpx-vp9"], state="readonly",
         ).grid(row=3, column=3, **pad, sticky="w")
 
+        # CRF (row=4)
         ttk.Label(opt_frame, text="CRF (품질):").grid(row=4, column=0, **pad, sticky="w")
         self._crf = tk.IntVar(value=18)
         ttk.Scale(opt_frame, from_=0, to=51, variable=self._crf, orient="horizontal", length=160).grid(
@@ -461,9 +519,35 @@ class App(tk.Tk):
         )
         ttk.Label(opt_frame, textvariable=self._crf).grid(row=4, column=2, **pad, sticky="w")
 
+        # 출력 접미사 (row=5)
         ttk.Label(opt_frame, text="출력 접미사:").grid(row=5, column=0, **pad, sticky="w")
         self._suffix = tk.StringVar(value="_merged")
         ttk.Entry(opt_frame, textvariable=self._suffix, width=16).grid(row=5, column=1, **pad, sticky="w")
+
+        # 영상 라벨 (row=6)
+        ttk.Label(opt_frame, text="왼쪽 라벨:").grid(row=6, column=0, **pad, sticky="w")
+        self._label_left = tk.StringVar(value="")
+        ttk.Entry(opt_frame, textvariable=self._label_left, width=16).grid(row=6, column=1, **pad, sticky="w")
+
+        ttk.Label(opt_frame, text="오른쪽 라벨:").grid(row=6, column=2, **pad, sticky="w")
+        self._label_right = tk.StringVar(value="")
+        ttk.Entry(opt_frame, textvariable=self._label_right, width=16).grid(row=6, column=3, **pad, sticky="w")
+
+        # 폰트 파일 경로 (row=7, 비워두면 자동 탐색)
+        ttk.Label(opt_frame, text="폰트 파일:").grid(row=7, column=0, **pad, sticky="w")
+        self._label_font = tk.StringVar(value="")
+        ttk.Entry(opt_frame, textvariable=self._label_font, width=44).grid(
+            row=7, column=1, columnspan=2, **pad, sticky="ew"
+        )
+        ttk.Button(
+            opt_frame, text="…",
+            command=lambda: self._label_font.set(
+                filedialog.askopenfilename(
+                    title="폰트 파일 선택",
+                    filetypes=[("폰트 파일", "*.ttf *.otf *.ttc"), ("모든 파일", "*.*")],
+                ) or self._label_font.get()
+            ),
+        ).grid(row=7, column=3, **pad, sticky="w")
 
         # ── 파일 목록 ──────────────────────────────────────────────────
         list_frame = ttk.LabelFrame(self, text="매칭된 파일 쌍")
@@ -564,6 +648,9 @@ class App(tk.Tk):
         opts.vcodec = self._vcodec.get()
         opts.crf = self._crf.get()
         opts.output_suffix = self._suffix.get()
+        opts.label_left = self._label_left.get()
+        opts.label_right = self._label_right.get()
+        opts.label_font = self._label_font.get().strip()
         return opts
 
     def _start(self):
@@ -658,6 +745,12 @@ def cli_main():
     parser.add_argument("--codec", default="libx264",
                         choices=["libx264", "libx265", "libvpx-vp9"])
     parser.add_argument("--suffix", default="_merged")
+    parser.add_argument("--label-left", default="", metavar="TEXT",
+                        help="왼쪽 영상 좌측 상단 라벨 텍스트 (한글 가능)")
+    parser.add_argument("--label-right", default="", metavar="TEXT",
+                        help="오른쪽 영상 좌측 상단 라벨 텍스트 (한글 가능)")
+    parser.add_argument("--label-font", default="", metavar="PATH",
+                        help="라벨 폰트 파일 경로 (비우면 시스템 한글 폰트 자동 탐색)")
     args = parser.parse_args()
 
     pairs, only_a, only_b = find_matching_pairs(args.folder_a, args.folder_b)
@@ -683,6 +776,9 @@ def cli_main():
         vcodec=args.codec,
         crf=args.crf,
         output_suffix=args.suffix,
+        label_left=args.label_left,
+        label_right=args.label_right,
+        label_font=args.label_font,
     )
 
     success = 0
