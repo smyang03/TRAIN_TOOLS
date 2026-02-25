@@ -88,7 +88,7 @@ class MergeOptions:
     fps_custom: float = 30.0
     height_mode: str = "higher"   # "higher" | "lower" | "left" | "right" | "custom"
     height_custom: int = 720
-    sync_mode: str = "trim"       # "trim" (짧은 쪽) | "pad" (긴 쪽)
+    sync_mode: str = "trim"       # "trim"|"pad"|"speed_to_longer"|"speed_to_shorter"
     layout: str = "left_right"    # "left_right" | "right_left"
     vcodec: str = "libx264"
     crf: int = 18
@@ -122,6 +122,20 @@ def resolve_height(left: VideoInfo, right: VideoInfo, opts: MergeOptions) -> int
         return opts.height_custom
 
 
+def _build_atempo_chain(speed: float) -> str:
+    """atempo 범위(0.5~2.0)를 벗어나는 속도 비율을 위해 여러 atempo 필터를 체인."""
+    filters = []
+    remaining = speed
+    while remaining > 2.0:
+        filters.append("atempo=2.0")
+        remaining /= 2.0
+    while remaining < 0.5:
+        filters.append("atempo=0.5")
+        remaining /= 0.5
+    filters.append(f"atempo={remaining:.6f}")
+    return ",".join(filters)
+
+
 def build_ffmpeg_cmd(
     left: VideoInfo,
     right: VideoInfo,
@@ -130,7 +144,13 @@ def build_ffmpeg_cmd(
 ) -> list:
     target_fps = resolve_fps(left, right, opts)
     target_h = resolve_height(left, right, opts)
-    duration = min(left.duration, right.duration) if opts.sync_mode == "trim" else max(left.duration, right.duration)
+    is_speed_mode = opts.sync_mode in ("speed_to_longer", "speed_to_shorter")
+
+    # 목표 재생 시간 결정
+    if opts.sync_mode in ("trim", "speed_to_shorter"):
+        duration = min(left.duration, right.duration)
+    else:  # pad, speed_to_longer
+        duration = max(left.duration, right.duration)
 
     # 좌우 순서 결정
     if opts.layout == "right_left":
@@ -140,27 +160,46 @@ def build_ffmpeg_cmd(
         a_path, b_path = left.path, right.path
         a_info, b_info = left, right
 
-    # scale 필터: 높이를 target_h에 맞추고 너비는 짝수로
-    def scale_filter(tag_in, tag_out, h):
-        return f"[{tag_in}]scale=-2:{h}[{tag_out}]"
-
-    # fps 필터
     fps_str = f"{target_fps:.4f}".rstrip("0").rstrip(".")
 
-    # pad 모드일 경우 짧은 영상에 color pad
     def build_video_chain(idx, info, h, chain_out):
         steps = []
-        steps.append(f"[{idx}:v]fps={fps_str}")
-        steps.append(f"scale=-2:{h}")
-        if opts.sync_mode == "pad":
-            # tpad로 뒤에 검정 채움
-            extra = duration - info.duration
-            if extra > 0:
-                pad_frames = int(extra * target_fps) + 2
-                steps.append(f"tpad=stop={pad_frames}:stop_mode=clone")
-        steps.append(f"trim=duration={duration}")
-        steps.append(f"setpts=PTS-STARTPTS[{chain_out}]")
+        if is_speed_mode:
+            # pts_ratio = target / original → >1 슬로우, <1 가속
+            pts_ratio = duration / info.duration
+            steps.append(f"[{idx}:v]setpts={pts_ratio:.6f}*PTS")
+            steps.append(f"fps={fps_str}")
+            steps.append(f"scale=-2:{h}")
+            steps.append(f"trim=duration={duration:.6f}")
+            steps.append(f"setpts=PTS-STARTPTS[{chain_out}]")
+        else:
+            steps.append(f"[{idx}:v]fps={fps_str}")
+            steps.append(f"scale=-2:{h}")
+            if opts.sync_mode == "pad":
+                extra = duration - info.duration
+                if extra > 0:
+                    pad_frames = int(extra * target_fps) + 2
+                    steps.append(f"tpad=stop={pad_frames}:stop_mode=clone")
+            steps.append(f"trim=duration={duration:.6f}")
+            steps.append(f"setpts=PTS-STARTPTS[{chain_out}]")
         return ",".join(steps[:-1]) + "," + steps[-1]
+
+    def build_audio_for(src_idx, src_info, out_tag):
+        """오디오 필터 문자열 반환 (세미콜론 포함)."""
+        if is_speed_mode:
+            pts_ratio = duration / src_info.duration
+            audio_speed = 1.0 / pts_ratio          # atempo는 속도 배율
+            atempo = _build_atempo_chain(audio_speed)
+            return (
+                f";[{src_idx}:a]{atempo},"
+                f"atrim=duration={duration:.6f},"
+                f"asetpts=PTS-STARTPTS[{out_tag}]"
+            )
+        else:
+            return (
+                f";[{src_idx}:a]atrim=duration={duration:.6f},"
+                f"asetpts=PTS-STARTPTS[{out_tag}]"
+            )
 
     v0 = build_video_chain(0, a_info, target_h, "v0")
     v1 = build_video_chain(1, b_info, target_h, "v1")
@@ -173,29 +212,31 @@ def build_ffmpeg_cmd(
     amix_filter = ""
     if opts.audio == "left":
         src_idx = 0 if opts.layout == "left_right" else 1
-        if a_info.has_audio:
-            amix_filter = f";[{src_idx}:a]atrim=duration={duration},asetpts=PTS-STARTPTS[aout]"
+        src_info = a_info if opts.layout == "left_right" else b_info
+        if src_info.has_audio:
+            amix_filter = build_audio_for(src_idx, src_info, "aout")
             audio_maps = ["-map", "[aout]"]
     elif opts.audio == "right":
         src_idx = 1 if opts.layout == "left_right" else 0
-        if b_info.has_audio:
-            amix_filter = f";[{src_idx}:a]atrim=duration={duration},asetpts=PTS-STARTPTS[aout]"
+        src_info = b_info if opts.layout == "left_right" else a_info
+        if src_info.has_audio:
+            amix_filter = build_audio_for(src_idx, src_info, "aout")
             audio_maps = ["-map", "[aout]"]
     elif opts.audio == "mix":
         has_a = a_info.has_audio
         has_b = b_info.has_audio
         if has_a and has_b:
             amix_filter = (
-                f";[0:a]atrim=duration={duration},asetpts=PTS-STARTPTS[a0]"
-                f";[1:a]atrim=duration={duration},asetpts=PTS-STARTPTS[a1]"
-                f";[a0][a1]amix=inputs=2:normalize=0[aout]"
+                build_audio_for(0, a_info, "a0").replace("[aout]", "[a0]") +
+                build_audio_for(1, b_info, "a1").replace("[aout]", "[a1]") +
+                ";[a0][a1]amix=inputs=2:normalize=0[aout]"
             )
             audio_maps = ["-map", "[aout]"]
         elif has_a:
-            amix_filter = f";[0:a]atrim=duration={duration},asetpts=PTS-STARTPTS[aout]"
+            amix_filter = build_audio_for(0, a_info, "aout")
             audio_maps = ["-map", "[aout]"]
         elif has_b:
-            amix_filter = f";[1:a]atrim=duration={duration},asetpts=PTS-STARTPTS[aout]"
+            amix_filter = build_audio_for(1, b_info, "aout")
             audio_maps = ["-map", "[aout]"]
 
     filter_complex += amix_filter
@@ -236,6 +277,20 @@ def run_merge(
         log_fn(
             f"  RIGHT {right.width}x{right.height} @ {right.fps:.2f}fps  {right.duration:.2f}s"
         )
+
+        # 싱크 정보 출력
+        if opts.sync_mode in ("speed_to_longer", "speed_to_shorter"):
+            target_dur = (
+                max(left.duration, right.duration)
+                if opts.sync_mode == "speed_to_longer"
+                else min(left.duration, right.duration)
+            )
+            l_ratio = target_dur / left.duration
+            r_ratio = target_dur / right.duration
+            log_fn(
+                f"  SYNC  목표={target_dur:.2f}s  "
+                f"LEFT×{l_ratio:.3f}  RIGHT×{r_ratio:.3f}"
+            )
 
         cmd = build_ffmpeg_cmd(left, right, output_path, opts)
         log_fn(f"  ffmpeg 실행 중...")
@@ -363,11 +418,17 @@ class App(tk.Tk):
 
         # 동기화
         ttk.Label(opt_frame, text="길이 동기화:").grid(row=2, column=0, **pad, sticky="w")
-        self._sync_mode = tk.StringVar(value="trim")
+        self._sync_mode = tk.StringVar(value="speed_to_longer")
         ttk.Combobox(
-            opt_frame, textvariable=self._sync_mode, width=12,
-            values=["trim (짧은 쪽)", "pad (긴 쪽)"], state="readonly",
-        ).grid(row=2, column=1, **pad, sticky="w")
+            opt_frame, textvariable=self._sync_mode, width=22,
+            values=[
+                "trim (짧은 쪽 기준 자르기)",
+                "pad (긴 쪽 기준 검정채움)",
+                "speed_to_longer (짧은 쪽 슬로우→긴 쪽 맞춤)",
+                "speed_to_shorter (긴 쪽 가속→짧은 쪽 맞춤)",
+            ],
+            state="readonly",
+        ).grid(row=2, column=1, columnspan=3, **pad, sticky="w")
 
         # 레이아웃
         ttk.Label(opt_frame, text="배치 순서:").grid(row=2, column=2, **pad, sticky="w")
@@ -580,8 +641,15 @@ def cli_main():
                         help="높이 기준 (default: higher)")
     parser.add_argument("--height-value", type=int, default=720,
                         help="커스텀 높이 값")
-    parser.add_argument("--sync", default="trim", choices=["trim", "pad"],
-                        help="길이 동기화: trim=짧은 쪽, pad=긴 쪽 (default: trim)")
+    parser.add_argument("--sync", default="speed_to_longer",
+                        choices=["trim", "pad", "speed_to_longer", "speed_to_shorter"],
+                        help=(
+                            "길이 동기화: "
+                            "trim=짧은 쪽 자르기, "
+                            "pad=긴 쪽 검정채움, "
+                            "speed_to_longer=짧은 쪽 슬로우→긴 쪽 맞춤(기본), "
+                            "speed_to_shorter=긴 쪽 가속→짧은 쪽 맞춤"
+                        ))
     parser.add_argument("--layout", default="left_right",
                         choices=["left_right", "right_left"])
     parser.add_argument("--audio", default="left",
