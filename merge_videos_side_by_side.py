@@ -50,7 +50,10 @@ def probe_video(path: str) -> VideoInfo:
         path,
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=30,
+        )
         data = json.loads(result.stdout)
     except Exception as e:
         raise RuntimeError(f"ffprobe 실패: {path}\n{e}")
@@ -241,6 +244,8 @@ def run_merge(
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=3600,
         )
         if result.returncode != 0:
