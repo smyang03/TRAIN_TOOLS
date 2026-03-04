@@ -2805,7 +2805,7 @@ class MainApp:
 		self.crop_frame.pack(fill="both", expand=True, padx=3, pady=3)
 		
 		# 크롭 캔버스 (크기 줄임)
-		self.crop_canvas = tk.Canvas(self.crop_frame, width=260, height=150, bg='white', relief='solid', bd=1)
+		self.crop_canvas = tk.Canvas(self.crop_frame, width=260, height=300, bg='white', relief='solid', bd=1)
 		self.crop_canvas.pack(padx=3, pady=3)
 		
 		# 크롭 정보 라벨
@@ -3056,7 +3056,7 @@ class MainApp:
 		self.crop_transform = None
 
 		if self.selid < 0 or not self.bbox:
-			self.crop_canvas.create_text(130, 75, text="No label selected",
+			self.crop_canvas.create_text(130, 150, text="No label selected",
 										 fill="gray", font=("Arial", 12))
 			return
 
@@ -3088,7 +3088,7 @@ class MainApp:
 			crop_y2 = min(float(img_h), orig_y2 + pad_y)
 
 			if crop_x2 <= crop_x1 or crop_y2 <= crop_y1:
-				self.crop_canvas.create_text(130, 75, text="Invalid crop area",
+				self.crop_canvas.create_text(130, 150, text="Invalid crop area",
 											 fill="red", font=("Arial", 12))
 				return
 
@@ -3098,7 +3098,7 @@ class MainApp:
 											 int(crop_x2), int(crop_y2)))
 
 			canvas_width  = 260
-			canvas_height = 150
+			canvas_height = 300
 			img_ratio    = cropped_img.width / cropped_img.height
 			canvas_ratio = canvas_width / canvas_height
 			max_width    = canvas_width  - 6
@@ -3140,7 +3140,7 @@ class MainApp:
 		except Exception as e:
 			print(f"Error updating crop preview: {e}")
 			self.crop_canvas.delete("all")
-			self.crop_canvas.create_text(130, 75, text="Error loading crop",
+			self.crop_canvas.create_text(130, 150, text="Error loading crop",
 										 fill="red", font=("Arial", 10))
 			self.crop_transform = None
 
