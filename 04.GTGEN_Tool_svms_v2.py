@@ -3078,9 +3078,9 @@ class MainApp:
 				img_w = int(self.imsize[0] / self.zoom_ratio)
 				img_h = int(self.imsize[1] / self.zoom_ratio)
 
-			# 10% 패딩 계산 (최소 5픽셀)
-			pad_x = max(5, int((orig_x2 - orig_x1) * 0.10))
-			pad_y = max(5, int((orig_y2 - orig_y1) * 0.10))
+			# 40% 패딩 계산 (최소 5픽셀)
+			pad_x = max(5, int((orig_x2 - orig_x1) * 0.40))
+			pad_y = max(5, int((orig_y2 - orig_y1) * 0.40))
 
 			crop_x1 = max(0.0, orig_x1 - pad_x)
 			crop_y1 = max(0.0, orig_y1 - pad_y)
@@ -3286,14 +3286,14 @@ class MainApp:
 			rc[0] += dx;  rc[1] += dy
 			rc[2] += dx;  rc[3] += dy
 		else:
-			if   'nw' in a: rc[0] = screen_x; rc[1] = screen_y
-			elif 'n'  in a:                    rc[1] = screen_y
-			elif 'ne' in a: rc[2] = screen_x; rc[1] = screen_y
-			elif 'e'  in a: rc[2] = screen_x
-			elif 'se' in a: rc[2] = screen_x; rc[3] = screen_y
-			elif 's'  in a:                    rc[3] = screen_y
-			elif 'sw' in a: rc[0] = screen_x; rc[3] = screen_y
-			elif 'w'  in a: rc[0] = screen_x
+			if   a == 'nw': rc[0] = screen_x; rc[1] = screen_y
+			elif a == 'n':                     rc[1] = screen_y
+			elif a == 'ne': rc[2] = screen_x; rc[1] = screen_y
+			elif a == 'e':  rc[2] = screen_x
+			elif a == 'se': rc[2] = screen_x; rc[3] = screen_y
+			elif a == 's':                     rc[3] = screen_y
+			elif a == 'sw': rc[0] = screen_x; rc[3] = screen_y
+			elif a == 'w':  rc[0] = screen_x
 
 		self.crop_drag_last = (mx, my)
 
