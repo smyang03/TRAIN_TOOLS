@@ -1116,6 +1116,7 @@ class MainApp:
 	exclusion_zone_mode = False  # 제외 영역 그리기 모드
 	exclusion_zone_points = []  # 현재 그리고 있는 제외 영역의 점들
 	exclusion_zone_enabled = False  # 제외 영역 기능 활성화 여부
+	exclusion_zone_draw_mode = 'polygon'  # 그리기 모드: 'polygon' 또는 'point'
 
 	def __init__(self, _dir):
 		# 클래스 설정 관리자 초기화
@@ -4342,18 +4343,28 @@ class MainApp:
 			if zone['points']:
 				# 폴리곤 색상 (활성화 여부에 따라)
 				color = 'orange' if zone['enabled'] else 'gray'
-				# 폴리곤 그리기 - 원본 좌표를 화면 좌표로 변환 (줌 비율 적용)
-				points = []
-				for point in zone['points']:
-					screen_x = point[0] * self.zoom_ratio
-					screen_y = point[1] * self.zoom_ratio
-					points.extend([screen_x, screen_y])
-				self.canvas.create_polygon(points, outline=color, fill='', width=2, dash=(5, 5), tags="exclusion_zone")
-
-				# 영역 번호 표시
-				if zone['points']:
-					center_x = sum(p[0] * self.zoom_ratio for p in zone['points']) / len(zone['points'])
-					center_y = sum(p[1] * self.zoom_ratio for p in zone['points']) / len(zone['points'])
+				pts = zone['points']
+				# 1픽셀 점 영역 판별 (4개 점, 가로/세로 모두 1px 이하)
+				is_point_zone = (len(pts) == 4 and
+								abs(pts[2][0] - pts[0][0]) <= 1.5 and
+								abs(pts[2][1] - pts[0][1]) <= 1.5)
+				if is_point_zone:
+					cx = pts[0][0] * self.zoom_ratio
+					cy = pts[0][1] * self.zoom_ratio
+					r = 6
+					self.canvas.create_oval(cx-r, cy-r, cx+r, cy+r, fill=color, outline='white', width=2, tags="exclusion_zone")
+					self.canvas.create_text(cx+r+4, cy, text=f"제외점 {i+1}", fill=color, font='Arial 9 bold', tags="exclusion_zone", anchor='w')
+				else:
+					# 폴리곤 그리기 - 원본 좌표를 화면 좌표로 변환 (줌 비율 적용)
+					points = []
+					for point in pts:
+						screen_x = point[0] * self.zoom_ratio
+						screen_y = point[1] * self.zoom_ratio
+						points.extend([screen_x, screen_y])
+					self.canvas.create_polygon(points, outline=color, fill='', width=2, dash=(5, 5), tags="exclusion_zone")
+					# 영역 번호 표시
+					center_x = sum(p[0] * self.zoom_ratio for p in pts) / len(pts)
+					center_y = sum(p[1] * self.zoom_ratio for p in pts) / len(pts)
 					self.canvas.create_text(center_x, center_y, text=f"제외영역 {i+1}", fill=color, font='Arial 10 bold', tags="exclusion_zone")
 
 		# 현재 그리고 있는 제외 영역 표시 (이미 화면 좌표로 저장되어 있음)
@@ -5926,7 +5937,29 @@ class MainApp:
 
 		# 제외 영역 그리기 모드
 		if self.exclusion_zone_mode:
-			# 첫 점을 다시 클릭했는지 확인 (폴리곤 닫기)
+			# 점 모드: 클릭 한 번으로 1×1 픽셀 영역 즉시 추가
+			if self.exclusion_zone_draw_mode == 'point':
+				selected_class_ids = self.select_classes_for_exclusion_zone(title="제외 점 클래스 선택")
+				if selected_class_ids is not None:
+					orig_x = x / self.zoom_ratio
+					orig_y = y / self.zoom_ratio
+					point_rect = [(orig_x, orig_y), (orig_x + 1, orig_y),
+								  (orig_x + 1, orig_y + 1), (orig_x, orig_y + 1)]
+					self.exclusion_zone_manager.add_zone(point_rect, use_global=True, class_ids=selected_class_ids)
+					self.exclusion_zone_manager.save_global_zones()
+					if selected_class_ids:
+						class_names = [self.class_config_manager.get_class_name(cid) for cid in selected_class_ids]
+						class_info = f"적용 클래스: {', '.join(class_names)}"
+					else:
+						class_info = "적용 클래스: 모든 클래스"
+					messagebox.showinfo("제외 점 추가", f"제외 점이 추가되었습니다.\n{class_info}")
+				self.exclusion_zone_mode = False
+				self.exclusion_zone_draw_mode = 'polygon'
+				self.exclusion_zone_points = []
+				self.draw_bbox()
+				return
+
+			# 폴리곤 모드: 첫 점을 다시 클릭했는지 확인 (폴리곤 닫기)
 			if len(self.exclusion_zone_points) >= 3:
 				first_point = self.exclusion_zone_points[0]
 				# 첫 점 근처 클릭 확인 (10픽셀 이내)
@@ -6910,7 +6943,12 @@ class MainApp:
 				else:
 					class_info = " - 모든 클래스"
 
-				listbox.insert(tk.END, f"{status} 영역 {i+1} ({point_count}개 점){class_info}")
+				zpts = zone['points']
+				is_pt = (len(zpts) == 4 and
+						 abs(zpts[2][0] - zpts[0][0]) <= 1.5 and
+						 abs(zpts[2][1] - zpts[0][1]) <= 1.5)
+				zone_type = "점" if is_pt else f"{point_count}개 점"
+				listbox.insert(tk.END, f"{status} 영역 {i+1} ({zone_type}){class_info}")
 
 		refresh_list()
 
@@ -6919,10 +6957,19 @@ class MainApp:
 		button_frame.pack(pady=10)
 
 		def add_zone():
-			"""제외 영역 추가 모드 활성화"""
+			"""제외 영역 추가 모드 활성화 (폴리곤)"""
 			self.exclusion_zone_mode = True
+			self.exclusion_zone_draw_mode = 'polygon'
 			self.exclusion_zone_points = []
 			messagebox.showinfo("제외 영역 추가", "캔버스에서 좌클릭으로 점을 추가하세요.\n우클릭 또는 첫 점을 다시 클릭하면 완성됩니다.")
+			dialog.destroy()
+
+		def add_point():
+			"""점 추가 모드 활성화 (1클릭 → 1×1픽셀)"""
+			self.exclusion_zone_mode = True
+			self.exclusion_zone_draw_mode = 'point'
+			self.exclusion_zone_points = []
+			messagebox.showinfo("제외 점 추가", "캔버스에서 좌클릭 한 번으로 제외 점을 추가합니다.\n(코드상 1×1픽셀 사각형으로 저장됩니다)")
 			dialog.destroy()
 
 		def remove_zone():
@@ -6978,6 +7025,7 @@ class MainApp:
 					messagebox.showinfo("클래스 편집", "적용 클래스가 업데이트되었습니다.")
 
 		tk.Button(button_frame, text="영역 추가", command=add_zone, width=10).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="점 추가", command=add_point, width=10).pack(side=tk.LEFT, padx=2)
 		tk.Button(button_frame, text="삭제", command=remove_zone, width=10).pack(side=tk.LEFT, padx=2)
 		tk.Button(button_frame, text="클래스 편집", command=edit_classes, width=10).pack(side=tk.LEFT, padx=2)
 		tk.Button(button_frame, text="활성화/비활성화", command=toggle_zone, width=15).pack(side=tk.LEFT, padx=2)
