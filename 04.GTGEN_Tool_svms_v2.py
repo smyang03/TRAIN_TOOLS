@@ -1097,6 +1097,11 @@ class MainApp:
 	CLASSIFY_TPFP=True
 	masking = None
 	viewclass = True
+	crop_resize_anchor = None   # crop canvas 드래그 앵커 방향 ('nw','n','ne',...,'move')
+	crop_transform = None       # crop canvas 좌표 변환 파라미터
+	crop_was_dragged = False    # 드래그 발생 여부 (click vs drag 구분)
+	crop_drag_last = None       # 이전 드래그 마우스 좌표 (move 계산용)
+	crop_drag_active = False    # 드래그 중 update_crop_preview 재진입 방지 플래그
 	onlyselect = False
 	onlybox = True
 	has_saved_masking = False	
@@ -2821,8 +2826,10 @@ class MainApp:
 		# 우클릭 메뉴
 		self.label_listbox.bind("<Button-3>", self.on_label_list_right_click)
 		
-		# 크롭 캔버스 클릭 이벤트
-		self.crop_canvas.bind("<Button-1>", self.on_crop_canvas_click)
+		# 크롭 캔버스 마우스 이벤트 (드래그 리사이즈/이동 + 외부클릭 삭제)
+		self.crop_canvas.bind("<Button-1>",        self.on_crop_mouse_down)
+		self.crop_canvas.bind("<B1-Motion>",        self.on_crop_mouse_drag)
+		self.crop_canvas.bind("<ButtonRelease-1>",  self.on_crop_mouse_up)
 		
 		# 포커스 관리
 		self.label_listbox.bind("<Button-1>", lambda e: self.master.after(50, self.canvas.focus_set))
@@ -3034,98 +3041,108 @@ class MainApp:
 		
 		self.stats_label.config(text=stats_text)
 	def update_crop_preview(self):
-		"""선택된 라벨의 크롭 프리뷰 업데이트"""
+		"""선택된 라벨의 크롭 프리뷰 업데이트 (10% 패딩 + bbox overlay + 앵커 핸들)"""
 		if not hasattr(self, 'crop_canvas') or not self.show_label_list.get():
 			return
-		
-		# 캔버스 초기화
+
+		# 드래그 중 재진입 시 overlay 만 빠르게 갱신하고 반환 (이미지 재로드 방지)
+		if hasattr(self, 'crop_drag_active') and self.crop_drag_active:
+			self._update_crop_canvas_overlay()
+			return
+
+		# 캔버스 전체 초기화
 		self.crop_canvas.delete("all")
 		self.crop_info_label.config(text="")
-		
+		self.crop_transform = None
+
 		if self.selid < 0 or not self.bbox:
-			self.crop_canvas.create_text(130, 100, text="No label selected", 
-									fill="gray", font=("Arial", 12))
+			self.crop_canvas.create_text(130, 75, text="No label selected",
+										 fill="gray", font=("Arial", 12))
 			return
-		
+
 		try:
-			# 현재 선택된 바운딩 박스 정보
 			bbox = self.bbox[self.selid]
 			x1, y1, x2, y2 = bbox[3:7]
-			
+
 			# 원본 이미지 좌표로 변환 (줌 비율 고려)
-			orig_x1 = int(x1 / self.zoom_ratio)
-			orig_y1 = int(y1 / self.zoom_ratio)
-			orig_x2 = int(x2 / self.zoom_ratio)
-			orig_y2 = int(y2 / self.zoom_ratio)
-			
-			# 좌표 보정
+			orig_x1 = x1 / self.zoom_ratio
+			orig_y1 = y1 / self.zoom_ratio
+			orig_x2 = x2 / self.zoom_ratio
+			orig_y2 = y2 / self.zoom_ratio
+
+			# 이미지 경계 크기 확보
 			if hasattr(self, 'original_width') and hasattr(self, 'original_height'):
-				orig_x1 = max(0, min(orig_x1, self.original_width))
-				orig_y1 = max(0, min(orig_y1, self.original_height))
-				orig_x2 = max(0, min(orig_x2, self.original_width))
-				orig_y2 = max(0, min(orig_y2, self.original_height))
-			
-			# 원본 이미지에서 크롭
-			original_img = Image.open(self.im_fn)
-			
-			if orig_x2 > orig_x1 and orig_y2 > orig_y1:
-				crop_region = (orig_x1, orig_y1, orig_x2, orig_y2)
-				cropped_img = original_img.crop(crop_region)
-
-				# 비율 유지하면서 리사이즈 (실제 crop_canvas 크기에 맞춤)
-				canvas_width = 260
-				canvas_height = 150
-
-				img_ratio = cropped_img.width / cropped_img.height
-				canvas_ratio = canvas_width / canvas_height
-
-				# 여백을 고려하여 약간 작게 리사이즈
-				max_width = canvas_width - 10
-				max_height = canvas_height - 10
-
-				if img_ratio > canvas_ratio:
-					new_width = max_width
-					new_height = int(max_width / img_ratio)
-				else:
-					new_height = max_height
-					new_width = int(max_height * img_ratio)
-
-				resized_img = cropped_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-
-				# 캔버스에 표시 (중앙 정렬)
-				self.crop_image_tk = ImageTk.PhotoImage(resized_img)
-
-				x_offset = (canvas_width - new_width) // 2
-				y_offset = (canvas_height - new_height) // 2
-				
-				self.crop_canvas.create_image(
-					x_offset, y_offset, 
-					image=self.crop_image_tk, 
-					anchor='nw',
-					tags="crop_image"
-				)
-				
-				# 클릭 가능 영역 표시
-				self.crop_canvas.create_rectangle(
-					x_offset-1, y_offset-1, 
-					x_offset+new_width+1, y_offset+new_height+1,
-					outline="red", width=2, tags="click_area"
-				)
-				
-				# 정보 업데이트
-				class_name = bbox[1]
-				width = int(bbox[5] - bbox[3])
-				height = int(bbox[6] - bbox[4])
-				self.crop_info_label.config(text=f"{class_name} ({width}x{height})")
-				
+				img_w = self.original_width
+				img_h = self.original_height
 			else:
-				self.crop_canvas.create_text(130, 100, text="Invalid crop area", 
-										fill="red", font=("Arial", 12))
-		
+				img_w = int(self.imsize[0] / self.zoom_ratio)
+				img_h = int(self.imsize[1] / self.zoom_ratio)
+
+			# 10% 패딩 계산 (최소 5픽셀)
+			pad_x = max(5, int((orig_x2 - orig_x1) * 0.10))
+			pad_y = max(5, int((orig_y2 - orig_y1) * 0.10))
+
+			crop_x1 = max(0.0, orig_x1 - pad_x)
+			crop_y1 = max(0.0, orig_y1 - pad_y)
+			crop_x2 = min(float(img_w), orig_x2 + pad_x)
+			crop_y2 = min(float(img_h), orig_y2 + pad_y)
+
+			if crop_x2 <= crop_x1 or crop_y2 <= crop_y1:
+				self.crop_canvas.create_text(130, 75, text="Invalid crop area",
+											 fill="red", font=("Arial", 12))
+				return
+
+			# 원본 이미지에서 크롭 (패딩 포함)
+			original_img = Image.open(self.im_fn)
+			cropped_img = original_img.crop((int(crop_x1), int(crop_y1),
+											 int(crop_x2), int(crop_y2)))
+
+			canvas_width  = 260
+			canvas_height = 150
+			img_ratio    = cropped_img.width / cropped_img.height
+			canvas_ratio = canvas_width / canvas_height
+			max_width    = canvas_width  - 6
+			max_height   = canvas_height - 6
+
+			if img_ratio > canvas_ratio:
+				new_width  = max_width
+				new_height = int(max_width / img_ratio)
+			else:
+				new_height = max_height
+				new_width  = int(max_height * img_ratio)
+
+			new_width  = max(1, new_width)
+			new_height = max(1, new_height)
+
+			resized_img = cropped_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+			self.crop_image_tk = ImageTk.PhotoImage(resized_img)
+
+			x_offset = (canvas_width  - new_width)  // 2
+			y_offset = (canvas_height - new_height) // 2
+
+			self.crop_canvas.create_image(x_offset, y_offset,
+										  image=self.crop_image_tk,
+										  anchor='nw', tags="crop_image")
+
+			# 좌표 변환 파라미터 저장 (마우스 이벤트 처리용)
+			self.crop_transform = {
+				'crop_x1': crop_x1,
+				'crop_y1': crop_y1,
+				'scale_x': new_width  / (crop_x2 - crop_x1),
+				'scale_y': new_height / (crop_y2 - crop_y1),
+				'offset_x': x_offset,
+				'offset_y': y_offset,
+			}
+
+			# bbox overlay + 8개 앵커 핸들 그리기
+			self._update_crop_canvas_overlay()
+
 		except Exception as e:
 			print(f"Error updating crop preview: {e}")
-			self.crop_canvas.create_text(130, 100, text="Error loading crop", 
-									fill="red", font=("Arial", 10))
+			self.crop_canvas.delete("all")
+			self.crop_canvas.create_text(130, 75, text="Error loading crop",
+										 fill="red", font=("Arial", 10))
+			self.crop_transform = None
 
 	def on_label_list_select(self, event):
 		"""라벨 리스트에서 항목 선택 시"""
@@ -3158,13 +3175,169 @@ class MainApp:
 
 			self.canvas.focus_set()
 	def on_crop_canvas_click(self, event):
-		"""크롭 캔버스 클릭 시 삭제"""
-		if self.selid >= 0:
-			bbox = self.bbox[self.selid]
-			if messagebox.askyesno("삭제 확인", f"{bbox[1]} 라벨을 삭제하시겠습니까?"):
-				self.remove_bbox_rc()
-				self.update_label_list()
-				self.update_crop_preview()
+		"""크롭 캔버스 클릭 시 삭제 (레거시 - on_crop_mouse_up 에서 처리됨)"""
+		pass
+
+	# ──────────────────────────────────────────────────────────────
+	# crop canvas 드래그 리사이즈 / 이동 관련 헬퍼 및 이벤트 핸들러
+	# ──────────────────────────────────────────────────────────────
+
+	def _crop_anchor_positions(self):
+		"""현재 bbox를 crop_canvas 좌표로 변환해 8개 앵커 위치 dict 반환"""
+		ct = self.crop_transform
+		bbox = self.bbox[self.selid]
+		orig_x1 = bbox[3] / self.zoom_ratio
+		orig_y1 = bbox[4] / self.zoom_ratio
+		orig_x2 = bbox[5] / self.zoom_ratio
+		orig_y2 = bbox[6] / self.zoom_ratio
+		bx1 = ct['offset_x'] + (orig_x1 - ct['crop_x1']) * ct['scale_x']
+		by1 = ct['offset_y'] + (orig_y1 - ct['crop_y1']) * ct['scale_y']
+		bx2 = ct['offset_x'] + (orig_x2 - ct['crop_x1']) * ct['scale_x']
+		by2 = ct['offset_y'] + (orig_y2 - ct['crop_y1']) * ct['scale_y']
+		mx = (bx1 + bx2) / 2
+		my = (by1 + by2) / 2
+		return {
+			'nw': (bx1, by1), 'n': (mx, by1), 'ne': (bx2, by1),
+			'e':  (bx2, my),
+			'se': (bx2, by2), 's': (mx, by2), 'sw': (bx1, by2),
+			'w':  (bx1, my),
+		}, bx1, by1, bx2, by2
+
+	def _update_crop_canvas_overlay(self):
+		"""crop_canvas 의 bbox 사각형과 8개 앵커 핸들만 빠르게 재그리기
+		   (이미지 재로드 없음 ─ 드래그 중 실시간 갱신용)"""
+		if not hasattr(self, 'crop_transform') or self.crop_transform is None:
+			return
+		if self.selid < 0 or not self.bbox:
+			return
+
+		self.crop_canvas.delete("crop_bbox")
+		self.crop_canvas.delete("crop_anchor")
+
+		anchor_pts, bx1, by1, bx2, by2 = self._crop_anchor_positions()
+
+		# bbox overlay (빨간 테두리)
+		self.crop_canvas.create_rectangle(bx1, by1, bx2, by2,
+										  outline='red', width=2,
+										  tags="crop_bbox")
+
+		# 8개 앵커 핸들 (흰 테두리 빨간 사각형)
+		ah = 5
+		for ax, ay in anchor_pts.values():
+			self.crop_canvas.create_rectangle(ax - ah, ay - ah, ax + ah, ay + ah,
+											  outline='white', fill='red', width=1,
+											  tags="crop_anchor")
+
+		# 정보 라벨 갱신
+		bbox = self.bbox[self.selid]
+		w = int(bbox[5] - bbox[3])
+		h = int(bbox[6] - bbox[4])
+		self.crop_info_label.config(text=f"{bbox[1]} ({w}x{h})  ← 드래그로 크기/위치 조절")
+
+	def on_crop_mouse_down(self, event):
+		"""crop_canvas 마우스 버튼 다운 ─ 앵커 / bbox 내부 / 외부 판별"""
+		self.crop_was_dragged = False
+		self.crop_resize_anchor = None
+		self.crop_drag_last = (event.x, event.y)
+
+		if self.selid < 0 or not hasattr(self, 'crop_transform') or self.crop_transform is None:
+			return
+
+		mx, my = event.x, event.y
+		ANCHOR_RADIUS = 8  # 앵커 감지 반경(픽셀)
+
+		anchor_pts, bx1, by1, bx2, by2 = self._crop_anchor_positions()
+
+		# 앵커 핸들 클릭 확인
+		for anc_name, (ax, ay) in anchor_pts.items():
+			if abs(mx - ax) <= ANCHOR_RADIUS and abs(my - ay) <= ANCHOR_RADIUS:
+				self.crop_resize_anchor = anc_name
+				return
+
+		# bbox 내부 클릭 → 이동 모드
+		if bx1 <= mx <= bx2 and by1 <= my <= by2:
+			self.crop_resize_anchor = 'move'
+
+	def on_crop_mouse_drag(self, event):
+		"""crop_canvas 드래그 ─ bbox 실시간 리사이즈 / 이동 + 메인 캔버스 동기화"""
+		if self.selid < 0 or self.crop_resize_anchor is None:
+			return
+		if not hasattr(self, 'crop_transform') or self.crop_transform is None:
+			return
+
+		self.crop_was_dragged = True
+		mx, my = event.x, event.y
+		ct = self.crop_transform
+
+		# crop_canvas 마우스 좌표 → 메인 캔버스(screen) 좌표
+		orig_x = ct['crop_x1'] + (mx - ct['offset_x']) / ct['scale_x']
+		orig_y = ct['crop_y1'] + (my - ct['offset_y']) / ct['scale_y']
+		screen_x = orig_x * self.zoom_ratio
+		screen_y = orig_y * self.zoom_ratio
+
+		rc = list(self.bbox[self.selid][3:])  # [x1, y1, x2, y2] screen coords
+		a = self.crop_resize_anchor
+
+		if a == 'move':
+			# 이전 위치와의 델타로 전체 이동
+			last_mx, last_my = self.crop_drag_last
+			dx = (mx - last_mx) / ct['scale_x'] * self.zoom_ratio
+			dy = (my - last_my) / ct['scale_y'] * self.zoom_ratio
+			rc[0] += dx;  rc[1] += dy
+			rc[2] += dx;  rc[3] += dy
+		else:
+			if   'nw' in a: rc[0] = screen_x; rc[1] = screen_y
+			elif 'n'  in a:                    rc[1] = screen_y
+			elif 'ne' in a: rc[2] = screen_x; rc[1] = screen_y
+			elif 'e'  in a: rc[2] = screen_x
+			elif 'se' in a: rc[2] = screen_x; rc[3] = screen_y
+			elif 's'  in a:                    rc[3] = screen_y
+			elif 'sw' in a: rc[0] = screen_x; rc[3] = screen_y
+			elif 'w'  in a: rc[0] = screen_x
+
+		self.crop_drag_last = (mx, my)
+
+		# 좌표 유효성 확인: 최소 크기 먼저, 그 다음 이미지 경계 클램핑
+		# (순서 중요: 경계 먼저 하면 최소크기 강제 시 경계 초과 가능)
+		if rc[2] - rc[0] < 4:     rc[2] = rc[0] + 4
+		if rc[3] - rc[1] < 4:     rc[3] = rc[1] + 4
+		if rc[0] < 0:              rc[0] = 0
+		if rc[1] < 0:              rc[1] = 0
+		if rc[2] > self.imsize[0]: rc[2] = self.imsize[0]
+		if rc[3] > self.imsize[1]: rc[3] = self.imsize[1]
+
+		self.bbox[self.selid][3:] = rc
+
+		# 메인 캔버스 동기화 (draw_bbox → update_crop_preview 재진입 시 overlay 만 갱신)
+		self.crop_drag_active = True
+		self.draw_bbox()
+		self.crop_drag_active = False
+
+	def on_crop_mouse_up(self, event):
+		"""crop_canvas 마우스 버튼 업 ─ 저장 or 외부클릭 삭제"""
+		if self.crop_was_dragged and self.selid >= 0:
+			# 드래그로 bbox 수정됨 → 파일 저장 + 라벨 리스트 갱신
+			self.write_bbox()
+			self.update_label_list()
+		elif not self.crop_was_dragged and self.selid >= 0:
+			# 순수 클릭 → bbox 외부 클릭이면 삭제 확인 (기존 동작 유지)
+			if hasattr(self, 'crop_transform') and self.crop_transform is not None:
+				try:
+					_, bx1, by1, bx2, by2 = self._crop_anchor_positions()
+					mx, my = event.x, event.y
+					if not (bx1 <= mx <= bx2 and by1 <= my <= by2):
+						bbox_data = self.bbox[self.selid]
+						if messagebox.askyesno("삭제 확인",
+								f"{bbox_data[1]} 라벨을 삭제하시겠습니까?"):
+							self.remove_bbox_rc()
+							self.update_label_list()
+							self.update_crop_preview()
+				except Exception as e:
+					print(f"on_crop_mouse_up error: {e}")
+
+		self.crop_resize_anchor = None
+		self.crop_was_dragged   = False
+		self.crop_drag_active   = False
 
 	def on_label_list_key(self, event):
 		"""라벨 리스트에서 키보드 입력"""
