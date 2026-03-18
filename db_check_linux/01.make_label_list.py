@@ -123,6 +123,49 @@ def count_jpg_files(path):
         total += sum(1 for f in files if f.lower().endswith(('.jpg', '.jpeg')))
     return total
 
+def collect_image_files_from_source(input_source, keyword=None):
+    """
+    폴더 경로 또는 파일 리스트(.txt)에서 이미지 파일 목록 수집
+
+    Args:
+        input_source: 폴더 경로 또는 이미지 경로가 담긴 .txt 파일 경로
+        keyword: 파일명 필터링 키워드 (None이면 모든 파일 포함)
+
+    Returns:
+        (image_files, filtered_cnt):
+            image_files  - 수집된 이미지 경로 리스트
+            filtered_cnt - 키워드 필터링으로 제외된 파일 수
+    """
+    image_files = []
+    filtered_cnt = 0
+
+    if os.path.isdir(input_source):
+        # 폴더 순회
+        for root, _, files in os.walk(input_source):
+            for file in files:
+                if file.lower().endswith(('.jpg', '.jpeg')):
+                    if keyword and keyword not in file:
+                        filtered_cnt += 1
+                        continue
+                    image_files.append(os.path.join(root, file))
+    elif os.path.isfile(input_source) and input_source.lower().endswith('.txt'):
+        # 파일 리스트 읽기
+        try:
+            with open(input_source, 'r', encoding='utf-8') as f:
+                for line in f:
+                    path = line.strip()
+                    if not path or path.startswith('#'):
+                        continue
+                    if path.lower().endswith(('.jpg', '.jpeg')):
+                        if keyword and keyword not in os.path.basename(path):
+                            filtered_cnt += 1
+                            continue
+                        image_files.append(path)
+        except Exception as e:
+            print(f"파일 리스트 읽기 오류: {e}")
+
+    return image_files, filtered_cnt
+
 def print_class_statistics(obj_annotation, title):
     """클래스별 통계 출력"""
     print(f"\n{title}:")
@@ -217,105 +260,96 @@ def create_complete_dataset_list(input_path, output_path, keyword=None, output_p
         f.write("에러 로그\n")
         f.write("=" * 50 + "\n")
     
-    # 전체 파일 수 계산
-    total_files = count_jpg_files(input_path)
+    # 전체 파일 수 계산 (폴더 또는 파일 리스트 지원)
+    all_files, filtered_cnt = collect_image_files_from_source(input_path, keyword)
+    stats['filtered_cnt'] = filtered_cnt
+    total_files = len(all_files)
     logger.info(f"입력 경로에서 총 {total_files}개의 이미지 파일 발견")
-    
+
     if total_files == 0:
         logger.error("입력 경로에 이미지 파일이 없습니다.")
         return None
-    
+
     # 입력 경로 순회
     logger.info(f"전체 {total_files}개 파일 처리 시작...")
 
-    for root, _, files in os.walk(input_path):
-        for file in files:
-            if not file.lower().endswith(('.jpg', '.jpeg')):
-                continue
+    for full_path in all_files:
+        stats['total_cnt'] += 1
+        progress = (stats['total_cnt'] / total_files) * 100
 
-            # 키워드 필터링 (파일명에 키워드가 포함되어 있는지 확인)
-            if keyword and keyword not in file:
-                stats['filtered_cnt'] += 1
-                continue
+        label_path = get_label_path_from_image(full_path)
 
-            stats['total_cnt'] += 1
-            progress = (stats['total_cnt'] / total_files) * 100
+        # 경로 유효성 검증
+        path_issues = validate_paths(full_path, label_path, logger)
+        if path_issues:
+            stats['path_issues'].extend(path_issues)
+            with open(error_log_path, 'a', encoding='utf-8') as f:
+                f.write(f"경로 문제 - {full_path}:\n")
+                for issue in path_issues:
+                    f.write(f"  {issue}\n")
 
-            # 파일 경로 설정
-            full_path = os.path.join(root, file)
-            label_path = get_label_path_from_image(full_path)
-            
-            # 경로 유효성 검증
-            path_issues = validate_paths(full_path, label_path, logger)
-            if path_issues:
-                stats['path_issues'].extend(path_issues)
-                with open(error_log_path, 'a', encoding='utf-8') as f:
-                    f.write(f"경로 문제 - {full_path}:\n")
-                    for issue in path_issues:
-                        f.write(f"  {issue}\n")
-            
-            # 라벨 파일 존재 확인 및 처리
-            if not os.path.isfile(label_path):
-                if create_empty_label(label_path, logger):
-                    stats['created_labels'] += 1
-                    stats['no_label_cnt'] += 1
-                else:
-                    stats['error_cnt'] += 1
-                    continue
-            
-            # 어노테이션 처리
-            current_annotation = np.zeros(90)
-            try:
-                with open(label_path, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-                    if not lines:  # 빈 파일 처리
-                        stats['empty_label_cnt'] += 1
-                    else:
-                        for line_num, line in enumerate(lines, 1):
-                            line = line.strip()
-                            if not line:
-                                continue
-                            
-                            split_line = line.split()
-                            if len(split_line) < 5:  # YOLO 형식은 최소 5개 값 필요
-                                logger.warning(f"잘못된 어노테이션 형식 {label_path}:{line_num} - {line}")
-                                continue
-                                
-                            try:
-                                class_id = int(float(split_line[0]))
-                                if class_id < 0 or class_id >= 89:  # 클래스 ID 범위 검증
-                                    logger.warning(f"잘못된 클래스 ID {label_path}:{line_num} - {class_id}")
-                                    continue
-                                    
-                                current_annotation[0] += 1  # 전체 어노테이션 카운트
-                                current_annotation[class_id + 1] += 1  # 클래스별 카운트
-                            except (ValueError, IndexError) as e:
-                                logger.warning(f"어노테이션 파싱 오류 {label_path}:{line_num} - {e}")
-                                continue
-                                
-            except Exception as e:
-                logger.error(f"라벨 파일 처리 오류 {label_path}: {e}")
+        # 라벨 파일 존재 확인 및 처리
+        if not os.path.isfile(label_path):
+            if create_empty_label(label_path, logger):
+                stats['created_labels'] += 1
+                stats['no_label_cnt'] += 1
+            else:
                 stats['error_cnt'] += 1
-                with open(error_log_path, 'a', encoding='utf-8') as f:
-                    f.write(f"라벨 처리 오류 - {label_path}: {e}\n")
                 continue
-            
-            # 결과 저장 - UTF-8로 인코딩
-            with open(complete_list_path, 'a', encoding='utf-8') as f:
-                f.write(f"{full_path}\n")
-            
-            stats['obj_annotation'] += current_annotation
-            stats['total_annotations'] += current_annotation[0]
-            
-            # 진행률 표시 (1000개마다 로그)
-            if stats['total_cnt'] % 1000 == 0:
-                logger.info(f"진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files})")
-            
-            print(f"\r진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files}) | "
-                  f"처리: {stats['total_cnt']} | "
-                  f"어노테이션: {stats['total_annotations']} | "
-                  f"라벨 없음: {stats['no_label_cnt']} | "
-                  f"빈 라벨: {stats['empty_label_cnt']}", end='')
+
+        # 어노테이션 처리
+        current_annotation = np.zeros(90)
+        try:
+            with open(label_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                if not lines:  # 빈 파일 처리
+                    stats['empty_label_cnt'] += 1
+                else:
+                    for line_num, line in enumerate(lines, 1):
+                        line = line.strip()
+                        if not line:
+                            continue
+
+                        split_line = line.split()
+                        if len(split_line) < 5:  # YOLO 형식은 최소 5개 값 필요
+                            logger.warning(f"잘못된 어노테이션 형식 {label_path}:{line_num} - {line}")
+                            continue
+
+                        try:
+                            class_id = int(float(split_line[0]))
+                            if class_id < 0 or class_id >= 89:  # 클래스 ID 범위 검증
+                                logger.warning(f"잘못된 클래스 ID {label_path}:{line_num} - {class_id}")
+                                continue
+
+                            current_annotation[0] += 1  # 전체 어노테이션 카운트
+                            current_annotation[class_id + 1] += 1  # 클래스별 카운트
+                        except (ValueError, IndexError) as e:
+                            logger.warning(f"어노테이션 파싱 오류 {label_path}:{line_num} - {e}")
+                            continue
+
+        except Exception as e:
+            logger.error(f"라벨 파일 처리 오류 {label_path}: {e}")
+            stats['error_cnt'] += 1
+            with open(error_log_path, 'a', encoding='utf-8') as f:
+                f.write(f"라벨 처리 오류 - {label_path}: {e}\n")
+            continue
+
+        # 결과 저장 - UTF-8로 인코딩
+        with open(complete_list_path, 'a', encoding='utf-8') as f:
+            f.write(f"{full_path}\n")
+
+        stats['obj_annotation'] += current_annotation
+        stats['total_annotations'] += current_annotation[0]
+
+        # 진행률 표시 (1000개마다 로그)
+        if stats['total_cnt'] % 1000 == 0:
+            logger.info(f"진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files})")
+
+        print(f"\r진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files}) | "
+              f"처리: {stats['total_cnt']} | "
+              f"어노테이션: {stats['total_annotations']} | "
+              f"라벨 없음: {stats['no_label_cnt']} | "
+              f"빈 라벨: {stats['empty_label_cnt']}", end='')
     
     print("\n")  # 진행률 표시 줄바꿈
     
@@ -386,8 +420,9 @@ def find_images_without_class(input_path, output_path, target_class):
         f.write("에러 로그\n")
         f.write("=" * 50 + "\n")
 
-    # 전체 파일 수 계산
-    total_files = count_jpg_files(input_path)
+    # 전체 파일 수 계산 (폴더 또는 파일 리스트 지원)
+    all_files, _ = collect_image_files_from_source(input_path)
+    total_files = len(all_files)
     logger.info(f"입력 경로에서 총 {total_files}개의 이미지 파일 발견")
 
     if total_files == 0:
@@ -397,82 +432,76 @@ def find_images_without_class(input_path, output_path, target_class):
     # 입력 경로 순회
     logger.info(f"전체 {total_files}개 파일 처리 시작...")
 
-    for root, _, files in os.walk(input_path):
-        for file in files:
-            if not file.lower().endswith(('.jpg', '.jpeg')):
-                continue
+    for full_path in all_files:
+        stats['total_cnt'] += 1
+        progress = (stats['total_cnt'] / total_files) * 100
 
-            stats['total_cnt'] += 1
-            progress = (stats['total_cnt'] / total_files) * 100
+        label_path = get_label_path_from_image(full_path)
 
-            # 파일 경로 설정
-            full_path = os.path.join(root, file)
-            label_path = get_label_path_from_image(full_path)
+        # 라벨 파일 존재 확인
+        if not os.path.isfile(label_path):
+            stats['no_label_cnt'] += 1
+            stats['missing_class_cnt'] += 1
+            with open(missing_class_list_path, 'a', encoding='utf-8') as f:
+                f.write(f"{full_path}\n")
+            with open(error_log_path, 'a', encoding='utf-8') as f:
+                f.write(f"라벨 파일 없음 - {full_path}\n")
+            continue
 
-            # 라벨 파일 존재 확인
-            if not os.path.isfile(label_path):
-                stats['no_label_cnt'] += 1
-                stats['missing_class_cnt'] += 1
-                with open(missing_class_list_path, 'a', encoding='utf-8') as f:
-                    f.write(f"{full_path}\n")
-                with open(error_log_path, 'a', encoding='utf-8') as f:
-                    f.write(f"라벨 파일 없음 - {full_path}\n")
-                continue
+        # 라벨 파일에서 클래스 확인
+        has_target_class = False
+        try:
+            with open(label_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                if not lines:  # 빈 파일 처리 (배경 이미지)
+                    stats['empty_label_cnt'] += 1
+                    stats['missing_class_cnt'] += 1
+                    with open(missing_class_list_path, 'a', encoding='utf-8') as mf:
+                        mf.write(f"{full_path}\n")
+                else:
+                    for line_num, line in enumerate(lines, 1):
+                        line = line.strip()
+                        if not line:
+                            continue
 
-            # 라벨 파일에서 클래스 확인
-            has_target_class = False
-            try:
-                with open(label_path, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-                    if not lines:  # 빈 파일 처리 (배경 이미지)
-                        stats['empty_label_cnt'] += 1
-                        stats['missing_class_cnt'] += 1
-                        with open(missing_class_list_path, 'a', encoding='utf-8') as mf:
-                            mf.write(f"{full_path}\n")
+                        split_line = line.split()
+                        if len(split_line) < 5:  # YOLO 형식은 최소 5개 값 필요
+                            logger.warning(f"잘못된 어노테이션 형식 {label_path}:{line_num} - {line}")
+                            continue
+
+                        try:
+                            class_id = int(float(split_line[0]))
+                            if class_id == target_class:
+                                has_target_class = True
+                                break
+                        except (ValueError, IndexError) as e:
+                            logger.warning(f"어노테이션 파싱 오류 {label_path}:{line_num} - {e}")
+                            continue
+
+                    # 결과에 따라 분류
+                    if has_target_class:
+                        stats['has_class_cnt'] += 1
+                        with open(has_class_list_path, 'a', encoding='utf-8') as f:
+                            f.write(f"{full_path}\n")
                     else:
-                        for line_num, line in enumerate(lines, 1):
-                            line = line.strip()
-                            if not line:
-                                continue
+                        stats['missing_class_cnt'] += 1
+                        with open(missing_class_list_path, 'a', encoding='utf-8') as f:
+                            f.write(f"{full_path}\n")
 
-                            split_line = line.split()
-                            if len(split_line) < 5:  # YOLO 형식은 최소 5개 값 필요
-                                logger.warning(f"잘못된 어노테이션 형식 {label_path}:{line_num} - {line}")
-                                continue
+        except Exception as e:
+            logger.error(f"라벨 파일 처리 오류 {label_path}: {e}")
+            stats['error_cnt'] += 1
+            with open(error_log_path, 'a', encoding='utf-8') as f:
+                f.write(f"라벨 처리 오류 - {label_path}: {e}\n")
+            continue
 
-                            try:
-                                class_id = int(float(split_line[0]))
-                                if class_id == target_class:
-                                    has_target_class = True
-                                    break
-                            except (ValueError, IndexError) as e:
-                                logger.warning(f"어노테이션 파싱 오류 {label_path}:{line_num} - {e}")
-                                continue
+        # 진행률 표시 (1000개마다 로그)
+        if stats['total_cnt'] % 1000 == 0:
+            logger.info(f"진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files})")
 
-                        # 결과에 따라 분류
-                        if has_target_class:
-                            stats['has_class_cnt'] += 1
-                            with open(has_class_list_path, 'a', encoding='utf-8') as f:
-                                f.write(f"{full_path}\n")
-                        else:
-                            stats['missing_class_cnt'] += 1
-                            with open(missing_class_list_path, 'a', encoding='utf-8') as f:
-                                f.write(f"{full_path}\n")
-
-            except Exception as e:
-                logger.error(f"라벨 파일 처리 오류 {label_path}: {e}")
-                stats['error_cnt'] += 1
-                with open(error_log_path, 'a', encoding='utf-8') as f:
-                    f.write(f"라벨 처리 오류 - {label_path}: {e}\n")
-                continue
-
-            # 진행률 표시 (1000개마다 로그)
-            if stats['total_cnt'] % 1000 == 0:
-                logger.info(f"진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files})")
-
-            print(f"\r진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files}) | "
-                  f"클래스 없음: {stats['missing_class_cnt']} | "
-                  f"클래스 있음: {stats['has_class_cnt']}", end='')
+        print(f"\r진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files}) | "
+              f"클래스 없음: {stats['missing_class_cnt']} | "
+              f"클래스 있음: {stats['has_class_cnt']}", end='')
 
     print("\n")  # 진행률 표시 줄바꿈
 
@@ -527,8 +556,9 @@ def find_missing_labels(input_path, output_path):
         f.write("# 형식: 이미지경로 | 예상라벨경로\n")
         f.write("=" * 80 + "\n")
 
-    # 전체 파일 수 계산
-    total_files = count_jpg_files(input_path)
+    # 전체 파일 수 계산 (폴더 또는 파일 리스트 지원)
+    all_files, _ = collect_image_files_from_source(input_path)
+    total_files = len(all_files)
     logger.info(f"입력 경로에서 총 {total_files}개의 이미지 파일 발견")
 
     if total_files == 0:
@@ -538,44 +568,41 @@ def find_missing_labels(input_path, output_path):
     # 입력 경로 순회
     logger.info(f"전체 {total_files}개 파일 처리 시작...")
 
-    for root, _, files in os.walk(input_path):
-        for file in files:
-            if not file.lower().endswith(('.jpg', '.jpeg')):
-                continue
+    for full_path in all_files:
+        stats['total_cnt'] += 1
+        progress = (stats['total_cnt'] / total_files) * 100
 
-            stats['total_cnt'] += 1
-            progress = (stats['total_cnt'] / total_files) * 100
+        label_path = get_label_path_from_image(full_path)
 
-            # 파일 경로 설정
-            full_path = os.path.join(root, file)
-            label_path = get_label_path_from_image(full_path)
+        # 디렉토리별 통계를 위한 경로 추출 (폴더 입력이면 상대경로, 파일 리스트면 상위 디렉토리명 사용)
+        if os.path.isdir(input_path):
+            rel_dir = os.path.relpath(os.path.dirname(full_path), input_path)
+        else:
+            rel_dir = os.path.basename(os.path.dirname(full_path))
+        stats['dir_stats'][rel_dir]['total'] += 1
 
-            # 디렉토리별 통계를 위한 상대 경로 추출
-            rel_dir = os.path.relpath(root, input_path)
-            stats['dir_stats'][rel_dir]['total'] += 1
+        # 라벨 파일 존재 확인
+        if not os.path.isfile(label_path):
+            stats['missing_label_cnt'] += 1
+            stats['dir_stats'][rel_dir]['missing'] += 1
 
-            # 라벨 파일 존재 확인
-            if not os.path.isfile(label_path):
-                stats['missing_label_cnt'] += 1
-                stats['dir_stats'][rel_dir]['missing'] += 1
+            with open(missing_label_list_path, 'a', encoding='utf-8') as f:
+                f.write(f"{full_path}\n")
 
-                with open(missing_label_list_path, 'a', encoding='utf-8') as f:
-                    f.write(f"{full_path}\n")
+            with open(missing_label_detail_path, 'a', encoding='utf-8') as f:
+                f.write(f"{full_path} | {label_path}\n")
+        else:
+            stats['has_label_cnt'] += 1
+            with open(has_label_list_path, 'a', encoding='utf-8') as f:
+                f.write(f"{full_path}\n")
 
-                with open(missing_label_detail_path, 'a', encoding='utf-8') as f:
-                    f.write(f"{full_path} | {label_path}\n")
-            else:
-                stats['has_label_cnt'] += 1
-                with open(has_label_list_path, 'a', encoding='utf-8') as f:
-                    f.write(f"{full_path}\n")
+        # 진행률 표시 (1000개마다 로그)
+        if stats['total_cnt'] % 1000 == 0:
+            logger.info(f"진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files})")
 
-            # 진행률 표시 (1000개마다 로그)
-            if stats['total_cnt'] % 1000 == 0:
-                logger.info(f"진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files})")
-
-            print(f"\r진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files}) | "
-                  f"라벨 없음: {stats['missing_label_cnt']} | "
-                  f"라벨 있음: {stats['has_label_cnt']}", end='')
+        print(f"\r진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files}) | "
+              f"라벨 없음: {stats['missing_label_cnt']} | "
+              f"라벨 있음: {stats['has_label_cnt']}", end='')
 
     print("\n")  # 진행률 표시 줄바꿈
 
@@ -649,19 +676,10 @@ def create_limited_dataset(input_path, output_path, num_files, keyword=None, bac
         'filtered_cnt': 0,        # 키워드 필터링으로 제외된 파일 수
     }
     
-    # 전체 파일 리스트 수집
-    all_files = []
+    # 전체 파일 리스트 수집 (폴더 또는 파일 리스트 지원)
     print(f"입력 경로에서 이미지 파일 찾는 중...")
-
-    for root, _, files in os.walk(input_path):
-        for file in files:
-            if file.lower().endswith(('.jpg', '.jpeg')):
-                # 키워드 필터링 (파일명에 키워드가 포함되어 있는지 확인)
-                if keyword and keyword not in file:
-                    stats['filtered_cnt'] += 1
-                    continue
-                full_path = os.path.join(root, file)
-                all_files.append(full_path)
+    all_files, filtered_cnt = collect_image_files_from_source(input_path, keyword)
+    stats['filtered_cnt'] = filtered_cnt
 
     total_available = len(all_files)
     logger.info(f"총 {total_available}개의 이미지 파일 발견")
@@ -1028,14 +1046,9 @@ def create_balanced_class_dataset(input_path, output_path, num_files, target_cla
         'db_distribution': {},  # DB별 분포
     }
 
-    # 1단계: 전체 이미지 수집
+    # 1단계: 전체 이미지 수집 (폴더 또는 파일 리스트 지원)
     print(f"입력 경로에서 이미지 파일 찾는 중...")
-    all_files = []
-    for root, _, files in os.walk(input_path):
-        for file in files:
-            if file.lower().endswith(('.jpg', '.jpeg')):
-                full_path = os.path.join(root, file)
-                all_files.append(full_path)
+    all_files, _ = collect_image_files_from_source(input_path)
 
     total_available = len(all_files)
     logger.info(f"총 {total_available}개의 이미지 파일 발견")
@@ -1323,52 +1336,47 @@ def extract_background_images(input_path, output_path):
     with open(background_list_path, 'w', encoding='utf-8') as f:
         pass
     
-    # 전체 파일 수 계산
-    total_files = count_jpg_files(input_path)
+    # 전체 파일 수 계산 (폴더 또는 파일 리스트 지원)
+    all_files, _ = collect_image_files_from_source(input_path)
+    total_files = len(all_files)
     logger.info(f"입력 경로에서 총 {total_files}개의 이미지 파일 발견")
-    
+
     if total_files == 0:
         logger.error("입력 경로에 이미지 파일이 없습니다.")
         return None
-    
+
     # 입력 경로 순회
-    for root, _, files in os.walk(input_path):
-        for file in files:
-            if not file.lower().endswith(('.jpg', '.jpeg')):
+    for full_path in all_files:
+        stats['total_cnt'] += 1
+        progress = (stats['total_cnt'] / total_files) * 100
+
+        label_path = get_label_path_from_image(full_path)
+
+        # 라벨 파일 존재 확인 및 처리
+        is_background = False
+
+        if not os.path.isfile(label_path):
+            is_background = True
+        else:
+            try:
+                with open(label_path, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                    if not lines:
+                        is_background = True
+            except Exception as e:
+                logger.error(f"라벨 처리 오류 {label_path}: {e}")
+                stats['error_cnt'] += 1
                 continue
-                
-            stats['total_cnt'] += 1
-            progress = (stats['total_cnt'] / total_files) * 100
-            
-            # 파일 경로 설정
-            full_path = os.path.join(root, file)
-            label_path = get_label_path_from_image(full_path)
-            
-            # 라벨 파일 존재 확인 및 처리
-            is_background = False
-            
-            if not os.path.isfile(label_path):
-                is_background = True
-            else:
-                try:
-                    with open(label_path, 'r', encoding='utf-8') as f:
-                        lines = f.readlines()
-                        if not lines:
-                            is_background = True
-                except Exception as e:
-                    logger.error(f"라벨 처리 오류 {label_path}: {e}")
-                    stats['error_cnt'] += 1
-                    continue
-            
-            # 배경 이미지인 경우 목록에 추가
-            if is_background:
-                stats['background_cnt'] += 1
-                with open(background_list_path, 'a', encoding='utf-8') as f:
-                    f.write(f"{full_path}\n")
-            
-            print(f"\r진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files}) | "
-                  f"처리: {stats['total_cnt']} | "
-                  f"배경 이미지: {stats['background_cnt']}", end='')
+
+        # 배경 이미지인 경우 목록에 추가
+        if is_background:
+            stats['background_cnt'] += 1
+            with open(background_list_path, 'a', encoding='utf-8') as f:
+                f.write(f"{full_path}\n")
+
+        print(f"\r진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files}) | "
+              f"처리: {stats['total_cnt']} | "
+              f"배경 이미지: {stats['background_cnt']}", end='')
     
     print("\n")
     logger.info("배경 이미지 추출 완료")
@@ -1387,9 +1395,11 @@ def process_dataset(input_path, output_path, train_rate=0.8, skip_rate=0):
     logger.info(f"데이터셋 처리 시작: {input_path}")
     
     # 전체 파일 수 계산
-    total_files = count_jpg_files(input_path)
+    # 전체 파일 수 계산 (폴더 또는 파일 리스트 지원)
+    all_files, _ = collect_image_files_from_source(input_path)
+    total_files = len(all_files)
     logger.info(f"전체 처리할 파일 수: {total_files}")
-    
+
     # 결과 파일 경로 설정
     val_path = output_path / 'valid.txt'
     train_path = output_path / 'train.txt'
@@ -1401,24 +1411,24 @@ def process_dataset(input_path, output_path, train_rate=0.8, skip_rate=0):
     obj_annotation = np.zeros(90)
     obj_annotation_val = np.zeros(90)
     obj_annotation_train = np.zeros(90)
-    
+
     stats = {
-        'total_cnt': 0,           
-        'skip_cnt': 0,            
-        'error_cnt': 0,           
-        'train_img_cnt': 0,       
-        'valid_img_cnt': 0,       
-        'total_annotations': 0,    
-        'train_annotations': 0,    
+        'total_cnt': 0,
+        'skip_cnt': 0,
+        'error_cnt': 0,
+        'train_img_cnt': 0,
+        'valid_img_cnt': 0,
+        'total_annotations': 0,
+        'train_annotations': 0,
         'valid_annotations': 0,
         'obj_annotation': obj_annotation,
         'obj_annotation_train': obj_annotation_train,
         'obj_annotation_val': obj_annotation_val,
-        'train_no_label': 0,      
-        'valid_no_label': 0,      
-        'train_empty_label': 0,   
-        'valid_empty_label': 0,   
-        'created_labels': 0       
+        'train_no_label': 0,
+        'valid_no_label': 0,
+        'train_empty_label': 0,
+        'valid_empty_label': 0,
+        'created_labels': 0
     }
 
     # train/valid 파일 초기화
@@ -1430,101 +1440,95 @@ def process_dataset(input_path, output_path, train_rate=0.8, skip_rate=0):
         f.write("에러 로그\n")
 
     # 입력 경로 순회
-    for root, _, files in os.walk(input_path):
-        for file in files:
-            if not file.lower().endswith(('.jpg', '.jpeg')):
-                continue
+    for full_path in all_files:
+        stats['total_cnt'] += 1
+        progress = (stats['total_cnt'] / total_files) * 100
 
-            stats['total_cnt'] += 1
-            progress = (stats['total_cnt'] / total_files) * 100
-            
-            # 스킵 처리
-            if random.random() < skip_rate:
-                stats['skip_cnt'] += 1
-                continue
+        # 스킵 처리
+        if random.random() < skip_rate:
+            stats['skip_cnt'] += 1
+            continue
 
-            # 파일 경로 설정
-            full_path = os.path.join(root, file)
-            label_path = get_label_path_from_image(full_path)
+        label_path = get_label_path_from_image(full_path)
 
-            # train/valid 분할 결정
-            is_train = random.random() < train_rate
+        # train/valid 분할 결정
+        is_train = random.random() < train_rate
 
-            # 라벨 파일 존재 확인 및 처리
-            no_label = False
-            empty_label = False
-            
-            if not os.path.isfile(label_path):
-                if create_empty_label(label_path, logger):
-                    stats['created_labels'] += 1
-                    no_label = True
-                    if is_train:
-                        stats['train_no_label'] += 1
-                    else:
-                        stats['valid_no_label'] += 1
+        # 라벨 파일 존재 확인 및 처리
+        no_label = False
+        empty_label = False
+
+        if not os.path.isfile(label_path):
+            if create_empty_label(label_path, logger):
+                stats['created_labels'] += 1
+                no_label = True
+                if is_train:
+                    stats['train_no_label'] += 1
                 else:
-                    stats['error_cnt'] += 1
-                    continue
-
-            # 어노테이션 처리
-            current_annotation = np.zeros(90)
-            try:
-                with open(label_path, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-                    if not lines:  # 빈 파일 처리
-                        empty_label = True
-                        if is_train:
-                            stats['train_empty_label'] += 1
-                        else:
-                            stats['valid_empty_label'] += 1
-                    else:
-                        for line in lines:
-                            split_line = line.strip().split()
-                            if not split_line or len(split_line) < 5:
-                                continue
-                            try:
-                                class_id = int(float(split_line[0]))
-                                if 0 <= class_id < 89:
-                                    current_annotation[0] += 1  # 전체 어노테이션 카운트
-                                    current_annotation[class_id + 1] += 1  # 클래스별 카운트
-                            except (ValueError, IndexError):
-                                continue
-                                
-            except Exception as e:
-                logger.error(f"어노테이션 처리 오류 {label_path}: {e}")
+                    stats['valid_no_label'] += 1
+            else:
                 stats['error_cnt'] += 1
-                with open(error_path, 'a', encoding='utf-8') as f:
-                    f.write(f"{label_path}: {e}\n")
                 continue
 
-            # 결과 저장 - UTF-8 인코딩 추가
-            if is_train:
-                with open(train_path, 'a', encoding='utf-8') as f:
-                    f.write(f"{full_path}\n")
-            else:
-                with open(val_path, 'a', encoding='utf-8') as f:
-                    f.write(f"{full_path}\n")
+        # 어노테이션 처리
+        current_annotation = np.zeros(90)
+        try:
+            with open(label_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                if not lines:  # 빈 파일 처리
+                    empty_label = True
+                    if is_train:
+                        stats['train_empty_label'] += 1
+                    else:
+                        stats['valid_empty_label'] += 1
+                else:
+                    for line in lines:
+                        split_line = line.strip().split()
+                        if not split_line or len(split_line) < 5:
+                            continue
+                        try:
+                            class_id = int(float(split_line[0]))
+                            if 0 <= class_id < 89:
+                                current_annotation[0] += 1  # 전체 어노테이션 카운트
+                                current_annotation[class_id + 1] += 1  # 클래스별 카운트
+                        except (ValueError, IndexError):
+                            continue
 
-            stats['obj_annotation'] += current_annotation
-            if is_train:
-                stats['obj_annotation_train'] += current_annotation
-                stats['train_img_cnt'] += 1
-                stats['train_annotations'] += current_annotation[0]
-            else:
-                stats['obj_annotation_val'] += current_annotation
-                stats['valid_img_cnt'] += 1
-                stats['valid_annotations'] += current_annotation[0]
+        except Exception as e:
+            logger.error(f"어노테이션 처리 오류 {label_path}: {e}")
+            stats['error_cnt'] += 1
+            with open(error_path, 'a', encoding='utf-8') as f:
+                f.write(f"{label_path}: {e}\n")
+            continue
 
-            stats['total_annotations'] = stats['train_annotations'] + stats['valid_annotations']
+        # 결과 저장 - UTF-8 인코딩 추가
+        if is_train:
+            with open(train_path, 'a', encoding='utf-8') as f:
+                f.write(f"{full_path}\n")
+        else:
+            with open(val_path, 'a', encoding='utf-8') as f:
+                f.write(f"{full_path}\n")
 
-            # 진행률 표시
-            if stats['total_cnt'] % 1000 == 0:
-                logger.info(f"진행률: {progress:.1f}%")
-                
-            print(f"\r진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files}) | "
-                  f"학습: {stats['train_img_cnt']}(어노테이션: {stats['train_annotations']}) | "
-                  f"검증: {stats['valid_img_cnt']}(어노테이션: {stats['valid_annotations']}) | "
-                  f"전체 어노테이션: {stats['total_annotations']}", end='')
+        stats['obj_annotation'] += current_annotation
+        if is_train:
+            stats['obj_annotation_train'] += current_annotation
+            stats['train_img_cnt'] += 1
+            stats['train_annotations'] += current_annotation[0]
+        else:
+            stats['obj_annotation_val'] += current_annotation
+            stats['valid_img_cnt'] += 1
+            stats['valid_annotations'] += current_annotation[0]
+
+        stats['total_annotations'] = stats['train_annotations'] + stats['valid_annotations']
+
+        # 진행률 표시
+        if stats['total_cnt'] % 1000 == 0:
+            logger.info(f"진행률: {progress:.1f}%")
+
+        print(f"\r진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files}) | "
+              f"학습: {stats['train_img_cnt']}(어노테이션: {stats['train_annotations']}) | "
+              f"검증: {stats['valid_img_cnt']}(어노테이션: {stats['valid_annotations']}) | "
+              f"전체 어노테이션: {stats['total_annotations']}", end='')
 
     print("\n")  # 진행률 표시 줄바꿈
 
@@ -2058,10 +2062,11 @@ def process_dataset_advanced(input_path, output_path, train_rate=0.8, skip_rate=
     logger = setup_logging(output_path)
     logger.info(f"고급 데이터셋 처리 시작: {input_path}")
     
-    # 전체 파일 수 계산
-    total_files = count_jpg_files(input_path)
+    # 전체 파일 수 계산 (폴더 또는 파일 리스트 지원)
+    all_files, _ = collect_image_files_from_source(input_path)
+    total_files = len(all_files)
     logger.info(f"전체 처리 대상 파일 수: {total_files}")
-    
+
     # 결과 파일 경로 설정
     val_path = output_path / 'valid.txt'
     train_path = output_path / 'train.txt'
@@ -2074,18 +2079,18 @@ def process_dataset_advanced(input_path, output_path, train_rate=0.8, skip_rate=
     obj_annotation = np.zeros(90)
     obj_annotation_val = np.zeros(90)
     obj_annotation_train = np.zeros(90)
-    
+
     stats = {
-        'total_cnt': 0,           
-        'processed_cnt': 0,       
-        'skip_cnt': 0,            
-        'filtered_cnt': 0,        
-        'excluded_cnt': 0,        
-        'error_cnt': 0,           
-        'train_img_cnt': 0,       
-        'valid_img_cnt': 0,       
-        'total_annotations': 0,    
-        'train_annotations': 0,    
+        'total_cnt': 0,
+        'processed_cnt': 0,
+        'skip_cnt': 0,
+        'filtered_cnt': 0,
+        'excluded_cnt': 0,
+        'error_cnt': 0,
+        'train_img_cnt': 0,
+        'valid_img_cnt': 0,
+        'total_annotations': 0,
+        'train_annotations': 0,
         'valid_annotations': 0,
         'obj_annotation': obj_annotation,
         'obj_annotation_train': obj_annotation_train,
@@ -2111,147 +2116,141 @@ def process_dataset_advanced(input_path, output_path, train_rate=0.8, skip_rate=
         pass
 
     # 입력 경로 순회
-    for root, _, files in os.walk(input_path):
-        for file in files:
-            if not file.lower().endswith(('.jpg', '.jpeg')):
-                continue
+    for full_path in all_files:
+        stats['total_cnt'] += 1
+        progress = (stats['total_cnt'] / total_files) * 100
 
-            stats['total_cnt'] += 1
-            progress = (stats['total_cnt'] / total_files) * 100
-            
-            # 스킵 처리
-            if random.random() < skip_rate:
-                stats['skip_cnt'] += 1
-                continue
+        # 스킵 처리
+        if random.random() < skip_rate:
+            stats['skip_cnt'] += 1
+            continue
 
-            # 파일 경로 설정
-            full_path = os.path.join(root, file)
-            label_path = get_label_path_from_image(full_path)
+        label_path = get_label_path_from_image(full_path)
 
-            # 라벨 파일 존재 확인 및 처리
-            no_label = False
-            empty_label = False
-            
-            if not os.path.isfile(label_path):
-                if create_empty_label(label_path, logger):
-                    stats['created_labels'] += 1
-                    no_label = True
-                else:
-                    stats['error_cnt'] += 1
-                    continue
+        # 라벨 파일 존재 확인 및 처리
+        no_label = False
+        empty_label = False
 
-            # 어노테이션 처리 및 필터링 조건 검사
-            current_annotation = np.zeros(90)
-            contains_target_class = False
-            
-            try:
-                with open(label_path, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-                    if not lines:
-                        empty_label = True
-                    else:
-                        for line in lines:
-                            split_line = line.strip().split()
-                            if not split_line or len(split_line) < 5:
-                                continue
-                            try:
-                                class_id = int(float(split_line[0]))
-                                if 0 <= class_id < 89:
-                                    current_annotation[0] += 1
-                                    current_annotation[class_id + 1] += 1
-                                    
-                                    # 대상 클래스 포함 여부 확인
-                                    if filter_by_class and class_id in target_classes:
-                                        contains_target_class = True
-                                        stats['target_class_annotations'] += 1
-                            except (ValueError, IndexError):
-                                continue
-            except Exception as e:
-                logger.error(f"어노테이션 처리 오류 {label_path}: {e}")
+        if not os.path.isfile(label_path):
+            if create_empty_label(label_path, logger):
+                stats['created_labels'] += 1
+                no_label = True
+            else:
                 stats['error_cnt'] += 1
                 continue
-            
-            # 필터링 조건 적용
-            include_file = True
-            
-            # 1. 클래스 필터링
-            if filter_by_class and not combined_filter:
-                include_file = contains_target_class
-                if contains_target_class:
-                    stats['class_filtered'] += 1
-            
-            # 2. 배경 이미지 제외
-            if exclude_background and not combined_filter:
-                if empty_label or current_annotation[0] == 0:
-                    include_file = False
-                    stats['background_excluded'] += 1
-            
-            # 3. 복합 필터링 (클래스 필터링 + 배경 제외)
-            if combined_filter:
-                include_file = contains_target_class and not (empty_label or current_annotation[0] == 0)
-                if contains_target_class:
-                    stats['class_filtered'] += 1
-                if empty_label or current_annotation[0] == 0:
-                    stats['background_excluded'] += 1
-            
-            # 필터링 결과에 따라 처리
-            if include_file:
-                stats['filtered_cnt'] += 1
-                stats['processed_cnt'] += 1
-                
-                # 필터링된 전체 목록에 추가
-                with open(filtered_path, 'a', encoding='utf-8') as f:
+
+        # 어노테이션 처리 및 필터링 조건 검사
+        current_annotation = np.zeros(90)
+        contains_target_class = False
+
+        try:
+            with open(label_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                if not lines:
+                    empty_label = True
+                else:
+                    for line in lines:
+                        split_line = line.strip().split()
+                        if not split_line or len(split_line) < 5:
+                            continue
+                        try:
+                            class_id = int(float(split_line[0]))
+                            if 0 <= class_id < 89:
+                                current_annotation[0] += 1
+                                current_annotation[class_id + 1] += 1
+
+                                # 대상 클래스 포함 여부 확인
+                                if filter_by_class and class_id in target_classes:
+                                    contains_target_class = True
+                                    stats['target_class_annotations'] += 1
+                        except (ValueError, IndexError):
+                            continue
+        except Exception as e:
+            logger.error(f"어노테이션 처리 오류 {label_path}: {e}")
+            stats['error_cnt'] += 1
+            continue
+
+        # 필터링 조건 적용
+        include_file = True
+
+        # 1. 클래스 필터링
+        if filter_by_class and not combined_filter:
+            include_file = contains_target_class
+            if contains_target_class:
+                stats['class_filtered'] += 1
+
+        # 2. 배경 이미지 제외
+        if exclude_background and not combined_filter:
+            if empty_label or current_annotation[0] == 0:
+                include_file = False
+                stats['background_excluded'] += 1
+
+        # 3. 복합 필터링 (클래스 필터링 + 배경 제외)
+        if combined_filter:
+            include_file = contains_target_class and not (empty_label or current_annotation[0] == 0)
+            if contains_target_class:
+                stats['class_filtered'] += 1
+            if empty_label or current_annotation[0] == 0:
+                stats['background_excluded'] += 1
+
+        # 필터링 결과에 따라 처리
+        if include_file:
+            stats['filtered_cnt'] += 1
+            stats['processed_cnt'] += 1
+
+            # 필터링된 전체 목록에 추가
+            with open(filtered_path, 'a', encoding='utf-8') as f:
+                f.write(f"{full_path}\n")
+
+            # train/valid 분할 결정
+            is_train = random.random() < train_rate
+
+            # 라벨 상태 통계 업데이트
+            if no_label:
+                if is_train:
+                    stats['train_no_label'] += 1
+                else:
+                    stats['valid_no_label'] += 1
+
+            if empty_label:
+                if is_train:
+                    stats['train_empty_label'] += 1
+                else:
+                    stats['valid_empty_label'] += 1
+
+            # 결과 저장
+            if is_train:
+                with open(train_path, 'a', encoding='utf-8') as f:
                     f.write(f"{full_path}\n")
-                
-                # train/valid 분할 결정
-                is_train = random.random() < train_rate
-                
-                # 라벨 상태 통계 업데이트
-                if no_label:
-                    if is_train:
-                        stats['train_no_label'] += 1
-                    else:
-                        stats['valid_no_label'] += 1
-                
-                if empty_label:
-                    if is_train:
-                        stats['train_empty_label'] += 1
-                    else:
-                        stats['valid_empty_label'] += 1
-                
-                # 결과 저장
-                if is_train:
-                    with open(train_path, 'a', encoding='utf-8') as f:
-                        f.write(f"{full_path}\n")
-                else:
-                    with open(val_path, 'a', encoding='utf-8') as f:
-                        f.write(f"{full_path}\n")
-                
-                # 어노테이션 통계 업데이트
-                stats['obj_annotation'] += current_annotation
-                if is_train:
-                    stats['obj_annotation_train'] += current_annotation
-                    stats['train_img_cnt'] += 1
-                    stats['train_annotations'] += current_annotation[0]
-                else:
-                    stats['obj_annotation_val'] += current_annotation
-                    stats['valid_img_cnt'] += 1
-                    stats['valid_annotations'] += current_annotation[0]
-                
-                stats['total_annotations'] = stats['train_annotations'] + stats['valid_annotations']
             else:
-                # 제외된 파일 목록에 추가
-                stats['excluded_cnt'] += 1
-                with open(excluded_path, 'a', encoding='utf-8') as f:
+                with open(val_path, 'a', encoding='utf-8') as f:
                     f.write(f"{full_path}\n")
-            
-            # 진행 상황 출력
-            print(f"\r진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files}) | "
-                  f"처리: {stats['processed_cnt']} | "
-                  f"필터링: {stats['filtered_cnt']} | "
-                  f"제외: {stats['excluded_cnt']} | "
-                  f"학습: {stats['train_img_cnt']} | "
-                  f"검증: {stats['valid_img_cnt']}", end='')
+
+            # 어노테이션 통계 업데이트
+            stats['obj_annotation'] += current_annotation
+            if is_train:
+                stats['obj_annotation_train'] += current_annotation
+                stats['train_img_cnt'] += 1
+                stats['train_annotations'] += current_annotation[0]
+            else:
+                stats['obj_annotation_val'] += current_annotation
+                stats['valid_img_cnt'] += 1
+                stats['valid_annotations'] += current_annotation[0]
+
+            stats['total_annotations'] = stats['train_annotations'] + stats['valid_annotations']
+        else:
+            # 제외된 파일 목록에 추가
+            stats['excluded_cnt'] += 1
+            with open(excluded_path, 'a', encoding='utf-8') as f:
+                f.write(f"{full_path}\n")
+
+        # 진행 상황 출력
+        print(f"\r진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files}) | "
+              f"처리: {stats['processed_cnt']} | "
+              f"필터링: {stats['filtered_cnt']} | "
+              f"제외: {stats['excluded_cnt']} | "
+              f"학습: {stats['train_img_cnt']} | "
+              f"검증: {stats['valid_img_cnt']}", end='')
 
     print("\n")  # 진행률 표시 줄바꿈
 
@@ -2321,6 +2320,23 @@ def test_path_generation():
         print(f"라벨:   {label_path}")
         print("-" * 80)
 
+def validate_input_source(input_source):
+    """
+    입력 경로/파일 유효성 검증
+
+    Returns:
+        (is_valid, error_msg):
+            is_valid  - True면 유효한 입력
+            error_msg - 오류 메시지 (is_valid=False 일 때만 의미 있음)
+    """
+    if not os.path.exists(input_source):
+        return False, f"오류: 입력한 경로가 존재하지 않습니다: {input_source}"
+    if os.path.isfile(input_source):
+        if not input_source.lower().endswith('.txt'):
+            return False, f"오류: 파일 리스트 입력은 .txt 파일이어야 합니다: {input_source}"
+    return True, ""
+
+
 def main():
     try:
         # 경로 생성 테스트 실행
@@ -2347,14 +2363,15 @@ def main():
             
             if choice == '1':
                 # 데이터셋 처리 기능
-                input_path = input("입력 데이터셋 경로를 입력하세요 (기본 경로: Enter): ")
+                input_path = input("입력 데이터셋 경로 또는 파일 리스트(.txt)를 입력하세요 (기본 경로: Enter): ")
                 if not input_path:
                     input_path = get_default_input_path()
-                
-                if not os.path.exists(input_path):
-                    print(f"오류: 입력한 경로가 존재하지 않습니다: {input_path}")
+
+                is_valid, err_msg = validate_input_source(input_path)
+                if not is_valid:
+                    print(err_msg)
                     continue
-                
+
                 output_path = input("출력 저장 경로를 입력하세요 (기본 경로: Enter): ")
                 if not output_path:
                     output_path = get_default_output_path(input_path)
@@ -2400,14 +2417,15 @@ def main():
                     
             elif choice == '2':
                 # 제한된 데이터셋 생성 기능
-                input_path = input("입력 데이터셋 경로를 입력하세요 (기본 경로: Enter): ")
+                input_path = input("입력 데이터셋 경로 또는 파일 리스트(.txt)를 입력하세요 (기본 경로: Enter): ")
                 if not input_path:
                     input_path = get_default_input_path()
-                
-                if not os.path.exists(input_path):
-                    print(f"오류: 입력한 경로가 존재하지 않습니다: {input_path}")
+
+                is_valid, err_msg = validate_input_source(input_path)
+                if not is_valid:
+                    print(err_msg)
                     continue
-                
+
                 output_path = input("출력 저장 경로를 입력하세요 (기본 경로: Enter): ")
                 if not output_path:
                     output_path = get_default_output_path(input_path)
@@ -2479,16 +2497,21 @@ def main():
 
             elif choice == '3':
                 # 전체 데이터셋 리스트 생성 기능
-                input_path = input("입력 데이터셋 경로를 입력하세요 (기본 경로: Enter): ")
+                input_path = input("입력 데이터셋 경로 또는 파일 리스트(.txt)를 입력하세요 (기본 경로: Enter): ")
                 if not input_path:
                     input_path = get_default_input_path()
 
-                if not os.path.exists(input_path):
-                    print(f"오류: 입력한 경로가 존재하지 않습니다: {input_path}")
+                is_valid, err_msg = validate_input_source(input_path)
+                if not is_valid:
+                    print(err_msg)
                     continue
 
-                # 여러 폴더 일괄 처리 옵션
-                multi_folder = input("하위 폴더들을 각각 처리하시겠습니까? (y/n, 기본값 n: Enter): ").strip().lower()
+                # 여러 폴더 일괄 처리 옵션 (파일 리스트 입력시 비활성화)
+                is_file_list = os.path.isfile(input_path)
+                if is_file_list:
+                    multi_folder = 'n'
+                else:
+                    multi_folder = input("하위 폴더들을 각각 처리하시겠습니까? (y/n, 기본값 n: Enter): ").strip().lower()
 
                 if multi_folder == 'y':
                     # 하위 폴더 목록 조회
@@ -2651,12 +2674,13 @@ def main():
                     
             elif choice == '5':
                 # 배경 이미지 추출 기능
-                input_path = input("입력 데이터셋 경로를 입력하세요 (기본 경로: Enter): ")
+                input_path = input("입력 데이터셋 경로 또는 파일 리스트(.txt)를 입력하세요 (기본 경로: Enter): ")
                 if not input_path:
                     input_path = get_default_input_path()
-                
-                if not os.path.exists(input_path):
-                    print(f"오류: 입력한 경로가 존재하지 않습니다: {input_path}")
+
+                is_valid, err_msg = validate_input_source(input_path)
+                if not is_valid:
+                    print(err_msg)
                     continue
                 
                 output_path = input("출력 저장 경로를 입력하세요 (기본 경로: Enter): ")
@@ -2728,14 +2752,15 @@ def main():
                     
             elif choice == '7':
                 # 고급 데이터셋 처리 기능
-                input_path = input("입력 데이터셋 경로를 입력하세요 (기본 경로: Enter): ")
+                input_path = input("입력 데이터셋 경로 또는 파일 리스트(.txt)를 입력하세요 (기본 경로: Enter): ")
                 if not input_path:
                     input_path = get_default_input_path()
-                
-                if not os.path.exists(input_path):
-                    print(f"오류: 입력한 경로가 존재하지 않습니다: {input_path}")
+
+                is_valid, err_msg = validate_input_source(input_path)
+                if not is_valid:
+                    print(err_msg)
                     continue
-                
+
                 output_path = input("출력 저장 경로를 입력하세요 (기본 경로: Enter): ")
                 if not output_path:
                     output_path = get_default_output_path(input_path)
@@ -2886,12 +2911,13 @@ def main():
 
             elif choice == '10':
                 # 파일명 키워드 필터링 리스트 생성
-                input_path = input("입력 데이터셋 경로를 입력하세요 (기본 경로: Enter): ")
+                input_path = input("입력 데이터셋 경로 또는 파일 리스트(.txt)를 입력하세요 (기본 경로: Enter): ")
                 if not input_path:
                     input_path = get_default_input_path()
 
-                if not os.path.exists(input_path):
-                    print(f"오류: 입력한 경로가 존재하지 않습니다: {input_path}")
+                is_valid, err_msg = validate_input_source(input_path)
+                if not is_valid:
+                    print(err_msg)
                     continue
 
                 keyword = input("필터링할 키워드를 입력하세요 (한글/특수문자 가능): ").strip()
@@ -2926,12 +2952,13 @@ def main():
 
             elif choice == '11':
                 # 특정 클래스 없는 파일 리스트 생성
-                input_path = input("입력 데이터셋 경로를 입력하세요 (기본 경로: Enter): ")
+                input_path = input("입력 데이터셋 경로 또는 파일 리스트(.txt)를 입력하세요 (기본 경로: Enter): ")
                 if not input_path:
                     input_path = get_default_input_path()
 
-                if not os.path.exists(input_path):
-                    print(f"오류: 입력한 경로가 존재하지 않습니다: {input_path}")
+                is_valid, err_msg = validate_input_source(input_path)
+                if not is_valid:
+                    print(err_msg)
                     continue
 
                 try:
@@ -2973,12 +3000,13 @@ def main():
 
             elif choice == '12':
                 # 클래스 분포 균등화 데이터셋 생성
-                input_path = input("입력 데이터셋 경로를 입력하세요 (기본 경로: Enter): ")
+                input_path = input("입력 데이터셋 경로 또는 파일 리스트(.txt)를 입력하세요 (기본 경로: Enter): ")
                 if not input_path:
                     input_path = get_default_input_path()
 
-                if not os.path.exists(input_path):
-                    print(f"오류: 입력한 경로가 존재하지 않습니다: {input_path}")
+                is_valid, err_msg = validate_input_source(input_path)
+                if not is_valid:
+                    print(err_msg)
                     continue
 
                 output_path = input("출력 저장 경로를 입력하세요 (기본 경로: Enter): ")
@@ -3052,12 +3080,13 @@ def main():
 
             elif choice == '13':
                 # 라벨 미존재 이미지 리스트 생성
-                input_path = input("입력 데이터셋 경로를 입력하세요 (기본 경로: Enter): ")
+                input_path = input("입력 데이터셋 경로 또는 파일 리스트(.txt)를 입력하세요 (기본 경로: Enter): ")
                 if not input_path:
                     input_path = get_default_input_path()
 
-                if not os.path.exists(input_path):
-                    print(f"오류: 입력한 경로가 존재하지 않습니다: {input_path}")
+                is_valid, err_msg = validate_input_source(input_path)
+                if not is_valid:
+                    print(err_msg)
                     continue
 
                 output_path = input("출력 저장 경로를 입력하세요 (기본 경로: Enter): ")
