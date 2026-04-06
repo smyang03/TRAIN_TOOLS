@@ -1666,7 +1666,7 @@ class MainApp:
 				self.imlist = get_list_jpg(cdir)
 				self.imlist += get_list_jpg(cdir + '/TP')
 				self.imlist += get_list_jpg(cdir + '/FP')
-				self.imlist = [p[1] for p in natsort.natsorted([[os.path.basename(f), f] for f in self.imlist])]
+				self.imlist = natsort.natsorted(self.imlist, key=lambda f: (os.path.dirname(f), os.path.basename(f)))
 				labelsname = cdir.replace('JPEGImages','labels')
 				if not(os.path.isdir(labelsname + '/TP')):
 					os.makedirs(os.path.join(labelsname + '/TP'))
@@ -1909,7 +1909,7 @@ class MainApp:
 							
 							# 존재하는 파일만 다시 저장
 							with open(dirname, "wt", encoding=encoding) as f:
-								self.imlist = [p[1] for p in natsort.natsorted([[os.path.basename(f), f] for f in self.imlist])]
+								self.imlist = natsort.natsorted(self.imlist, key=lambda f: (os.path.dirname(f), os.path.basename(f)))
 								for existfilename in self.imlist:
 									existfilename = existfilename.replace('//192.168.79.253/','/s_mnt/253/')
 									existfilename = existfilename.replace('.png','.png\n')
@@ -2019,7 +2019,7 @@ class MainApp:
 					self.imlist = get_list_jpg(new_dir)
 					self.imlist += get_list_jpg(new_dir + '/TP')
 					self.imlist += get_list_jpg(new_dir + '/FP')
-					self.imlist = [p[1] for p in natsort.natsorted([[os.path.basename(f), f] for f in self.imlist])]
+					self.imlist = natsort.natsorted(self.imlist, key=lambda f: (os.path.dirname(f), os.path.basename(f)))
 					
 					# TP/FP 폴더 생성
 					labels_dir = new_dir.replace('JPEGImages','labels')
