@@ -2,6 +2,7 @@
 유틸리티 모듈 - 경로 변환, 인코딩 감지, IoU 계산 등 공통 함수
 """
 import os
+import re
 
 
 def detect_file_encoding(file_path):
@@ -71,7 +72,7 @@ def get_image_path_from_label(label_path):
     return img_path
 
 
-def make_path(path):
+def _legacy_make_path_unused(path):
     """경로에서 파일명을 안전하게 추출합니다."""
     if not path or not isinstance(path, str):
         return ""
@@ -86,6 +87,34 @@ def make_path(path):
         return basename
     except Exception:
         return os.path.basename(path) if path else ""
+
+
+def make_path(path):
+    """백업 경로 충돌을 피하기 위해 디렉터리 구조를 보존한 안전한 상대 경로를 만듭니다."""
+    if not path or not isinstance(path, str):
+        return ""
+
+    try:
+        normalized_path = os.path.normpath(path)
+        drive, tail = os.path.splitdrive(normalized_path)
+        drive_part = drive.replace(":", "").replace("\\", "_").replace("/", "_")
+
+        raw_parts = re.split(r"[\\/]+", tail.strip("\\/"))
+        safe_parts = [drive_part] if drive_part else []
+        invalid_chars = '<>:"|?*'
+
+        for part in raw_parts:
+            if not part or part in {".", ".."}:
+                continue
+            safe_part = part
+            for char in invalid_chars:
+                safe_part = safe_part.replace(char, "_")
+            safe_parts.append(safe_part)
+
+        return os.path.join(*safe_parts) if safe_parts else ""
+    except Exception:
+        fallback = os.path.basename(path) if path else ""
+        return fallback.replace(":", "_")
 
 
 def calculate_iou(box1, box2):

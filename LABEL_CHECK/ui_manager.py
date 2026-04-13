@@ -204,7 +204,7 @@ def setup_ui(viewer):
 
     viewer.box_image_var = tk.IntVar(value=1)
     viewer.box_image_checkbox = tk.Checkbutton(
-        control_frame, text="Box Images", variable=viewer.box_image_var, onvalue=1, offvalue=0, command=viewer.update_display
+        control_frame, text="Box Images", variable=viewer.box_image_var, onvalue=1, offvalue=0, command=viewer.on_box_image_mode_changed
     )
     viewer.box_image_checkbox.pack(side=tk.LEFT, padx=2)
     viewer.box_image_checkbox.select()
@@ -224,10 +224,13 @@ def setup_ui(viewer):
     selection_frame = tk.Frame(control_frame, bg=PALETTE["panel"])
     selection_frame.pack(side=tk.LEFT, padx=6)
     viewer.selection_state = tk.BooleanVar(value=False)
+    viewer.selection_toggle_texts = {"select_all": "전체 선택", "clear": "선택 해제"}
     viewer.selection_toggle_button = tk.Button(
         selection_frame, text="전체 선택", command=viewer.toggle_all_selection, width=10
     )
     viewer.selection_toggle_button.pack(side=tk.LEFT)
+    viewer.selection_toggle_texts = {"select_all": "Select All", "clear": "Clear Selection"}
+    viewer.selection_toggle_button.config(text=viewer.selection_toggle_texts["select_all"])
     _style_button(viewer.selection_toggle_button, "primary", width=10)
     viewer.root.bind("<Control-a>", lambda e: viewer.toggle_all_selection())
 
@@ -263,6 +266,7 @@ def setup_ui(viewer):
     viewer.class_selector.trace_add("write", viewer.on_class_changed)
     viewer.overlap_class_selector.trace_add("write", lambda *args: viewer.data_mgr.reset_overlap_cache())
     viewer.overlap_class_selector.trace_add("write", viewer.on_overlap_selector_changed)
+    viewer.overlap_filter_var.trace_add("write", lambda *args: viewer._clear_selection_for_view_change())
     viewer.root.bind("<Button-1>", viewer.handle_left_click)
 
     setup_keyboard_events(viewer)

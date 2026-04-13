@@ -61,6 +61,7 @@ class ImageViewer:
         # 선택 상태
         self.selected_image_labels = []
         self.selected_label_info = []
+        self.selected_full_image_labels = []
         self.checklist = []
 
         # 겹침 필터
@@ -162,24 +163,37 @@ class ImageViewer:
 
     def on_class_selector_changed(self, *args):
         if not self._updating_display:
+            self._clear_selection_for_view_change()
             self.update_display()
 
     def on_overlap_selector_changed(self, *args):
         if not self._updating_display:
+            self._clear_selection_for_view_change()
             self.update_display()
 
     def on_class_changed(self, *args):
         pass  # trace_add 콜백 (on_class_selector_changed와 중복 방지)
 
+    def on_box_image_mode_changed(self):
+        """뷰 모드가 바뀌면 숨은 selection을 정리합니다."""
+        self._clear_selection_for_view_change()
+        self.update_display()
+
+    def on_overlap_filter_changed(self):
+        """overlap filter 변경 시 현재 화면 기준으로 selection을 리셋합니다."""
+        self._clear_selection_for_view_change()
+        self.update_display()
+
+    def _clear_selection_for_view_change(self):
+        """화면 구성이 바뀌는 경우 남아있는 selection을 비웁니다."""
+        if self.selected_image_labels or self.selected_label_info or self.selected_full_image_labels:
+            self.deselect_all_images()
+
     def toggle_all_selection(self):
         if self.selected_image_labels:
             self.deselect_all_images()
-            self.selection_toggle_button.config(text="전체 선택")
-            self.selection_state.set(False)
         else:
             self.select_all_images()
-            self.selection_toggle_button.config(text="전체 해제")
-            self.selection_state.set(True)
 
     def show_status_message(self, message, duration=3000):
         if hasattr(self, 'status_bar'):
@@ -189,6 +203,7 @@ class ImageViewer:
     def update_iou_value(self):
         self.iou_value_label.config(text=f"{self.iou_threshold_var.get():.2f}")
         self.data_mgr.reset_overlap_cache()
+        self._clear_selection_for_view_change()
         self.update_display()
 
     def on_canvas_configure(self, event):
@@ -237,7 +252,7 @@ class ImageViewer:
             self.canvas.yview_scroll(-1 * (event.delta // 120), "units")
 
     def handle_left_click(self, event):
-        if event.widget != self.root and isinstance(event.widget, tk.Label) and hasattr(event.widget, 'img_path'):
+        if event.widget != self.root and isinstance(event.widget, tk.Label) and hasattr(event.widget, 'label_path'):
             return
         if self.preview_window and self.preview_window.winfo_exists():
             self.preview_window.destroy()
@@ -286,6 +301,7 @@ class ImageViewer:
 
         self.selected_image_labels = []
         self.selected_label_info = []
+        self.selected_full_image_labels = []
         for widget in self.checklist:
             if widget.winfo_exists():
                 widget.destroy()
@@ -841,11 +857,13 @@ class ImageViewer:
 
     def next_page(self):
         if self.data_mgr.current_page < self.data_mgr.total_pages - 1:
+            self._clear_selection_for_view_change()
             self.data_mgr.current_page += 1
             self.update_display()
 
     def prev_page(self):
         if self.data_mgr.current_page > 0:
+            self._clear_selection_for_view_change()
             self.data_mgr.current_page -= 1
             self.update_display()
 
@@ -853,6 +871,7 @@ class ImageViewer:
         try:
             entered = int(self.page_entry.get())
             if 1 <= entered <= self.data_mgr.total_pages:
+                self._clear_selection_for_view_change()
                 self.data_mgr.current_page = entered - 1
                 self.update_display()
             else:
@@ -867,6 +886,7 @@ class ImageViewer:
         try:
             new_size = int(self.page_size_entry.get())
             if new_size > 0:
+                self._clear_selection_for_view_change()
                 self.data_mgr.page_size = new_size
                 self.data_mgr.current_page = 0
                 self.update_display()
@@ -898,12 +918,18 @@ class ImageViewer:
                 widget.config(highlightbackground="white", highlightthickness=4)
         self.selected_image_labels.clear()
         self.selected_label_info.clear()
+        self.selected_full_image_labels.clear()
         self.checklist.clear()
         self.update_selection_info()
 
     def update_selection_info(self):
         count = len(self.selected_image_labels)
         boxes = sum(len(info['boxes']) for info in self.selected_label_info)
+        has_selection = count > 0
+        self.selection_state.set(has_selection)
+        if hasattr(self, 'selection_toggle_button') and hasattr(self, 'selection_toggle_texts'):
+            button_text = self.selection_toggle_texts["clear"] if has_selection else self.selection_toggle_texts["select_all"]
+            self.selection_toggle_button.config(text=button_text)
         if boxes > 0:
             self.selection_info_label.config(text=f"Selected: {count} images, {boxes} boxes")
         else:
@@ -911,10 +937,12 @@ class ImageViewer:
         self._update_dataset_info()
 
     def _get_selected_info(self, label_path):
-        return next((info for info in self.selected_label_info if info['path'] == label_path), None)
+        normalized_path = os.path.normpath(label_path)
+        return next((info for info in self.selected_label_info if os.path.normpath(info['path']) == normalized_path), None)
 
     def _has_path_selection(self, label_path):
-        return self._get_selected_info(label_path) is not None
+        normalized_path = os.path.normpath(label_path)
+        return any(os.path.normpath(path) == normalized_path for path in self.selected_full_image_labels)
 
     def _is_box_selected(self, label_path, line_idx):
         info = self._get_selected_info(label_path)
@@ -923,10 +951,35 @@ class ImageViewer:
         return any(box.get('line_idx') == line_idx for box in info['boxes'])
 
     def _sync_selected_image_labels(self):
-        self.selected_image_labels = [info['path'] for info in self.selected_label_info]
+        combined_paths = []
+        seen_paths = set()
+
+        for path in self.selected_full_image_labels:
+            normalized_path = os.path.normpath(path)
+            if normalized_path in seen_paths:
+                continue
+            combined_paths.append(path)
+            seen_paths.add(normalized_path)
+
+        for info in self.selected_label_info:
+            normalized_path = os.path.normpath(info['path'])
+            if normalized_path in seen_paths:
+                continue
+            combined_paths.append(info['path'])
+            seen_paths.add(normalized_path)
+
+        self.selected_image_labels = combined_paths
 
     def _remove_selection_for_path(self, label_path):
-        self.selected_label_info = [info for info in self.selected_label_info if info['path'] != label_path]
+        normalized_path = os.path.normpath(label_path)
+        self.selected_full_image_labels = [
+            path for path in self.selected_full_image_labels
+            if os.path.normpath(path) != normalized_path
+        ]
+        self.selected_label_info = [
+            info for info in self.selected_label_info
+            if os.path.normpath(info['path']) != normalized_path
+        ]
         self._sync_selected_image_labels()
 
     def _remove_selected_box(self, label_path, line_idx):
@@ -942,9 +995,7 @@ class ImageViewer:
         """위젯에 연결된 라벨 정보를 selected_label_info에 저장합니다."""
         label_path = widget.label_path
         line_idx = getattr(widget, 'line_idx', None)
-        selected_class = self.class_selector.get()
-
-        existing = next((info for info in self.selected_label_info if info['path'] == label_path), None)
+        existing = self._get_selected_info(label_path)
 
         if line_idx is not None:
             # 특정 박스
@@ -967,33 +1018,10 @@ class ImageViewer:
                         self.selected_label_info.append({'path': label_path, 'boxes': [box]})
         else:
             # 전체 이미지의 현재 클래스 박스
-            if selected_class != "Select Class":
-                class_idx = int(float(selected_class))
-                lines = self.data_mgr.get_label_data(label_path)
-                boxes = []
-                for li, line in enumerate(lines):
-                    parts = line.strip().split()
-                    if len(parts) >= 5:
-                        try:
-                            ci = int(float(parts[0]))
-                            if ci == class_idx:
-                                boxes.append({
-                                    'class_id': ci,
-                                    'x_center': float(parts[1]),
-                                    'y_center': float(parts[2]),
-                                    'width': float(parts[3]),
-                                    'height': float(parts[4]),
-                                    'line_idx': li
-                                })
-                        except (ValueError, IndexError):
-                            continue
-                if boxes:
-                    if existing:
-                        for box in boxes:
-                            if not any(b.get('line_idx') == box['line_idx'] for b in existing['boxes']):
-                                existing['boxes'].append(box)
-                    else:
-                        self.selected_label_info.append({'path': label_path, 'boxes': boxes})
+            if not self._has_path_selection(label_path):
+                self.selected_full_image_labels.append(label_path)
+
+        self._sync_selected_image_labels()
 
     # ── 이미지 클릭 ──
 

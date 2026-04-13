@@ -33,6 +33,113 @@ def _require_box_mode_for_label_edit(viewer):
     return False
 
 
+def _mark_modified(viewer, change_type, label_path, line_indices=None):
+    """파일 단위와 line 단위 변경 이력을 함께 기록합니다."""
+    normalized_path = os.path.normpath(label_path)
+    modified_set = viewer.data_mgr.modified_labels.setdefault(change_type, set())
+    modified_set.add((normalized_path, None))
+    if not line_indices:
+        return
+    for line_idx in sorted(set(line_indices)):
+        modified_set.add((normalized_path, line_idx))
+
+
+def _build_sibling_path(path, suffix):
+    stem, ext = os.path.splitext(path)
+    return f"{stem}{suffix}{ext}"
+
+
+def _write_lines_to_path(path, lines):
+    with open(path, "w", encoding="utf-8", newline="") as handle:
+        handle.writelines(lines)
+
+
+def _remove_file_if_exists(path):
+    if path and os.path.exists(path):
+        os.remove(path)
+
+
+def _replace_files_with_rollback(replacements):
+    """여러 파일 교체 중 일부가 실패하면 이전 상태로 복구합니다."""
+    rollback_pairs = []
+
+    try:
+        for _, target_path in replacements:
+            rollback_path = None
+            if os.path.exists(target_path):
+                rollback_path = _build_sibling_path(target_path, ".rollback_tmp")
+                shutil.copy2(target_path, rollback_path)
+            rollback_pairs.append((target_path, rollback_path))
+
+        for tmp_path, target_path in replacements:
+            os.replace(tmp_path, target_path)
+    except Exception:
+        for target_path, rollback_path in rollback_pairs:
+            if rollback_path and os.path.exists(rollback_path):
+                os.replace(rollback_path, target_path)
+        for tmp_path, _ in replacements:
+            _remove_file_if_exists(tmp_path)
+        for _, rollback_path in rollback_pairs:
+            _remove_file_if_exists(rollback_path)
+        raise
+    else:
+        for _, rollback_path in rollback_pairs:
+            _remove_file_if_exists(rollback_path)
+
+
+def _get_mask_fill_value(img_array):
+    """image mode에 맞는 mask fill value를 생성합니다."""
+    dtype = img_array.dtype
+    if np.issubdtype(dtype, np.integer):
+        max_value = np.iinfo(dtype).max
+    elif np.issubdtype(dtype, np.floating):
+        max_value = 1.0
+    else:
+        max_value = 255
+
+    scalar_max = np.dtype(dtype).type(max_value)
+    if img_array.ndim == 2:
+        return scalar_max
+
+    channel_count = img_array.shape[2]
+    fill = np.zeros((channel_count,), dtype=dtype)
+    if channel_count == 1:
+        fill[0] = scalar_max
+    elif channel_count == 2:
+        fill[:] = scalar_max
+    else:
+        fill[0] = scalar_max
+        fill[2] = scalar_max
+        if channel_count >= 4:
+            fill[3] = scalar_max
+    return fill
+
+
+def _safe_release_grab(window):
+    if not window:
+        return
+    try:
+        if window.winfo_exists():
+            window.grab_release()
+    except Exception:
+        pass
+
+
+def _safe_destroy_window(window):
+    if not window:
+        return
+    try:
+        if window.winfo_exists():
+            parent = window.master
+            _safe_release_grab(window)
+            window.update_idletasks()
+            window.destroy()
+            if parent and parent.winfo_exists():
+                parent.update_idletasks()
+    except Exception:
+        pass
+
+
 def delete_selected_labels(viewer):
     """Delete only the selected bounding boxes."""
     if not _require_box_mode_for_label_edit(viewer):
@@ -120,8 +227,7 @@ def delete_selected_labels(viewer):
             deleted_box_count += len(indices_to_delete)
             affected_label_paths.add(label_path)
 
-            for idx in indices_to_delete:
-                viewer.data_mgr.modified_labels["deleted"].add((os.path.normpath(label_path), idx))
+            _mark_modified(viewer, "deleted", label_path, indices_to_delete)
 
         except Exception as e:
             error_count += 1
@@ -130,10 +236,13 @@ def delete_selected_labels(viewer):
         if show_progress and (i % 25 == 0 or i == len(viewer.selected_label_info) - 1):
             progress_window.update_idletasks()
 
-    for label_path in affected_label_paths:
-        viewer.data_mgr.invalidate_label_cache(label_path)
-    if affected_label_paths:
-        viewer.data_mgr.refresh_label_data_cache(specific_paths=list(affected_label_paths))
+    try:
+        for label_path in affected_label_paths:
+            viewer.data_mgr.invalidate_label_cache(label_path)
+        if affected_label_paths:
+            viewer.data_mgr.refresh_label_data_cache(specific_paths=list(affected_label_paths))
+    except Exception as e:
+        print(f"delete_selected_labels cache refresh error: {e}")
 
     if show_progress:
         progress_label.config(text="바운딩 박스 삭제 완료")
@@ -143,11 +252,13 @@ def delete_selected_labels(viewer):
 
     viewer.show_status_message(f"{deleted_box_count}개 바운딩 박스 삭제 완료", duration=3000)
     viewer.deselect_all_images()
-    _partial_refresh(viewer, affected_label_paths, current_class, current_page)
-
     viewer.root.config(cursor="")
-    if progress_window and progress_window.winfo_exists():
-        progress_window.destroy()
+    _safe_destroy_window(progress_window)
+    try:
+        _partial_refresh(viewer, affected_label_paths, current_class, current_page)
+    except Exception as e:
+        print(f"delete_selected_labels refresh error: {e}")
+        viewer.refresh_data()
 
 
 def change_class_labels(viewer):
@@ -232,6 +343,13 @@ def change_class_labels(viewer):
             result_label.config(text="클래스 ID는 정수여야 합니다.", foreground="red")
             return
 
+        if not 0 <= tgt_class_idx < len(viewer.data_mgr.labelsdata):
+            result_label.config(
+                text=f"지원 범위는 0~{len(viewer.data_mgr.labelsdata) - 1} 입니다.",
+                foreground="red",
+            )
+            return
+
         show_progress = _should_show_progress(len(viewer.selected_label_info), total_boxes)
         progress = None
         if show_progress:
@@ -262,6 +380,15 @@ def change_class_labels(viewer):
                         continue
                     line_idx = box["line_idx"]
                     if 0 <= line_idx < len(lines_with_newline):
+                        parts = lines_with_newline[line_idx].strip().split()
+                        if len(parts) < 5:
+                            continue
+                        try:
+                            current_class_idx = int(float(parts[0]))
+                        except ValueError:
+                            continue
+                        if current_class_idx == tgt_class_idx:
+                            continue
                         lines_to_change[line_idx] = tgt_class_idx
                         box["class_id"] = tgt_class_idx
 
@@ -279,15 +406,13 @@ def change_class_labels(viewer):
                         parts[0] = str(lines_to_change[line_idx])
                         new_lines.append(" ".join(parts) + "\n")
                         changed_box_count += 1
-                        viewer.data_mgr.modified_labels["class_changed"].add(
-                            (os.path.normpath(label_path), line_idx)
-                        )
                     else:
                         new_lines.append(line)
 
                 write_label_file(label_path, new_lines)
                 affected_paths.add(label_path)
                 changed_file_count += 1
+                _mark_modified(viewer, "class_changed", label_path, lines_to_change.keys())
 
                 processed += 1
                 if show_progress:
@@ -301,25 +426,38 @@ def change_class_labels(viewer):
             except Exception as e:
                 print(f"Error processing {label_path}: {e}")
 
-        result_label.config(
-            text=f"완료: {changed_file_count}개 파일에서 {changed_box_count}개 박스를 클래스 {tgt_class_idx}로 변경",
-            foreground="green",
-            font=("Arial", 10, "bold"),
-        )
+        if changed_box_count == 0:
+            result_label.config(
+                text="변경할 박스가 없거나 이미 같은 클래스입니다.",
+                foreground="orange",
+                font=("Arial", 10, "bold"),
+            )
+        else:
+            result_label.config(
+                text=f"완료: {changed_file_count}개 파일에서 {changed_box_count}개 박스를 클래스 {tgt_class_idx}로 변경",
+                foreground="green",
+                font=("Arial", 10, "bold"),
+            )
         viewer.show_status_message(f"클래스 변경 완료: {changed_box_count}개 박스", duration=3000)
 
-        for label_path in affected_paths:
-            viewer.data_mgr.invalidate_label_cache(label_path)
-        if affected_paths:
-            viewer.data_mgr.refresh_label_data_cache(specific_paths=list(affected_paths))
+        try:
+            for label_path in affected_paths:
+                viewer.data_mgr.invalidate_label_cache(label_path)
+            if affected_paths:
+                viewer.data_mgr.refresh_label_data_cache(specific_paths=list(affected_paths))
+        except Exception as e:
+            print(f"change_class_labels cache refresh error: {e}")
 
         viewer.deselect_all_images()
         viewer.changing_class = False
-        _partial_refresh(viewer, affected_paths, current_class, current_page)
-
         viewer.root.config(cursor="")
         if changed_file_count > 0:
-            viewer.root.after(800, change_dialog.destroy)
+            _safe_destroy_window(change_dialog)
+        try:
+            _partial_refresh(viewer, affected_paths, current_class, current_page)
+        except Exception as e:
+            print(f"change_class_labels refresh error: {e}")
+            viewer.refresh_data()
 
     ttk.Button(button_frame, text="변경", command=execute_change).pack(side="left", padx=5)
     ttk.Button(button_frame, text="취소", command=change_dialog.destroy).pack(side="right", padx=5)
@@ -411,42 +549,41 @@ def convert_label_to_mask(viewer):
             _create_backup(img_path, label_path)
 
             lines = read_label_file_lines(label_path)
-            lines_with_newline = [line + "\n" for line in lines]
             box_line_indices = sorted(
                 {box["line_idx"] for box in label_info["boxes"] if "line_idx" in box}
             )
 
-            mask_boxes = []
-            filtered_lines = []
-
-            for line_idx, line in enumerate(lines_with_newline):
-                parts = line.strip().split()
-                if not parts:
-                    filtered_lines.append(line)
+            candidate_boxes = []
+            for line_idx in box_line_indices:
+                if not 0 <= line_idx < len(lines):
                     continue
-                if line_idx in box_line_indices:
-                    try:
-                        mask_boxes.append(
-                            {
-                                "x_center": float(parts[1]),
-                                "y_center": float(parts[2]),
-                                "width": float(parts[3]),
-                                "height": float(parts[4]),
-                            }
-                        )
-                    except (ValueError, IndexError):
-                        filtered_lines.append(line)
-                else:
-                    filtered_lines.append(line)
+                parts = lines[line_idx].strip().split()
+                if len(parts) < 5:
+                    continue
+                try:
+                    candidate_boxes.append(
+                        {
+                            "line_idx": line_idx,
+                            "x_center": float(parts[1]),
+                            "y_center": float(parts[2]),
+                            "width": float(parts[3]),
+                            "height": float(parts[4]),
+                        }
+                    )
+                except (ValueError, IndexError):
+                    continue
 
-            if not mask_boxes:
+            if not candidate_boxes:
                 continue
 
-            img = Image.open(img_path)
-            img_array = np.array(img)
-            img_height, img_width = img_array.shape[:2]
+            with Image.open(img_path) as img:
+                img_array = np.array(img)
 
-            for box in mask_boxes:
+            img_height, img_width = img_array.shape[:2]
+            mask_fill_value = _get_mask_fill_value(img_array)
+            applied_line_indices = []
+
+            for box in candidate_boxes:
                 cx, cy, width, height = (
                     box["x_center"],
                     box["y_center"],
@@ -457,15 +594,30 @@ def convert_label_to_mask(viewer):
                 y1 = max(0, int((cy - height / 2) * img_height))
                 x2 = min(img_width, int((cx + width / 2) * img_width))
                 y2 = min(img_height, int((cy + height / 2) * img_height))
-                img_array[y1:y2, x1:x2] = [255, 0, 255]
+                if x2 <= x1 or y2 <= y1:
+                    continue
+                img_array[y1:y2, x1:x2] = mask_fill_value
+                applied_line_indices.append(box["line_idx"])
 
-            Image.fromarray(img_array).save(img_path)
-            write_label_file(label_path, filtered_lines)
+            if not applied_line_indices:
+                continue
 
-            for line_idx in box_line_indices:
-                viewer.data_mgr.modified_labels["masking_changed"].add(
-                    (os.path.normpath(label_path), line_idx)
-                )
+            filtered_lines = [
+                f"{line}\n"
+                for line_idx, line in enumerate(lines)
+                if line_idx not in set(applied_line_indices)
+            ]
+            tmp_img_path = _build_sibling_path(img_path, ".masking_tmp")
+            tmp_label_path = _build_sibling_path(label_path, ".masking_tmp")
+            Image.fromarray(img_array).save(tmp_img_path)
+            _write_lines_to_path(tmp_label_path, filtered_lines)
+            _replace_files_with_rollback(
+                [
+                    (tmp_img_path, img_path),
+                    (tmp_label_path, label_path),
+                ]
+            )
+            _mark_modified(viewer, "masking_changed", label_path, applied_line_indices)
 
             affected_label_paths.add(label_path)
             viewer.data_mgr.invalidate_image_cache(img_path)
@@ -478,10 +630,13 @@ def convert_label_to_mask(viewer):
         if show_progress and (i % 25 == 0 or i == len(viewer.selected_label_info) - 1):
             progress_window.update_idletasks()
 
-    for label_path in affected_label_paths:
-        viewer.data_mgr.invalidate_label_cache(label_path)
-    if affected_label_paths:
-        viewer.data_mgr.refresh_label_data_cache(specific_paths=list(affected_label_paths))
+    try:
+        for label_path in affected_label_paths:
+            viewer.data_mgr.invalidate_label_cache(label_path)
+        if affected_label_paths:
+            viewer.data_mgr.refresh_label_data_cache(specific_paths=list(affected_label_paths))
+    except Exception as e:
+        print(f"convert_label_to_mask cache refresh error: {e}")
 
     if show_progress:
         progress_label.config(text="라벨 마스킹 완료")
@@ -491,11 +646,13 @@ def convert_label_to_mask(viewer):
 
     viewer.show_status_message(f"{converted_count}개 파일 라벨 마스킹 완료", duration=3000)
     viewer.deselect_all_images()
-    _partial_refresh(viewer, affected_label_paths, current_class, current_page)
-
     viewer.root.config(cursor="")
-    if progress_window and progress_window.winfo_exists():
-        progress_window.destroy()
+    _safe_destroy_window(progress_window)
+    try:
+        _partial_refresh(viewer, affected_label_paths, current_class, current_page)
+    except Exception as e:
+        print(f"convert_label_to_mask refresh error: {e}")
+        viewer.refresh_data()
 
 
 def _create_backup(img_path, label_path):
@@ -514,13 +671,13 @@ def _create_backup(img_path, label_path):
 
     if not os.path.exists(img_backup) and os.path.exists(img_path):
         try:
-            shutil.copyfile(img_path, img_backup)
+            shutil.copy2(img_path, img_backup)
         except Exception as e:
             print(f"이미지 백업 실패: {e}")
 
     if not os.path.exists(label_backup) and os.path.exists(label_path):
         try:
-            shutil.copyfile(label_path, label_backup)
+            shutil.copy2(label_path, label_backup)
         except Exception as e:
             print(f"라벨 백업 실패: {e}")
 
