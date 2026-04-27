@@ -2506,15 +2506,23 @@ def main():
                     print(err_msg)
                     continue
 
-                # 여러 폴더 일괄 처리 옵션 (파일 리스트 입력시 비활성화)
+                # 파일 리스트 입력이면 전체 통합 모드만 가능
                 is_file_list = os.path.isfile(input_path)
-                if is_file_list:
-                    multi_folder = 'n'
-                else:
-                    multi_folder = input("하위 폴더들을 각각 처리하시겠습니까? (y/n, 기본값 n: Enter): ").strip().lower()
 
-                if multi_folder == 'y':
-                    # 하위 폴더 목록 조회
+                if is_file_list:
+                    process_mode = '1'
+                else:
+                    print(f"\n처리 방식을 선택하세요:")
+                    print("  1. 전체 통합 모드  - 하위 폴더 전체를 하나의 파일로 생성")
+                    print("  2. 폴더별 분리 모드 - 각 하위 폴더마다 결과 파일을 따로 저장")
+                    process_mode = input("선택 (1/2, 기본값 1: Enter): ").strip() or '1'
+
+                # 키워드 필터링 옵션 (공통)
+                keyword_input = input("파일명 필터링 키워드를 입력하세요 (없으면 Enter): ").strip()
+                keyword = keyword_input if keyword_input else None
+
+                if process_mode == '2':
+                    # ── 폴더별 분리 모드 ──────────────────────────────────────
                     subfolders = [f for f in os.listdir(input_path)
                                   if os.path.isdir(os.path.join(input_path, f)) and not f.startswith('.')]
                     subfolders.sort()
@@ -2527,22 +2535,25 @@ def main():
                     for i, folder in enumerate(subfolders, 1):
                         print(f"  {i}. {folder}")
 
-                    # 출력 방식 선택
-                    print(f"\n출력 방식을 선택하세요:")
-                    print("  1. 각 폴더 내 output 폴더에 저장 (폴더명/output/complete_dataset.txt)")
-                    print("  2. 공통 출력 폴더에 저장 (출력폴더/폴더명_complete_dataset.txt)")
-                    output_mode = input("선택 (1/2, 기본값 1: Enter): ").strip()
+                    # 출력 위치 선택
+                    print(f"\n결과 저장 위치를 선택하세요:")
+                    print("  1. 각 폴더 안에 저장  → 폴더명/output/complete_dataset.txt")
+                    print("  2. 공통 폴더에 저장   → 공통폴더/폴더명_complete_dataset.txt")
+                    output_mode = input("선택 (1/2, 기본값 1: Enter): ").strip() or '1'
 
                     common_output_path = None
                     if output_mode == '2':
-                        common_output_path = input("공통 출력 폴더 경로를 입력하세요: ").strip()
+                        common_output_path = input("공통 출력 폴더 경로를 입력하세요 (기본값: Enter): ").strip()
                         if not common_output_path:
                             common_output_path = os.path.join(input_path, 'output_all')
                         os.makedirs(common_output_path, exist_ok=True)
+                        print(f"공통 출력 폴더: {common_output_path}")
 
                     # 각 폴더 처리
                     print(f"\n{'='*60}")
                     print(f"총 {len(subfolders)}개 폴더 처리 시작")
+                    if keyword:
+                        print(f"키워드 필터: '{keyword}'")
                     print(f"{'='*60}")
 
                     total_stats = {
@@ -2556,10 +2567,8 @@ def main():
                         folder_path = os.path.join(input_path, folder)
 
                         if output_mode == '2' and common_output_path:
-                            # 공통 출력 폴더에 폴더명 prefix로 저장
                             folder_output_path = common_output_path
                         else:
-                            # 각 폴더 내 output에 저장
                             folder_output_path = os.path.join(folder_path, 'output')
 
                         print(f"\n[{i}/{len(subfolders)}] 처리 중: {folder}")
@@ -2567,12 +2576,14 @@ def main():
                         print(f"  출력: {folder_output_path}")
 
                         try:
-                            # 공통 출력 폴더 사용시 파일명에 폴더명 prefix 추가
                             if output_mode == '2' and common_output_path:
-                                stats = create_complete_dataset_list(folder_path, folder_output_path,
-                                                                      output_prefix=folder)
+                                stats = create_complete_dataset_list(
+                                    folder_path, folder_output_path,
+                                    keyword=keyword, output_prefix=folder)
                             else:
-                                stats = create_complete_dataset_list(folder_path, folder_output_path)
+                                stats = create_complete_dataset_list(
+                                    folder_path, folder_output_path,
+                                    keyword=keyword)
 
                             if stats:
                                 total_stats['processed_folders'] += 1
@@ -2596,7 +2607,7 @@ def main():
 
                     # 전체 결과 요약
                     print(f"\n{'='*60}")
-                    print(f"전체 처리 완료!")
+                    print(f"전체 처리 완료! (폴더별 분리 모드)")
                     print(f"{'='*60}")
                     print(f"처리된 폴더: {total_stats['processed_folders']}/{len(subfolders)}개")
                     print(f"총 파일 수: {total_stats['total_files']}개")
@@ -2610,21 +2621,25 @@ def main():
                             print(f"  {result['folder']}: {result['files']}개 파일, {result['errors']}개 에러")
 
                 else:
-                    # 기존 단일 폴더 처리 방식
+                    # ── 전체 통합 모드 ────────────────────────────────────────
                     output_path = input("출력 저장 경로를 입력하세요 (기본 경로: Enter): ")
                     if not output_path:
                         output_path = get_default_output_path(input_path)
 
-                    print(f"\n처리 시작...")
+                    print(f"\n처리 시작... (전체 통합 모드)")
                     print(f"입력 경로: {input_path}")
                     print(f"출력 경로: {output_path}")
+                    if keyword:
+                        print(f"키워드 필터: '{keyword}'")
 
                     try:
-                        stats = create_complete_dataset_list(input_path, output_path)
+                        stats = create_complete_dataset_list(input_path, output_path, keyword=keyword)
 
                         if stats:
                             print("\n전체 데이터셋 리스트 생성 완료!")
                             print(f"처리된 파일 개수: {stats['total_cnt']}개")
+                            if stats.get('filtered_cnt'):
+                                print(f"키워드 필터로 제외된 파일: {stats['filtered_cnt']}개")
                             print(f"에러 발생 수: {stats['error_cnt']}개")
                             print(f"생성된 라벨: {stats['created_labels']}개")
 
