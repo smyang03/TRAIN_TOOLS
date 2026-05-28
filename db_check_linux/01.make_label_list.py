@@ -1382,23 +1382,149 @@ def extract_background_images(input_path, output_path):
     logger.info("배경 이미지 추출 완료")
     return stats
 
-def process_dataset(input_path, output_path, train_rate=0.8, skip_rate=0):
+def _stratified_split(files, train_rate, file_classes):
+    """
+    클래스 조합 기준 stratified split.
+    같은 이미지가 train/valid에 중복되지 않으면서
+    각 클래스 조합 그룹에서 비율을 유지.
+    - 파일이 1장인 그룹: train으로 배정 (valid 불가)
+    - 파일이 2장 이상인 그룹: train_rate 비율로 분할, 최소 1장씩 보장
+    """
+    groups = defaultdict(list)
+    for path in files:
+        classes = file_classes.get(path, frozenset())
+        group_key = ','.join(str(c) for c in sorted(classes)) if classes else 'background'
+        groups[group_key].append(path)
+
+    train_files, valid_files = [], []
+    for group_key in sorted(groups.keys()):
+        group_files = groups[group_key]
+        random.shuffle(group_files)
+        if len(group_files) == 1:
+            train_files.extend(group_files)
+        else:
+            n = max(1, min(int(len(group_files) * train_rate), len(group_files) - 1))
+            train_files.extend(group_files[:n])
+            valid_files.extend(group_files[n:])
+
+    return train_files, valid_files
+
+
+def _auto_split(all_files, train_rate, seed=42, file_classes=None):
+    """
+    폴더 구조 자동 감지 후 최적 분할 방식 적용.
+    file_classes가 주어지면 클래스 조합 기준 stratified split 수행.
+    - 하위 폴더 여러 개: 폴더별 stratified 분할 후 합산
+    - 단일 폴더: 전체 stratified 분할
+    seed 고정으로 재현성 보장.
+    """
+    random.seed(seed)
+    source_dirs = set(os.path.dirname(f) for f in all_files)
+
+    if len(source_dirs) > 1:
+        dir_groups = defaultdict(list)
+        for path in all_files:
+            dir_groups[os.path.dirname(path)].append(path)
+
+        train_files, valid_files = [], []
+        for src in sorted(dir_groups.keys()):
+            t, v = _stratified_split(dir_groups[src], train_rate, file_classes or {})
+            train_files.extend(t)
+            valid_files.extend(v)
+        mode = f"다중 폴더 {len(source_dirs)}개 → 폴더별 클래스 조합 stratified 분할"
+    else:
+        train_files, valid_files = _stratified_split(list(all_files), train_rate, file_classes or {})
+        mode = "단일 폴더 → 클래스 조합 stratified 분할"
+
+    return train_files, valid_files, mode
+
+
+def _collect_file_classes(all_files):
+    """라벨 파일을 읽어 각 이미지의 클래스 집합을 반환. {path: frozenset(class_ids)}"""
+    file_classes = {}
+    total = len(all_files)
+    for i, path in enumerate(all_files):
+        if (i + 1) % 500 == 0 or (i + 1) == total:
+            print(f"\r클래스 정보 수집: {i+1}/{total}", end='')
+        label_path = get_label_path_from_image(path)
+        classes = set()
+        if os.path.isfile(label_path):
+            try:
+                with open(label_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        parts = line.strip().split()
+                        if len(parts) >= 5:
+                            try:
+                                class_id = int(float(parts[0]))
+                                if 0 <= class_id < 89:
+                                    classes.add(class_id)
+                            except (ValueError, IndexError):
+                                pass
+            except Exception:
+                pass
+        file_classes[path] = frozenset(classes)
+    print()
+    return file_classes
+
+
+def _print_valid_class_warnings(valid_files, file_classes, min_threshold=10):
+    """valid set 클래스별 분포 출력. min_threshold 미만이면 경고."""
+    class_counts = defaultdict(int)
+    background_cnt = 0
+    for path in valid_files:
+        classes = file_classes.get(path, frozenset())
+        if classes:
+            for cls in classes:
+                class_counts[cls] += 1
+        else:
+            background_cnt += 1
+
+    print("\nvalid 클래스별 분포:")
+    has_warning = False
+    for cls in sorted(class_counts.keys()):
+        cnt = class_counts[cls]
+        if cnt < min_threshold:
+            print(f"  클래스 {cls}: {cnt}장  ⚠ ({min_threshold}장 미만 - 검증 신뢰도 낮음)")
+            has_warning = True
+        else:
+            print(f"  클래스 {cls}: {cnt}장")
+    if background_cnt:
+        print(f"  배경:     {background_cnt}장")
+    if not has_warning:
+        print("  (모든 클래스 정상)")
+    print()
+
+
+def process_dataset(input_path, output_path, train_rate=0.8, skip_rate=0, seed=42):
     """데이터셋을 처리하고 train/validation 세트로 분할하는 함수"""
-    valid_rate = 1.0 - train_rate
-    
-    # 출력 디렉토리 생성
     output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
-    
-    # 로깅 설정
+
     logger = setup_logging(output_path)
     logger.info(f"데이터셋 처리 시작: {input_path}")
-    
-    # 전체 파일 수 계산
-    # 전체 파일 수 계산 (폴더 또는 파일 리스트 지원)
+
+    # 전체 파일 수집
     all_files, _ = collect_image_files_from_source(input_path)
-    total_files = len(all_files)
-    logger.info(f"전체 처리할 파일 수: {total_files}")
+    logger.info(f"전체 수집된 파일 수: {len(all_files)}")
+
+    # skip_rate 사전 적용
+    if skip_rate > 0:
+        random.seed(seed)
+        keep_count = int(len(all_files) * (1 - skip_rate))
+        all_files = random.sample(all_files, keep_count)
+        logger.info(f"스킵 후 파일 수: {len(all_files)}")
+
+    # 클래스 정보 수집 (stratified split용)
+    print("클래스 정보 수집 중...")
+    file_classes = _collect_file_classes(all_files)
+
+    # 폴더 구조 자동 감지 + 클래스 조합 stratified 분할
+    train_files, valid_files, split_mode = _auto_split(all_files, train_rate, seed, file_classes)
+    logger.info(f"분할 방식: {split_mode}")
+    logger.info(f"학습: {len(train_files)}개, 검증: {len(valid_files)}개")
+    print(f"\n분할 방식: {split_mode}")
+    print(f"학습: {len(train_files)}개 | 검증: {len(valid_files)}개")
+    _print_valid_class_warnings(valid_files, file_classes)
 
     # 결과 파일 경로 설정
     val_path = output_path / 'valid.txt'
@@ -1428,10 +1554,11 @@ def process_dataset(input_path, output_path, train_rate=0.8, skip_rate=0):
         'valid_no_label': 0,
         'train_empty_label': 0,
         'valid_empty_label': 0,
-        'created_labels': 0
+        'created_labels': 0,
+        'split_mode': split_mode,
     }
 
-    # train/valid 파일 초기화
+    # 출력 파일 초기화
     with open(train_path, 'w', encoding='utf-8') as f:
         pass
     with open(val_path, 'w', encoding='utf-8') as f:
@@ -1439,22 +1566,16 @@ def process_dataset(input_path, output_path, train_rate=0.8, skip_rate=0):
     with open(error_path, 'w', encoding='utf-8') as f:
         f.write("에러 로그\n")
 
-    # 입력 경로 순회
-    for full_path in all_files:
-        stats['total_cnt'] += 1
-        progress = (stats['total_cnt'] / total_files) * 100
+    # 분할된 목록에 is_train 플래그 결합 후 어노테이션 처리
+    total_files = len(train_files) + len(valid_files)
+    all_split = [(f, True) for f in train_files] + [(f, False) for f in valid_files]
 
-        # 스킵 처리
-        if random.random() < skip_rate:
-            stats['skip_cnt'] += 1
-            continue
+    for full_path, is_train in all_split:
+        stats['total_cnt'] += 1
+        progress = stats['total_cnt'] / total_files * 100
 
         label_path = get_label_path_from_image(full_path)
 
-        # train/valid 분할 결정
-        is_train = random.random() < train_rate
-
-        # 라벨 파일 존재 확인 및 처리
         no_label = False
         empty_label = False
 
@@ -1470,12 +1591,11 @@ def process_dataset(input_path, output_path, train_rate=0.8, skip_rate=0):
                 stats['error_cnt'] += 1
                 continue
 
-        # 어노테이션 처리
         current_annotation = np.zeros(90)
         try:
             with open(label_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
-                if not lines:  # 빈 파일 처리
+                if not lines:
                     empty_label = True
                     if is_train:
                         stats['train_empty_label'] += 1
@@ -1489,8 +1609,8 @@ def process_dataset(input_path, output_path, train_rate=0.8, skip_rate=0):
                         try:
                             class_id = int(float(split_line[0]))
                             if 0 <= class_id < 89:
-                                current_annotation[0] += 1  # 전체 어노테이션 카운트
-                                current_annotation[class_id + 1] += 1  # 클래스별 카운트
+                                current_annotation[0] += 1
+                                current_annotation[class_id + 1] += 1
                         except (ValueError, IndexError):
                             continue
 
@@ -1501,7 +1621,6 @@ def process_dataset(input_path, output_path, train_rate=0.8, skip_rate=0):
                 f.write(f"{label_path}: {e}\n")
             continue
 
-        # 결과 저장 - UTF-8 인코딩 추가
         if is_train:
             with open(train_path, 'a', encoding='utf-8') as f:
                 f.write(f"{full_path}\n")
@@ -1521,7 +1640,6 @@ def process_dataset(input_path, output_path, train_rate=0.8, skip_rate=0):
 
         stats['total_annotations'] = stats['train_annotations'] + stats['valid_annotations']
 
-        # 진행률 표시
         if stats['total_cnt'] % 1000 == 0:
             logger.info(f"진행률: {progress:.1f}%")
 
@@ -1530,17 +1648,16 @@ def process_dataset(input_path, output_path, train_rate=0.8, skip_rate=0):
               f"검증: {stats['valid_img_cnt']}(어노테이션: {stats['valid_annotations']}) | "
               f"전체 어노테이션: {stats['total_annotations']}", end='')
 
-    print("\n")  # 진행률 표시 줄바꿈
+    print("\n")
 
-    # 최종 통계 저장
-    np.savetxt(train_annotation_path, stats['obj_annotation_train'], fmt='%2d', 
+    np.savetxt(train_annotation_path, stats['obj_annotation_train'], fmt='%2d',
                delimiter=',', header='train annotation')
-    np.savetxt(val_annotation_path, stats['obj_annotation_val'], fmt='%2d', 
+    np.savetxt(val_annotation_path, stats['obj_annotation_val'], fmt='%2d',
                delimiter=',', header='valid annotation')
 
     logger.info("데이터셋 처리 완료")
     logger.info(f"학습: {stats['train_img_cnt']}, 검증: {stats['valid_img_cnt']}")
-    
+
     return stats
 
 def filter_dataset_by_class(list_path, output_path, target_classes):
@@ -2047,25 +2164,28 @@ def validate_dataset_from_list(list_path, output_path):
     
     return stats
 
-def process_dataset_advanced(input_path, output_path, train_rate=0.8, skip_rate=0, 
-                        filter_by_class=False, target_classes=None, 
-                        exclude_background=False, combined_filter=False):
+def process_dataset_advanced(input_path, output_path, train_rate=0.8, skip_rate=0,
+                        filter_by_class=False, target_classes=None,
+                        exclude_background=False, combined_filter=False, seed=42):
     """데이터셋을 처리하고 train/validation 세트로 분할하는 고급 함수"""
-    
-    valid_rate = 1.0 - train_rate
-    
-    # 출력 디렉토리 생성
     output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
-    
-    # 로깅 설정
+
     logger = setup_logging(output_path)
     logger.info(f"고급 데이터셋 처리 시작: {input_path}")
-    
-    # 전체 파일 수 계산 (폴더 또는 파일 리스트 지원)
+
+    # 전체 파일 수집
     all_files, _ = collect_image_files_from_source(input_path)
+    logger.info(f"전체 수집된 파일 수: {len(all_files)}")
+
+    # skip_rate 사전 적용
+    if skip_rate > 0:
+        random.seed(seed)
+        keep_count = int(len(all_files) * (1 - skip_rate))
+        all_files = random.sample(all_files, keep_count)
+        logger.info(f"스킵 후 파일 수: {len(all_files)}")
+
     total_files = len(all_files)
-    logger.info(f"전체 처리 대상 파일 수: {total_files}")
 
     # 결과 파일 경로 설정
     val_path = output_path / 'valid.txt'
@@ -2095,39 +2215,34 @@ def process_dataset_advanced(input_path, output_path, train_rate=0.8, skip_rate=
         'obj_annotation': obj_annotation,
         'obj_annotation_train': obj_annotation_train,
         'obj_annotation_val': obj_annotation_val,
-        'train_no_label': 0,      
-        'valid_no_label': 0,      
-        'train_empty_label': 0,   
-        'valid_empty_label': 0,   
-        'created_labels': 0,      
-        'class_filtered': 0,      
-        'background_excluded': 0, 
-        'target_class_annotations': 0  
+        'train_no_label': 0,
+        'valid_no_label': 0,
+        'train_empty_label': 0,
+        'valid_empty_label': 0,
+        'created_labels': 0,
+        'class_filtered': 0,
+        'background_excluded': 0,
+        'target_class_annotations': 0,
+        'split_mode': '',
     }
 
     # 출력 파일 초기화
-    with open(train_path, 'w', encoding='utf-8') as f:
-        pass
-    with open(val_path, 'w', encoding='utf-8') as f:
-        pass
-    with open(filtered_path, 'w', encoding='utf-8') as f:
-        pass
-    with open(excluded_path, 'w', encoding='utf-8') as f:
-        pass
+    for p in [train_path, val_path, filtered_path, excluded_path]:
+        with open(p, 'w', encoding='utf-8') as f:
+            pass
 
-    # 입력 경로 순회
+    # ── 패스 1: 필터링 + 어노테이션 캐싱 ──────────────────────────────
+    filtered_files = []
+    file_cache = {}   # {path: {'annotation': np.array, 'no_label': bool, 'empty_label': bool}}
+    file_classes = {} # {path: frozenset(class_ids)} - stratified split용
+
+    print(f"필터링 중... (전체 {total_files}개)")
     for full_path in all_files:
         stats['total_cnt'] += 1
-        progress = (stats['total_cnt'] / total_files) * 100
-
-        # 스킵 처리
-        if random.random() < skip_rate:
-            stats['skip_cnt'] += 1
-            continue
+        progress = stats['total_cnt'] / total_files * 100
 
         label_path = get_label_path_from_image(full_path)
 
-        # 라벨 파일 존재 확인 및 처리
         no_label = False
         empty_label = False
 
@@ -2137,9 +2252,11 @@ def process_dataset_advanced(input_path, output_path, train_rate=0.8, skip_rate=
                 no_label = True
             else:
                 stats['error_cnt'] += 1
+                with open(excluded_path, 'a', encoding='utf-8') as f:
+                    f.write(f"{full_path}\n")
+                stats['excluded_cnt'] += 1
                 continue
 
-        # 어노테이션 처리 및 필터링 조건 검사
         current_annotation = np.zeros(90)
         contains_target_class = False
 
@@ -2158,8 +2275,6 @@ def process_dataset_advanced(input_path, output_path, train_rate=0.8, skip_rate=
                             if 0 <= class_id < 89:
                                 current_annotation[0] += 1
                                 current_annotation[class_id + 1] += 1
-
-                                # 대상 클래스 포함 여부 확인
                                 if filter_by_class and class_id in target_classes:
                                     contains_target_class = True
                                     stats['target_class_annotations'] += 1
@@ -2172,20 +2287,14 @@ def process_dataset_advanced(input_path, output_path, train_rate=0.8, skip_rate=
 
         # 필터링 조건 적용
         include_file = True
-
-        # 1. 클래스 필터링
         if filter_by_class and not combined_filter:
             include_file = contains_target_class
             if contains_target_class:
                 stats['class_filtered'] += 1
-
-        # 2. 배경 이미지 제외
         if exclude_background and not combined_filter:
             if empty_label or current_annotation[0] == 0:
                 include_file = False
                 stats['background_excluded'] += 1
-
-        # 3. 복합 필터링 (클래스 필터링 + 배경 제외)
         if combined_filter:
             include_file = contains_target_class and not (empty_label or current_annotation[0] == 0)
             if contains_target_class:
@@ -2193,66 +2302,88 @@ def process_dataset_advanced(input_path, output_path, train_rate=0.8, skip_rate=
             if empty_label or current_annotation[0] == 0:
                 stats['background_excluded'] += 1
 
-        # 필터링 결과에 따라 처리
         if include_file:
+            filtered_files.append(full_path)
+            file_cache[full_path] = {
+                'annotation': current_annotation,
+                'no_label': no_label,
+                'empty_label': empty_label,
+            }
+            # stratified split을 위한 클래스 집합 기록
+            classes = set()
+            for idx in range(1, len(current_annotation)):
+                if current_annotation[idx] > 0:
+                    classes.add(idx - 1)
+            file_classes[full_path] = frozenset(classes)
             stats['filtered_cnt'] += 1
-            stats['processed_cnt'] += 1
-
-            # 필터링된 전체 목록에 추가
             with open(filtered_path, 'a', encoding='utf-8') as f:
                 f.write(f"{full_path}\n")
-
-            # train/valid 분할 결정
-            is_train = random.random() < train_rate
-
-            # 라벨 상태 통계 업데이트
-            if no_label:
-                if is_train:
-                    stats['train_no_label'] += 1
-                else:
-                    stats['valid_no_label'] += 1
-
-            if empty_label:
-                if is_train:
-                    stats['train_empty_label'] += 1
-                else:
-                    stats['valid_empty_label'] += 1
-
-            # 결과 저장
-            if is_train:
-                with open(train_path, 'a', encoding='utf-8') as f:
-                    f.write(f"{full_path}\n")
-            else:
-                with open(val_path, 'a', encoding='utf-8') as f:
-                    f.write(f"{full_path}\n")
-
-            # 어노테이션 통계 업데이트
-            stats['obj_annotation'] += current_annotation
-            if is_train:
-                stats['obj_annotation_train'] += current_annotation
-                stats['train_img_cnt'] += 1
-                stats['train_annotations'] += current_annotation[0]
-            else:
-                stats['obj_annotation_val'] += current_annotation
-                stats['valid_img_cnt'] += 1
-                stats['valid_annotations'] += current_annotation[0]
-
-            stats['total_annotations'] = stats['train_annotations'] + stats['valid_annotations']
         else:
-            # 제외된 파일 목록에 추가
             stats['excluded_cnt'] += 1
             with open(excluded_path, 'a', encoding='utf-8') as f:
                 f.write(f"{full_path}\n")
 
-        # 진행 상황 출력
-        print(f"\r진행률: {progress:.1f}% ({stats['total_cnt']}/{total_files}) | "
-              f"처리: {stats['processed_cnt']} | "
-              f"필터링: {stats['filtered_cnt']} | "
-              f"제외: {stats['excluded_cnt']} | "
+        print(f"\r필터링: {progress:.1f}% ({stats['total_cnt']}/{total_files}) | "
+              f"선택: {stats['filtered_cnt']} | 제외: {stats['excluded_cnt']}", end='')
+
+    print("\n")
+
+    # ── 폴더 구조 자동 감지 + 클래스 조합 stratified 분할 ────────────
+    train_files, valid_files, split_mode = _auto_split(filtered_files, train_rate, seed, file_classes)
+    stats['split_mode'] = split_mode
+    logger.info(f"분할 방식: {split_mode}")
+    logger.info(f"학습: {len(train_files)}개, 검증: {len(valid_files)}개")
+    print(f"분할 방식: {split_mode}")
+    print(f"학습: {len(train_files)}개 | 검증: {len(valid_files)}개")
+    _print_valid_class_warnings(valid_files, file_classes)
+
+    # ── 패스 2: 캐시 기반 통계 집계 및 파일 기록 ─────────────────────
+    total_split = len(train_files) + len(valid_files)
+    all_split = [(f, True) for f in train_files] + [(f, False) for f in valid_files]
+
+    for i, (full_path, is_train) in enumerate(all_split, 1):
+        progress = i / total_split * 100
+        cached = file_cache[full_path]
+        current_annotation = cached['annotation']
+        no_label = cached['no_label']
+        empty_label = cached['empty_label']
+
+        if no_label:
+            if is_train:
+                stats['train_no_label'] += 1
+            else:
+                stats['valid_no_label'] += 1
+        if empty_label:
+            if is_train:
+                stats['train_empty_label'] += 1
+            else:
+                stats['valid_empty_label'] += 1
+
+        if is_train:
+            with open(train_path, 'a', encoding='utf-8') as f:
+                f.write(f"{full_path}\n")
+        else:
+            with open(val_path, 'a', encoding='utf-8') as f:
+                f.write(f"{full_path}\n")
+
+        stats['obj_annotation'] += current_annotation
+        if is_train:
+            stats['obj_annotation_train'] += current_annotation
+            stats['train_img_cnt'] += 1
+            stats['train_annotations'] += current_annotation[0]
+        else:
+            stats['obj_annotation_val'] += current_annotation
+            stats['valid_img_cnt'] += 1
+            stats['valid_annotations'] += current_annotation[0]
+
+        stats['total_annotations'] = stats['train_annotations'] + stats['valid_annotations']
+        stats['processed_cnt'] += 1
+
+        print(f"\r기록 중: {progress:.1f}% ({i}/{total_split}) | "
               f"학습: {stats['train_img_cnt']} | "
               f"검증: {stats['valid_img_cnt']}", end='')
 
-    print("\n")  # 진행률 표시 줄바꿈
+    print("\n")
 
     # 최종 통계 저장
     np.savetxt(train_annotation_path, stats['obj_annotation_train'], fmt='%2d', 
@@ -2268,6 +2399,7 @@ def process_dataset_advanced(input_path, output_path, train_rate=0.8, skip_rate=
         f.write(f"출력 경로: {output_path}\n")
         f.write(f"학습 비율: {train_rate:.2f}\n")
         f.write(f"스킵 비율: {skip_rate:.2f}\n")
+        f.write(f"분할 방식: {stats['split_mode']}\n")
         
         f.write("\n=== 필터링 설정 ===\n")
         f.write(f"클래스 필터링: {'활성화' if filter_by_class else '비활성화'}\n")
@@ -2381,12 +2513,14 @@ def main():
                     if not (0 < train_rate < 1):
                         print("오류: 학습 비율은 0과 1 사이여야 합니다")
                         continue
-                        
+
                     skip_rate = float(input("데이터 스킵 비율을 입력하세요 (기본값 0.0: Enter): ") or 0.0)
                     if not (0 <= skip_rate < 1):
                         print("오류: 스킵 비율은 0과 1 사이여야 합니다")
                         continue
-                        
+
+                    seed = int(input("랜덤 시드를 입력하세요 (기본값 42: Enter): ") or 42)
+
                 except ValueError:
                     print("오류: 올바른 숫자를 입력하세요")
                     continue
@@ -2398,17 +2532,19 @@ def main():
                 print(f"학습 비율: {train_rate:.1%}")
                 print(f"검증 비율: {valid_rate:.1%}")
                 print(f"스킵 비율: {skip_rate:.1%}")
+                print(f"랜덤 시드: {seed}")
 
                 try:
-                    stats = process_dataset(input_path, output_path, train_rate, skip_rate)
-                    
+                    stats = process_dataset(input_path, output_path, train_rate, skip_rate, seed)
+
                     # 결과 출력
                     print("\n처리 완료!")
+                    print(f"분할 방식: {stats['split_mode']}")
                     print(f"총 이미지 수: {stats['total_cnt']}")
                     print(f"학습 이미지 수: {stats['train_img_cnt']}")
                     print(f"검증 이미지 수: {stats['valid_img_cnt']}")
                     print(f"에러 발생 수: {stats['error_cnt']}")
-                    
+
                     print_class_statistics(stats['obj_annotation'], "전체 클래스별 통계")
                     
                 except Exception as e:
@@ -2506,15 +2642,23 @@ def main():
                     print(err_msg)
                     continue
 
-                # 여러 폴더 일괄 처리 옵션 (파일 리스트 입력시 비활성화)
+                # 파일 리스트 입력이면 전체 통합 모드만 가능
                 is_file_list = os.path.isfile(input_path)
-                if is_file_list:
-                    multi_folder = 'n'
-                else:
-                    multi_folder = input("하위 폴더들을 각각 처리하시겠습니까? (y/n, 기본값 n: Enter): ").strip().lower()
 
-                if multi_folder == 'y':
-                    # 하위 폴더 목록 조회
+                if is_file_list:
+                    process_mode = '1'
+                else:
+                    print(f"\n처리 방식을 선택하세요:")
+                    print("  1. 전체 통합 모드  - 하위 폴더 전체를 하나의 파일로 생성")
+                    print("  2. 폴더별 분리 모드 - 각 하위 폴더마다 결과 파일을 따로 저장")
+                    process_mode = input("선택 (1/2, 기본값 1: Enter): ").strip() or '1'
+
+                # 키워드 필터링 옵션 (공통)
+                keyword_input = input("파일명 필터링 키워드를 입력하세요 (없으면 Enter): ").strip()
+                keyword = keyword_input if keyword_input else None
+
+                if process_mode == '2':
+                    # ── 폴더별 분리 모드 ──────────────────────────────────────
                     subfolders = [f for f in os.listdir(input_path)
                                   if os.path.isdir(os.path.join(input_path, f)) and not f.startswith('.')]
                     subfolders.sort()
@@ -2527,22 +2671,25 @@ def main():
                     for i, folder in enumerate(subfolders, 1):
                         print(f"  {i}. {folder}")
 
-                    # 출력 방식 선택
-                    print(f"\n출력 방식을 선택하세요:")
-                    print("  1. 각 폴더 내 output 폴더에 저장 (폴더명/output/complete_dataset.txt)")
-                    print("  2. 공통 출력 폴더에 저장 (출력폴더/폴더명_complete_dataset.txt)")
-                    output_mode = input("선택 (1/2, 기본값 1: Enter): ").strip()
+                    # 출력 위치 선택
+                    print(f"\n결과 저장 위치를 선택하세요:")
+                    print("  1. 각 폴더 안에 저장  → 폴더명/output/complete_dataset.txt")
+                    print("  2. 공통 폴더에 저장   → 공통폴더/폴더명_complete_dataset.txt")
+                    output_mode = input("선택 (1/2, 기본값 1: Enter): ").strip() or '1'
 
                     common_output_path = None
                     if output_mode == '2':
-                        common_output_path = input("공통 출력 폴더 경로를 입력하세요: ").strip()
+                        common_output_path = input("공통 출력 폴더 경로를 입력하세요 (기본값: Enter): ").strip()
                         if not common_output_path:
                             common_output_path = os.path.join(input_path, 'output_all')
                         os.makedirs(common_output_path, exist_ok=True)
+                        print(f"공통 출력 폴더: {common_output_path}")
 
                     # 각 폴더 처리
                     print(f"\n{'='*60}")
                     print(f"총 {len(subfolders)}개 폴더 처리 시작")
+                    if keyword:
+                        print(f"키워드 필터: '{keyword}'")
                     print(f"{'='*60}")
 
                     total_stats = {
@@ -2556,10 +2703,8 @@ def main():
                         folder_path = os.path.join(input_path, folder)
 
                         if output_mode == '2' and common_output_path:
-                            # 공통 출력 폴더에 폴더명 prefix로 저장
                             folder_output_path = common_output_path
                         else:
-                            # 각 폴더 내 output에 저장
                             folder_output_path = os.path.join(folder_path, 'output')
 
                         print(f"\n[{i}/{len(subfolders)}] 처리 중: {folder}")
@@ -2567,12 +2712,14 @@ def main():
                         print(f"  출력: {folder_output_path}")
 
                         try:
-                            # 공통 출력 폴더 사용시 파일명에 폴더명 prefix 추가
                             if output_mode == '2' and common_output_path:
-                                stats = create_complete_dataset_list(folder_path, folder_output_path,
-                                                                      output_prefix=folder)
+                                stats = create_complete_dataset_list(
+                                    folder_path, folder_output_path,
+                                    keyword=keyword, output_prefix=folder)
                             else:
-                                stats = create_complete_dataset_list(folder_path, folder_output_path)
+                                stats = create_complete_dataset_list(
+                                    folder_path, folder_output_path,
+                                    keyword=keyword)
 
                             if stats:
                                 total_stats['processed_folders'] += 1
@@ -2596,7 +2743,7 @@ def main():
 
                     # 전체 결과 요약
                     print(f"\n{'='*60}")
-                    print(f"전체 처리 완료!")
+                    print(f"전체 처리 완료! (폴더별 분리 모드)")
                     print(f"{'='*60}")
                     print(f"처리된 폴더: {total_stats['processed_folders']}/{len(subfolders)}개")
                     print(f"총 파일 수: {total_stats['total_files']}개")
@@ -2610,21 +2757,25 @@ def main():
                             print(f"  {result['folder']}: {result['files']}개 파일, {result['errors']}개 에러")
 
                 else:
-                    # 기존 단일 폴더 처리 방식
+                    # ── 전체 통합 모드 ────────────────────────────────────────
                     output_path = input("출력 저장 경로를 입력하세요 (기본 경로: Enter): ")
                     if not output_path:
                         output_path = get_default_output_path(input_path)
 
-                    print(f"\n처리 시작...")
+                    print(f"\n처리 시작... (전체 통합 모드)")
                     print(f"입력 경로: {input_path}")
                     print(f"출력 경로: {output_path}")
+                    if keyword:
+                        print(f"키워드 필터: '{keyword}'")
 
                     try:
-                        stats = create_complete_dataset_list(input_path, output_path)
+                        stats = create_complete_dataset_list(input_path, output_path, keyword=keyword)
 
                         if stats:
                             print("\n전체 데이터셋 리스트 생성 완료!")
                             print(f"처리된 파일 개수: {stats['total_cnt']}개")
+                            if stats.get('filtered_cnt'):
+                                print(f"키워드 필터로 제외된 파일: {stats['filtered_cnt']}개")
                             print(f"에러 발생 수: {stats['error_cnt']}개")
                             print(f"생성된 라벨: {stats['created_labels']}개")
 
@@ -2771,12 +2922,14 @@ def main():
                     if not (0 < train_rate < 1):
                         print("오류: 학습 비율은 0과 1 사이여야 합니다")
                         continue
-                        
+
                     skip_rate = float(input("데이터 스킵 비율을 입력하세요 (기본값 0.0: Enter): ") or 0.0)
                     if not (0 <= skip_rate < 1):
                         print("오류: 스킵 비율은 0과 1 사이여야 합니다")
                         continue
-                        
+
+                    seed = int(input("랜덤 시드를 입력하세요 (기본값 42: Enter): ") or 42)
+
                 except ValueError:
                     print("오류: 올바른 숫자를 입력하세요")
                     continue
@@ -2824,7 +2977,8 @@ def main():
                 print(f"학습 비율: {train_rate:.1%}")
                 print(f"검증 비율: {valid_rate:.1%}")
                 print(f"스킵 비율: {skip_rate:.1%}")
-                
+                print(f"랜덤 시드: {seed}")
+
                 # 필터링 설정 출력
                 if filter_by_class:
                     print(f"클래스 필터링: 활성화 (대상 클래스: {target_classes})")
@@ -2832,27 +2986,28 @@ def main():
                     print("배경 이미지 제외: 활성화")
                 if combined_filter:
                     print("복합 필터링: 활성화")
-                
+
                 # 확인 메시지
                 confirm = input("\n위 설정으로 처리를 시작하시겠습니까? (y/n): ")
                 if confirm.lower() != 'y':
                     print("처리가 취소되었습니다.")
                     continue
-                
+
                 # 데이터셋 처리 실행
                 try:
                     stats = process_dataset_advanced(
                         input_path, output_path, train_rate, skip_rate,
                         filter_by_class, target_classes,
-                        exclude_background, combined_filter
+                        exclude_background, combined_filter, seed
                     )
-                    
+
                     print("\n고급 데이터셋 처리 완료!")
+                    print(f"분할 방식: {stats['split_mode']}")
                     print(f"총 이미지 수: {stats['total_cnt']}")
                     print(f"필터링으로 선택된 이미지 수: {stats['filtered_cnt']}")
                     print(f"학습 이미지 수: {stats['train_img_cnt']}")
                     print(f"검증 이미지 수: {stats['valid_img_cnt']}")
-                    
+
                     print_class_statistics(stats['obj_annotation'], "전체 클래스별 통계")
                 
                 except Exception as e:
