@@ -1382,38 +1382,117 @@ def extract_background_images(input_path, output_path):
     logger.info("배경 이미지 추출 완료")
     return stats
 
-def _auto_split(all_files, train_rate, seed=42):
+def _stratified_split(files, train_rate, file_classes):
     """
-    폴더 구조 자동 감지 후 최적 분할 방식 적용
-    - 하위 폴더 여러 개: 폴더별 균등 분배 후 합산
-    - 단일 폴더: 전체 셔플 후 인덱스 분할
-    두 경우 모두 seed 고정으로 재현성 보장
+    클래스 조합 기준 stratified split.
+    같은 이미지가 train/valid에 중복되지 않으면서
+    각 클래스 조합 그룹에서 비율을 유지.
+    - 파일이 1장인 그룹: train으로 배정 (valid 불가)
+    - 파일이 2장 이상인 그룹: train_rate 비율로 분할, 최소 1장씩 보장
+    """
+    groups = defaultdict(list)
+    for path in files:
+        classes = file_classes.get(path, frozenset())
+        group_key = ','.join(str(c) for c in sorted(classes)) if classes else 'background'
+        groups[group_key].append(path)
+
+    train_files, valid_files = [], []
+    for group_key in sorted(groups.keys()):
+        group_files = groups[group_key]
+        random.shuffle(group_files)
+        if len(group_files) == 1:
+            train_files.extend(group_files)
+        else:
+            n = max(1, min(int(len(group_files) * train_rate), len(group_files) - 1))
+            train_files.extend(group_files[:n])
+            valid_files.extend(group_files[n:])
+
+    return train_files, valid_files
+
+
+def _auto_split(all_files, train_rate, seed=42, file_classes=None):
+    """
+    폴더 구조 자동 감지 후 최적 분할 방식 적용.
+    file_classes가 주어지면 클래스 조합 기준 stratified split 수행.
+    - 하위 폴더 여러 개: 폴더별 stratified 분할 후 합산
+    - 단일 폴더: 전체 stratified 분할
+    seed 고정으로 재현성 보장.
     """
     random.seed(seed)
     source_dirs = set(os.path.dirname(f) for f in all_files)
 
     if len(source_dirs) > 1:
-        groups = defaultdict(list)
+        dir_groups = defaultdict(list)
         for path in all_files:
-            groups[os.path.dirname(path)].append(path)
+            dir_groups[os.path.dirname(path)].append(path)
 
         train_files, valid_files = [], []
-        for src in sorted(groups.keys()):
-            files = groups[src]
-            random.shuffle(files)
-            n = int(len(files) * train_rate)
-            train_files.extend(files[:n])
-            valid_files.extend(files[n:])
-        mode = f"다중 폴더 {len(source_dirs)}개 → 폴더별 균등 분배"
+        for src in sorted(dir_groups.keys()):
+            t, v = _stratified_split(dir_groups[src], train_rate, file_classes or {})
+            train_files.extend(t)
+            valid_files.extend(v)
+        mode = f"다중 폴더 {len(source_dirs)}개 → 폴더별 클래스 조합 stratified 분할"
     else:
-        files = list(all_files)
-        random.shuffle(files)
-        n = int(len(files) * train_rate)
-        train_files = files[:n]
-        valid_files = files[n:]
-        mode = "단일 폴더 → 전체 셔플 분할"
+        train_files, valid_files = _stratified_split(list(all_files), train_rate, file_classes or {})
+        mode = "단일 폴더 → 클래스 조합 stratified 분할"
 
     return train_files, valid_files, mode
+
+
+def _collect_file_classes(all_files):
+    """라벨 파일을 읽어 각 이미지의 클래스 집합을 반환. {path: frozenset(class_ids)}"""
+    file_classes = {}
+    total = len(all_files)
+    for i, path in enumerate(all_files):
+        if (i + 1) % 500 == 0 or (i + 1) == total:
+            print(f"\r클래스 정보 수집: {i+1}/{total}", end='')
+        label_path = get_label_path_from_image(path)
+        classes = set()
+        if os.path.isfile(label_path):
+            try:
+                with open(label_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        parts = line.strip().split()
+                        if len(parts) >= 5:
+                            try:
+                                class_id = int(float(parts[0]))
+                                if 0 <= class_id < 89:
+                                    classes.add(class_id)
+                            except (ValueError, IndexError):
+                                pass
+            except Exception:
+                pass
+        file_classes[path] = frozenset(classes)
+    print()
+    return file_classes
+
+
+def _print_valid_class_warnings(valid_files, file_classes, min_threshold=10):
+    """valid set 클래스별 분포 출력. min_threshold 미만이면 경고."""
+    class_counts = defaultdict(int)
+    background_cnt = 0
+    for path in valid_files:
+        classes = file_classes.get(path, frozenset())
+        if classes:
+            for cls in classes:
+                class_counts[cls] += 1
+        else:
+            background_cnt += 1
+
+    print("\nvalid 클래스별 분포:")
+    has_warning = False
+    for cls in sorted(class_counts.keys()):
+        cnt = class_counts[cls]
+        if cnt < min_threshold:
+            print(f"  클래스 {cls}: {cnt}장  ⚠ ({min_threshold}장 미만 - 검증 신뢰도 낮음)")
+            has_warning = True
+        else:
+            print(f"  클래스 {cls}: {cnt}장")
+    if background_cnt:
+        print(f"  배경:     {background_cnt}장")
+    if not has_warning:
+        print("  (모든 클래스 정상)")
+    print()
 
 
 def process_dataset(input_path, output_path, train_rate=0.8, skip_rate=0, seed=42):
@@ -1435,12 +1514,17 @@ def process_dataset(input_path, output_path, train_rate=0.8, skip_rate=0, seed=4
         all_files = random.sample(all_files, keep_count)
         logger.info(f"스킵 후 파일 수: {len(all_files)}")
 
-    # 폴더 구조 자동 감지 후 분할
-    train_files, valid_files, split_mode = _auto_split(all_files, train_rate, seed)
+    # 클래스 정보 수집 (stratified split용)
+    print("클래스 정보 수집 중...")
+    file_classes = _collect_file_classes(all_files)
+
+    # 폴더 구조 자동 감지 + 클래스 조합 stratified 분할
+    train_files, valid_files, split_mode = _auto_split(all_files, train_rate, seed, file_classes)
     logger.info(f"분할 방식: {split_mode}")
     logger.info(f"학습: {len(train_files)}개, 검증: {len(valid_files)}개")
     print(f"\n분할 방식: {split_mode}")
-    print(f"학습: {len(train_files)}개 | 검증: {len(valid_files)}개\n")
+    print(f"학습: {len(train_files)}개 | 검증: {len(valid_files)}개")
+    _print_valid_class_warnings(valid_files, file_classes)
 
     # 결과 파일 경로 설정
     val_path = output_path / 'valid.txt'
@@ -2149,7 +2233,8 @@ def process_dataset_advanced(input_path, output_path, train_rate=0.8, skip_rate=
 
     # ── 패스 1: 필터링 + 어노테이션 캐싱 ──────────────────────────────
     filtered_files = []
-    file_cache = {}  # {path: {'annotation': np.array, 'no_label': bool, 'empty_label': bool}}
+    file_cache = {}   # {path: {'annotation': np.array, 'no_label': bool, 'empty_label': bool}}
+    file_classes = {} # {path: frozenset(class_ids)} - stratified split용
 
     print(f"필터링 중... (전체 {total_files}개)")
     for full_path in all_files:
@@ -2224,6 +2309,12 @@ def process_dataset_advanced(input_path, output_path, train_rate=0.8, skip_rate=
                 'no_label': no_label,
                 'empty_label': empty_label,
             }
+            # stratified split을 위한 클래스 집합 기록
+            classes = set()
+            for idx in range(1, len(current_annotation)):
+                if current_annotation[idx] > 0:
+                    classes.add(idx - 1)
+            file_classes[full_path] = frozenset(classes)
             stats['filtered_cnt'] += 1
             with open(filtered_path, 'a', encoding='utf-8') as f:
                 f.write(f"{full_path}\n")
@@ -2237,13 +2328,14 @@ def process_dataset_advanced(input_path, output_path, train_rate=0.8, skip_rate=
 
     print("\n")
 
-    # ── 폴더 구조 자동 감지 후 분할 ───────────────────────────────────
-    train_files, valid_files, split_mode = _auto_split(filtered_files, train_rate, seed)
+    # ── 폴더 구조 자동 감지 + 클래스 조합 stratified 분할 ────────────
+    train_files, valid_files, split_mode = _auto_split(filtered_files, train_rate, seed, file_classes)
     stats['split_mode'] = split_mode
     logger.info(f"분할 방식: {split_mode}")
     logger.info(f"학습: {len(train_files)}개, 검증: {len(valid_files)}개")
     print(f"분할 방식: {split_mode}")
-    print(f"학습: {len(train_files)}개 | 검증: {len(valid_files)}개\n")
+    print(f"학습: {len(train_files)}개 | 검증: {len(valid_files)}개")
+    _print_valid_class_warnings(valid_files, file_classes)
 
     # ── 패스 2: 캐시 기반 통계 집계 및 파일 기록 ─────────────────────
     total_split = len(train_files) + len(valid_files)
