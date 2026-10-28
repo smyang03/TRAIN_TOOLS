@@ -1401,6 +1401,17 @@ def get_list_jpg(_dir):
 	if not os.path.exists(_dir): os.makedirs(_dir)
 	return sort_image_paths([os.path.join(_dir, f) for f in os.listdir(_dir) if is_image_file(f)])
 
+def win_long_path(path):
+	"""Windows 경로 길이(260자) 제한을 넘는 백업 경로도 쓸 수 있도록 확장 경로 접두사를 붙인다 (다른 OS는 그대로)."""
+	if os.name != 'nt' or not path:
+		return path
+	path = os.path.abspath(path)
+	if path.startswith('\\\\?\\'):
+		return path
+	if path.startswith('\\\\'):
+		return '\\\\?\\UNC\\' + path[2:]
+	return '\\\\?\\' + path
+
 class FileSafetyManager:
 	def __init__(self, base_dir):
 		self.base_dir = base_dir
@@ -1419,6 +1430,7 @@ class FileSafetyManager:
 		backup_path = os.path.join(self.base_dir, 'original_backup', category, rel_path)
 		if os.path.normcase(os.path.abspath(backup_path)) == os.path.normcase(source_abs):
 			raise ValueError(f"backup path equals source: {source_abs}")
+		backup_path = win_long_path(backup_path)
 		os.makedirs(os.path.dirname(backup_path), exist_ok=True)
 		return backup_path
 
@@ -3038,13 +3050,6 @@ class MainApp:
 			self.master.update()
 			
 			try:
-				# 현재 인덱스가 현재 보는 이미지보다 크면 현재 인덱스 조정 필요 없음
-				if i > current_idx:
-					pass
-				# 현재 인덱스가 현재 보는 이미지와 같거나 작으면 현재 인덱스 감소
-				elif i <= current_idx:
-					current_idx -= 1
-				
 				# 현재 파일 경로
 				img_path = self.imlist[i]
 				label_path = image_to_label_path(img_path)
@@ -3062,7 +3067,10 @@ class MainApp:
 				# 이미지 리스트에서 삭제
 				self.imlist.pop(i)
 				deleted_count += 1
-				
+				# 실제로 삭제된 경우에만 현재 인덱스 조정 (백업 실패로 건너뛴 프레임은 위치에 영향 없음)
+				if i <= current_idx:
+					current_idx -= 1
+
 			except Exception as e:
 				print(f"이미지 {i+1} 삭제 중 오류 발생: {e}")
 		
@@ -5007,6 +5015,24 @@ class MainApp:
 	def load_tracking_label_records(self, image_path):
 		return self.iou_track_manager.load_label_records(image_path)
 
+	def find_label_line_index(self, label_path, label_line, preferred_index=-1):
+		"""label_line과 같은 내용의 줄 번호를 파일에서 찾는다 (preferred_index 우선). 없으면 -1."""
+		target = label_line.split()
+		try:
+			with open(label_path, 'r', encoding='utf-8') as f:
+				file_lines = f.readlines()
+		except UnicodeDecodeError:
+			with open(label_path, 'r', encoding='cp949') as f:
+				file_lines = f.readlines()
+		except Exception:
+			return -1
+		if 0 <= preferred_index < len(file_lines) and file_lines[preferred_index].split() == target:
+			return preferred_index
+		for line_index, line in enumerate(file_lines):
+			if line.split() == target:
+				return line_index
+		return -1
+
 	def run_iou_track(self):
 		if self.selid < 0 or self.selid >= len(self.bbox):
 			messagebox.showwarning("IOU 추적", "먼저 추적할 bbox를 선택하세요.")
@@ -5034,6 +5060,11 @@ class MainApp:
 		start_idx = self.ci
 		end_idx = min(len(self.imlist) - 1, start_idx + track_range)
 		selected_bbox = copy.deepcopy(self.bbox[self.selid])
+		selected_label_line = self.build_current_label_line(selected_bbox)
+		# self.bbox는 로드 시 중복/빈 줄이 제거되므로 selid가 파일 줄 번호와 다를 수 있다.
+		# 현재 bbox를 먼저 저장해 파일과 맞춘 뒤, 파일에서 선택 박스의 실제 줄 번호를 찾는다.
+		self.write_bbox()
+		selected_line_index = self.find_label_line_index(self.gt_fn, selected_label_line, self.selid)
 		selected_class_id = int(selected_bbox[2])
 		same_class_only = self.track_same_class_var.get() if hasattr(self, 'track_same_class_var') else True
 		result = self.iou_track_manager.track(
@@ -5043,8 +5074,8 @@ class MainApp:
 			end_idx,
 			self.get_bbox_original_coords(selected_bbox),
 			selected_class_id,
-			self.build_current_label_line(selected_bbox),
-			self.selid,
+			selected_label_line,
+			selected_line_index,
 			iou_threshold,
 			same_class_only,
 			max_missing=2
@@ -5138,7 +5169,8 @@ class MainApp:
 
 		def keep_only_and_close():
 			window.destroy()
-			self.apply_iou_track_keep_only()
+			# Go로 프레임/선택이 바뀌었어도 미리보기한 결과 그대로 적용
+			self.apply_iou_track_keep_only(result)
 
 		button_frame = tk.Frame(window)
 		button_frame.pack(fill=tk.X, padx=10, pady=(4, 10))
@@ -5146,8 +5178,9 @@ class MainApp:
 		tk.Button(button_frame, text="Keep Only", command=keep_only_and_close, width=12).pack(side=tk.LEFT, padx=(0, 6))
 		tk.Button(button_frame, text="Close", command=window.destroy, width=10).pack(side=tk.RIGHT)
 
-	def apply_iou_track_keep_only(self):
-		result = self.run_iou_track()
+	def apply_iou_track_keep_only(self, result=None):
+		if result is None:
+			result = self.run_iou_track()
 		if not result:
 			return
 
@@ -6997,6 +7030,9 @@ class MainApp:
 			self.zoom(False)
 		elif ckey == 'f':
 			self.fit_to_window()
+		elif ckey == 'g':
+			self.manual_delete_auto_classes()
+			return
 		elif ckey == keysetting[16]:
 			self.cross_line = not self.cross_line
 		elif ckey == keysetting[11]:
@@ -7048,10 +7084,6 @@ class MainApp:
 		# c 키 처리 (폴리곤 닫기)
 		elif ckey == 'h':
 			self.on_close_polygon_key(event)
-			return
-		# g 키 처리 (자동 삭제 단축키)
-		elif ckey == 'g':
-			self.manual_delete_auto_classes()
 			return
 		# 나머지 업데이트
 		if self.ci >= len(self.imlist):

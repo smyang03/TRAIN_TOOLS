@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import TclError, filedialog, ttk
 from PIL import Image, ImageTk
 import os
+import re
 from tqdm import tqdm
 from PIL import ImageDraw
 from datetime import datetime
@@ -24,6 +25,17 @@ try:
     import psutil
 except ImportError:
     pass  # psutil은 선택적 의존성
+
+def win_long_path(path):
+    """Windows 경로 길이(260자) 제한을 넘는 백업 경로도 쓸 수 있도록 확장 경로 접두사를 붙인다 (다른 OS는 그대로)."""
+    if os.name != 'nt' or not path:
+        return path
+    path = os.path.abspath(path)
+    if path.startswith('\\\\?\\'):
+        return path
+    if path.startswith('\\\\'):
+        return '\\\\?\\UNC\\' + path[2:]
+    return '\\\\?\\' + path
 
 class ImageViewer:
     def __init__(self, root):
@@ -572,9 +584,6 @@ class ImageViewer:
     def reset_overlap_cache(self):
         """겹침 캐시 초기화"""
         self.overlap_cache = {}
-        # 값이 변경되면 디스플레이 업데이트
-        if self.overlap_filter_var.get() != "모두 보기" and self.overlap_class_selector.get() != "선택 안함":
-            self.update_display()
     def update_cache_access(self, cache_type, key):
         """캐시 접근 순서를 업데이트합니다 (OrderedDict의 move_to_end 사용)."""
         try:
@@ -618,6 +627,7 @@ class ImageViewer:
         # Reset pagination
         self.current_page = 0
         self.total_pages = 0
+        self.current_view_total = None
 
         self.overlap_cache = {}
         
@@ -830,12 +840,12 @@ class ImageViewer:
                 progress_window.destroy()
     def detect_file_encoding(self, file_path):
         """파일 인코딩을 감지합니다."""
-        encodings_to_try = ['utf-8', 'cp949', 'euc-kr', 'latin-1']
-        
+        encodings_to_try = ['utf-8-sig', 'cp949', 'euc-kr', 'latin-1']
+
         for encoding in encodings_to_try:
             try:
                 with open(file_path, 'r', encoding=encoding) as f:
-                    f.read(100)  # 작은 샘플만 읽기
+                    f.read()  # 전체를 읽어 확인 (앞부분만 보면 뒤쪽 한글에서 실패)
                     return encoding
             except UnicodeDecodeError:
                 continue
@@ -1147,8 +1157,8 @@ class ImageViewer:
 
         try:
             # 먼저 파일을 읽어서 전체 라인 개수 확인
-            with open(file_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
+            with open(file_path, 'r', encoding=self.detect_file_encoding(file_path)) as f:
+                lines = [line.rstrip('\r\n') + '\n' for line in f if line.strip()]
                 total_lines = len(lines)
 
             # 전체 파일 개수를 표시하고 슬라이스 크기 입력받기
@@ -1250,20 +1260,16 @@ class ImageViewer:
                 os.mkdir(savepath)
 
             # 파일 슬라이싱 시작
+            random.shuffle(lines)
             for i in range(num_files):
-                current_lines = min(lines_per_file, len(lines))
-                if current_lines == 0:
+                random_lines = lines[i * lines_per_file:(i + 1) * lines_per_file]
+                if not random_lines:
                     break
-
-                random_lines = random.sample(lines, current_lines)
                 output_file = os.path.join(savepath, f'{filename}_{i}.txt')
 
                 with open(output_file, 'w', encoding='utf-8') as out_f:
                     out_f.writelines(random_lines)
 
-                # Remove used lines from the pool
-                for line in random_lines:
-                    lines.remove(line)
 
                 print(f"Saved file: {output_file}")
 
@@ -1387,8 +1393,8 @@ class ImageViewer:
                 img_rel_path = self.make_path(img_path)
                 label_rel_path = self.make_path(label_path)
 
-                img_backup = os.path.join(img_backup_dir, img_rel_path)
-                label_backup = os.path.join(label_backup_dir, label_rel_path)
+                img_backup = win_long_path(os.path.join(img_backup_dir, img_rel_path))
+                label_backup = win_long_path(os.path.join(label_backup_dir, label_rel_path))
 
                 # 백업 디렉토리 구조 생성
                 os.makedirs(os.path.dirname(img_backup), exist_ok=True)
@@ -1401,6 +1407,7 @@ class ImageViewer:
                         print(f"이미지 백업 생성: {img_backup}")
                     except Exception as backup_error:
                         print(f"이미지 백업 실패: {str(backup_error)}")
+                        raise RuntimeError(f"백업 실패로 마스킹 건너뜀: {img_path}") from backup_error
 
                 if not os.path.exists(label_backup) and os.path.exists(label_path):
                     try:
@@ -1408,6 +1415,7 @@ class ImageViewer:
                         print(f"라벨 백업 생성: {label_backup}")
                     except Exception as backup_error:
                         print(f"라벨 백업 실패: {str(backup_error)}")
+                        raise RuntimeError(f"백업 실패로 마스킹 건너뜀: {label_path}") from backup_error
                 
                 # 라벨 파일 읽기
                 with open(label_path, 'r', encoding='utf-8') as f:
@@ -1554,6 +1562,19 @@ class ImageViewer:
         view_y = int(original_y * self.zoom_ratio)
         return view_x, view_y
     
+    def backup_label_before_edit(self, label_path):
+        """라벨 파일을 수정하기 전에 원본을 한 번만 백업합니다. 실패하면 False."""
+        try:
+            backup_path = win_long_path(os.path.join('original_backup', 'labels', self.make_path(label_path)))
+            if os.path.exists(backup_path) or not os.path.exists(label_path):
+                return True
+            os.makedirs(os.path.dirname(backup_path), exist_ok=True)
+            shutil.copyfile(label_path, backup_path)
+            return True
+        except Exception as e:
+            print(f"라벨 백업 실패 ({label_path}): {e}")
+            return False
+
     def make_path(self, path):
         """
         경로에서 파일명을 안전하게 추출합니다.
@@ -1573,23 +1594,21 @@ class ImageViewer:
             return ""
             
         try:
-            # 경로 정규화
-            path = os.path.normpath(path)
-            
-            # os.path 모듈 사용하여 안전하게 파일명 추출
-            basename = os.path.basename(path)
-            
-            # 추가 검증 - 상대 경로 공격 방지
-            if '..' in basename or '/' in basename or '\\' in basename:
-                # 위험한 문자가 포함된 경우 필터링
-                basename = basename.replace('..', '').replace('/', '_').replace('\\', '_')
-            
+            # 경로 정규화 후 드라이브(D:, \\\\서버\\공유)를 폴더 이름으로 바꿔 전체 경로를 보존
+            path = os.path.normpath(os.path.abspath(path))
+            drive, tail = os.path.splitdrive(path)
+            drive_name = re.sub(r'[\\/:]+', '_', drive).strip('_') or 'root'
+            parts = [drive_name] + [part for part in re.split(r'[\\/]+', tail) if part and part != '..']
+
             # 파일명 유효성 확인 (운영체제별 금지 문자 필터링)
             invalid_chars = ['<', '>', ':', '"', '|', '?', '*']
-            for char in invalid_chars:
-                basename = basename.replace(char, '_')
-                
-            return basename
+            safe_parts = []
+            for part in parts:
+                for char in invalid_chars:
+                    part = part.replace(char, '_')
+                safe_parts.append(part)
+
+            return os.path.join(*safe_parts)
         
         except Exception as e:
             print(f"파일명 추출 오류: {e}")
@@ -2139,8 +2158,8 @@ class ImageViewer:
                     progress_bar["value"] = total_files
                     status_label.config(text=f"처리 완료: {processed_files}/{total_files} 파일, 유효: {valid_files}, 오류: {invalid_files}")
 
-                    # labelsdata 업데이트
-                    self.labelsdata = labelsdata_new
+                    # labelsdata 업데이트 (클래스별 이미지 목록, 순서 유지하며 중복 제거)
+                    self.labelsdata = [list(dict.fromkeys(paths)) for paths in labelsdata_new]
 
                     # 클래스 정렬 및 메뉴 업데이트
                     sorted_classes = sorted(list(classes), key=lambda x: int(float(x)))
@@ -2413,12 +2432,6 @@ class ImageViewer:
                         width = float(parts[3])
                         height = float(parts[4])
                         
-                        # 값 범위 검증 (정규화된 좌표는 0~1 사이)
-                        if not (0 <= x_center <= 1 and 0 <= y_center <= 1 and 
-                                0 <= width <= 1 and 0 <= height <= 1):
-                            print(f"경고: 범위를 벗어난 좌표 값 무시: {line}")
-                            continue
-                        
                         # 박스 좌표 계산 (normalized coordinates)
                         x1 = x_center - width/2
                         y1 = y_center - height/2
@@ -2471,8 +2484,8 @@ class ImageViewer:
                                 
                             iou = self.calculate_iou(main_box['coords'], target_box['coords'])
                             
-                            # IoU 임계값 이상인 경우 겹침으로 간주
-                            if iou >= self.iou_threshold_var.get():
+                            # 실제로 맞닿아 있고(IoU > 0) 임계값 이상인 경우 겹침으로 간주
+                            if iou > 0 and iou >= self.iou_threshold_var.get():
                                 box_overlap_info['has_overlap'] = True
                                 any_overlap = True
                                 
@@ -2515,6 +2528,23 @@ class ImageViewer:
             import traceback
             traceback.print_exc()
             return False, 0.0, [], []
+    def get_box_overlap_flags(self, label_path, class_idx, overlap_class_idx):
+        """주 클래스 박스별 겹침 여부를 {라벨 파일 줄 번호: True/False} 로 반환합니다."""
+        _, _, _, all_boxes_info = self.check_box_overlap(label_path, class_idx, overlap_class_idx)
+        return {info['original_line_index']: info['has_overlap'] for info in all_boxes_info}
+
+    def image_matches_overlap_filter(self, label_path, class_idx, overlap_class_idx, overlap_filter):
+        """이미지에 필터 조건에 맞는 주 클래스 박스가 하나라도 있으면 True.
+        - 겹치는 것만: 대상 클래스와 겹치는 박스가 있는 이미지
+        - 겹치지 않는 것만: 대상 클래스와 겹치지 않는 박스가 있는 이미지 (한 이미지에 둘 다 있을 수 있음)
+        """
+        if overlap_filter not in ("겹치는 것만", "겹치지 않는 것만"):
+            return True
+        flags = self.get_box_overlap_flags(label_path, class_idx, overlap_class_idx)
+        if overlap_filter == "겹치는 것만":
+            return any(flags.values())
+        return any(not v for v in flags.values())
+
     def check_boxes_overlap(self, box1, box2):
         """
         두 박스가 겹치는지 확인합니다.
@@ -2673,29 +2703,24 @@ class ImageViewer:
             has_overlap, max_iou, detailed_info, all_boxes_info = self.check_box_overlap(
                 label_path, class_idx, overlap_class_idx)
             
-            # 필터 조건에 따라 이미지 필터링
+            # 박스 단위 겹침 여부로 통계/필터링
+            # (한 이미지에 겹치는 박스와 겹치지 않는 박스가 함께 있으면 양쪽에 모두 집계됨)
+            flags = {info['original_line_index']: info['has_overlap'] for info in all_boxes_info}
+            any_overlap = any(flags.values())
+            any_non_overlap = any(not v for v in flags.values())
+            if any_overlap:
+                stats["overlapping"] += 1
+            if any_non_overlap:
+                stats["non_overlapping"] += 1
+
             if overlap_filter == "겹치는 것만":
-                # 겹치는 것만 필터링
-                if has_overlap:
-                    stats["overlapping"] += 1
+                if any_overlap:
                     filtered_images.append((label_path, max_iou))
-                else:
-                    stats["non_overlapping"] += 1
             elif overlap_filter == "겹치지 않는 것만":
-                # 겹치지 않는 것만 필터링
-                if not has_overlap:
-                    stats["non_overlapping"] += 1
+                if any_non_overlap:
                     filtered_images.append((label_path, 0.0))
-                else:
-                    stats["overlapping"] += 1
             else:  # "모두 보기"
-                # 모든 이미지 표시
-                if has_overlap:
-                    stats["overlapping"] += 1
-                    filtered_images.append((label_path, max_iou))
-                else:
-                    stats["non_overlapping"] += 1
-                    filtered_images.append((label_path, 0.0))
+                filtered_images.append((label_path, max_iou if any_overlap else 0.0))
                         
                 result_label.config(text=f"발견된 겹침: {stats['overlapping']}, 겹치지 않음: {stats['non_overlapping']}")
                 
@@ -2939,10 +2964,13 @@ class ImageViewer:
             if hasattr(self, 'show_only_similar') and self.show_only_similar and hasattr(self, 'current_filtered_labels'):
                 # 유사 라벨 필터링 모드에서는 기존 클래스 필터링을 무시하고 유사 라벨만 표시
                 current_images = self.current_filtered_labels.copy()
-                
+
                 # 페이지네이션 처리
                 # 페이지 크기에 맞게 분할
                 self.total_pages = (len(current_images) + self.page_size - 1) // self.page_size
+                self.current_view_total = len(current_images)
+                if self.current_page >= self.total_pages:
+                    self.current_page = max(0, self.total_pages - 1)
                 start_idx = self.current_page * self.page_size
                 end_idx = min(start_idx + self.page_size, len(current_images))
                 current_page_images = current_images[start_idx:end_idx]
@@ -2978,11 +3006,16 @@ class ImageViewer:
                                     # 라벨 파일에서 클래스 박스 정보 읽기
                                     with open(label_path, "r", encoding='utf-8') as f:
                                         lines = f.readlines()
+                                        class_box_idx = -1  # 같은 클래스 안에서의 순번 (크롭 뷰 기준)
                                         for line_idx, line in enumerate(lines):
                                             try:
-                                                class_index, x_center, y_center, width, height = map(float, line.split())
+                                                parts = line.split()
+                                                if len(parts) < 5:
+                                                    continue
+                                                class_index, x_center, y_center, width, height = map(float, parts[:5])
                                                 if int(class_index) != selected_class:
                                                     continue
+                                                class_box_idx += 1
                                                     
                                                 # 특정 박스만 표시 (주요 수정 사항)
                                                 if hasattr(self, 'filtered_similar_label_info'):
@@ -3008,7 +3041,7 @@ class ImageViewer:
                                                 # 박스 그리기 - 정확한 라인 인덱스 전달
                                                 self.draw_boxes_on_image_corp(
                                                     cropped, label_path, current_row, current_col, 
-                                                    selected_class, start_idx + idx, line_idx  # line_idx 전달
+                                                    selected_class, start_idx + idx, class_box_idx  # 같은 클래스 내 순번 전달
                                                 )
                                                 
                                                 boxes_processed = True
@@ -3105,6 +3138,9 @@ class ImageViewer:
             
             # Update total pages based on class images
             self.total_pages = (total_class_images + self.page_size - 1) // self.page_size
+            self.current_view_total = total_class_images
+            if self.current_page >= self.total_pages:
+                self.current_page = max(0, self.total_pages - 1)
             
             # Get current page's worth of images
             start_idx = self.current_page * self.page_size
@@ -3139,13 +3175,16 @@ class ImageViewer:
                                 # 라벨 파일에서 클래스 박스 정보 읽기
                                 box_idx = 0  # 같은 클래스 내 박스 인덱스
                                 lines = self._get_label_data(label_path)
-                                overlap_result = None
+                                overlap_flags = {}
                                 if overlap_class != "선택 안함":
-                                    overlap_result = self.check_box_overlap(
+                                    overlap_flags = self.get_box_overlap_flags(
                                         label_path, class_idx, int(overlap_class))
                                 for line_idx, line in enumerate(lines):
                                     try:
-                                        class_index, x_center, y_center, width, height = map(float, line.split())
+                                        parts = line.split()
+                                        if len(parts) < 5:
+                                            continue
+                                        class_index, x_center, y_center, width, height = map(float, parts[:5])
                                         if int(class_index) != class_idx:
                                             continue
                                             
@@ -3157,16 +3196,9 @@ class ImageViewer:
                                         # 겹침 정보 확인
                                         show_box = True
                                         if overlap_class != "선택 안함":
-                                            # 박스별 겹침 정보 확인
-                                            has_overlap, max_iou, detail_info, all_boxes_info = overlap_result
-                                            
-                                            # 해당 박스의 겹침 정보 찾기
-                                            current_box_overlap = False
-                                            for box_info in all_boxes_info:
-                                                if box_info['box_index'] == box_idx:
-                                                    current_box_overlap = box_info['has_overlap']
-                                                    break
-                                                    
+                                            # 이 박스(파일 line_idx 줄)의 겹침 여부
+                                            current_box_overlap = overlap_flags.get(line_idx, False)
+
                                             # 필터 조건에 따라 박스 표시 여부 결정
                                             if overlap_filter == "겹치는 것만" and not current_box_overlap:
                                                 show_box = False
@@ -3202,13 +3234,8 @@ class ImageViewer:
                             if not boxes_processed:
                                 show_image = True
                                 if overlap_class != "선택 안함":
-                                    has_overlap, _, _, _ = self.check_box_overlap(
-                                        label_path, class_idx, int(overlap_class))
-                                    
-                                    if overlap_filter == "겹치는 것만" and not has_overlap:
-                                        show_image = False
-                                    elif overlap_filter == "겹치지 않는 것만" and has_overlap:
-                                        show_image = False
+                                    show_image = self.image_matches_overlap_filter(
+                                        label_path, class_idx, int(overlap_class), overlap_filter)
                                 
                                 if show_image:
                                     if img_resized is None:
@@ -3225,13 +3252,8 @@ class ImageViewer:
                             # Show full image
                             show_image = True
                             if overlap_class != "선택 안함":
-                                has_overlap, _, _, _ = self.check_box_overlap(
-                                    label_path, class_idx, int(overlap_class))
-                                
-                                if overlap_filter == "겹치는 것만" and not has_overlap:
-                                    show_image = False
-                                elif overlap_filter == "겹치지 않는 것만" and has_overlap:
-                                    show_image = False
+                                show_image = self.image_matches_overlap_filter(
+                                    label_path, class_idx, int(overlap_class), overlap_filter)
                             
                             if show_image:
                                 if img_resized is None:
@@ -3933,7 +3955,7 @@ class ImageViewer:
                         target_box['y'] + target_box['h'] / 2
                     )
                     iou = self.calculate_iou(current_coords, target_coords)
-                    if iou >= self.iou_threshold_var.get():
+                    if iou > 0 and iou >= self.iou_threshold_var.get():
                         show_iou = True
                         iou_value = max(iou_value, iou)
                         text_color = self.get_iou_color(iou)
@@ -6693,7 +6715,10 @@ class ImageViewer:
 
                     print(f"삭제 후 남은 라인 수: {len(lines)}")
 
-                    # 수정된 내용으로 파일 다시 쓰기
+                    # 수정된 내용으로 파일 다시 쓰기 (백업 실패 시 건너뜀)
+                    if not self.backup_label_before_edit(label_path):
+                        error_count += 1
+                        continue
                     with open(label_path, 'w', encoding='utf-8') as f:
                         f.writelines(lines)
                         
@@ -6756,7 +6781,11 @@ class ImageViewer:
             widget.destroy()
 
         # [SpeedOptimization] 캐시 갱신 제거 - 페이지 전환 시 자동 갱신
-        print(f"[SpeedOptimization] {len(processed_files)}개 파일 저장 완료 (캐시 갱신 생략)")
+        print(f"[SpeedOptimization] {len(processed_files)}개 파일 저장 완료")
+        for label_path in processed_files:
+            self.invalidate_caches_for_label(label_path)
+        if processed_files:
+            self.refresh_label_data_cache(specific_paths=list(processed_files))
         print(f"→ 데이터는 파일에 저장되었으며, 페이지 재방문 시 자동으로 최신 데이터가 로드됩니다")
 
         # 완료 후 처리
@@ -7051,9 +7080,14 @@ class ImageViewer:
 
     def update_pagination_controls(self):
         """페이지네이션 컨트롤 상태 업데이트"""
-        # 전체 파일 개수 업데이트
-        total_files = len(self.image_paths)
-        self.total_files_label.config(text=f"{total_files}개")
+        # 현재 보고 있는 목록(클래스/필터 적용 후) 기준 개수
+        total_files = getattr(self, 'current_view_total', None)
+        if total_files is None:
+            total_files = len(self.image_paths)
+        if total_files != len(self.image_paths):
+            self.total_files_label.config(text=f"{total_files}개 / 전체 {len(self.image_paths)}")
+        else:
+            self.total_files_label.config(text=f"{total_files}개")
 
         # 페이지 입력 필드와 전체 페이지 레이블 업데이트
         self.page_entry.delete(0, tk.END)  # 기존 내용 삭제
@@ -7086,8 +7120,11 @@ class ImageViewer:
             # 페이지 크기 업데이트
             self.page_size = new_page_size
 
-            # 전체 페이지 수 재계산
-            self.total_pages = (len(self.image_paths) + self.page_size - 1) // self.page_size
+            # 전체 페이지 수 재계산 (클래스/필터 적용 중이면 그 목록 기준)
+            view_total = getattr(self, 'current_view_total', None)
+            if view_total is None:
+                view_total = len(self.image_paths)
+            self.total_pages = (view_total + self.page_size - 1) // self.page_size
 
             # 현재 페이지가 유효한 범위 내에 있는지 확인
             if self.current_page >= self.total_pages:
@@ -7878,7 +7915,10 @@ class ImageViewer:
                                 # 선택되지 않은 라인은 그대로 유지
                                 new_lines.append(line)
                         
-                        # 파일에 쓰기
+                        # 파일에 쓰기 (백업 실패 시 건너뜀)
+                        if not self.backup_label_before_edit(label_path):
+                            processed += 1
+                            continue
                         with open(label_path, 'w', encoding='utf-8') as f:
                             f.writelines(new_lines)
                         
