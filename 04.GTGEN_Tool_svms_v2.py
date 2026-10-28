@@ -2457,44 +2457,10 @@ class MainApp:
 		
 		# == UI 레이아웃 구성 종료 ==
 		
-		# 기존 이미지 로드 코드
-		while True:
-			try: 
-				_dir = self.get_directory() 
-			except Exception as e:
-				print(e) 
-				if _dir == None:                    
-					return
-			print(_dir)
-			fname, ext = os.path.splitext(_dir)
-			if ext != '.evaluation':
-				break
-		
-		# 이미지 리스트 로드 코드
-		if ext != '.txt' and not getattr(self, 'folder_loaded', False):
-			cdir = os.path.abspath(_dir)
-			if self.CLASSIFY_TPFP:
-				self.imlist = get_list_jpg(cdir)
-				self.imlist += get_list_jpg(cdir + '/TP')
-				self.imlist += get_list_jpg(cdir + '/FP')
-				self.imlist = sort_image_paths(self.imlist)
-				labelsname = cdir.replace('JPEGImages','labels')
-				if not(os.path.isdir(labelsname + '/TP')):
-					os.makedirs(os.path.join(labelsname + '/TP'))
-				if not(os.path.isdir(labelsname + '/FP')):
-					os.makedirs(os.path.join(labelsname + '/FP'))
-			else:
-				self.imlist = sort_image_paths([os.path.join(cdir, f) for f in os.listdir(cdir) if is_image_file(f)])
-				for f in self.imlist:
-					label = image_to_label_path(f)
-					label = label.replace('/','\\')
-					if os.path.exists(label) is False:
-						pathstr = os.path.split(label)
-						if os.path.isdir(pathstr[0]) is False:
-							os.makedirs(os.path.join(pathstr[0]))
-						flabel = open(label, "wt")
-						flabel.close()
-		
+		# 시작 시 자동으로 열기 창을 띄우지 않는다. Open Folder / Open List 버튼으로 데이터를 연다.
+		_dir = None
+		self.imlist = []
+
 		self._dir = _dir
 		_dir_goodbye = _dir
 		self.setup_input_validation()
@@ -2826,30 +2792,54 @@ class MainApp:
 		self.canvas.create_rectangle([10,10,40,25], fill=judge_string[c][1], outline='', tags='img')
 		self.canvas.create_text([23,17], font='Arial\ Black 8', fill='white', text=judge_string[c][0], tags='img')
 		return
+	def get_last_open_dir(self):
+		"""최근에 연 폴더/리스트 위치 (파일 대화상자 시작 위치)"""
+		try:
+			with open(os.path.join(BASE_DIR, '.last_open_path.txt'), 'r', encoding='utf-8') as f:
+				path = f.read().strip()
+			if os.path.isdir(path):
+				return path
+			if os.path.isdir(os.path.dirname(path)):
+				return os.path.dirname(path)
+		except OSError:
+			pass
+		return None
+
+	def save_last_open_path(self, path):
+		try:
+			with open(os.path.join(BASE_DIR, '.last_open_path.txt'), 'w', encoding='utf-8') as f:
+				f.write(str(path))
+		except OSError as e:
+			print(f"[Open] 최근 경로 저장 실패: {e}")
+
+	def save_before_switching_data(self):
+		"""다른 폴더/리스트를 열기 전에 현재 작업(라벨, 마스킹)을 저장"""
+		if self.imlist and self.gt_fn:
+			self.save_masking_if_dirty()
+			self.write_bbox()
+
 	def load_new_folder(self):
 		try:
-			a = tk.Tk()
-			a.withdraw()
-			a.update()
-			new_dir = tk.filedialog.askdirectory()
+			new_dir = filedialog.askdirectory(parent=self.master, title="이미지 폴더 선택", initialdir=self.get_last_open_dir())
 			if new_dir:  # 폴더가 선택된 경우
+				jpeg_dir = os.path.join(new_dir, 'JPEGImages')
+				search_dir = jpeg_dir if os.path.isdir(jpeg_dir) else new_dir
+				images = []
+				for root, dirs, files in os.walk(search_dir):
+					images.extend(os.path.join(root, f) for f in files if is_image_file(f))
+				if not images:
+					messagebox.showwarning("폴더 열기", f"선택한 폴더(하위 폴더 포함)에서 이미지를 찾지 못했습니다.\n{new_dir}")
+					return
+				self.save_before_switching_data()
 				self.reset_data()
+				self.imlist = sort_image_paths(images)
 				if self.CLASSIFY_TPFP:
-					self.imlist = get_list_jpg(new_dir)
-					self.imlist += get_list_jpg(new_dir + '/TP')
-					self.imlist += get_list_jpg(new_dir + '/FP')
-					self.imlist = sort_image_paths(self.imlist)
-					
-					# TP/FP 폴더 생성
-					labels_dir = new_dir.replace('JPEGImages','labels')
-					if not(os.path.isdir(labels_dir + '/TP')):
-						os.makedirs(os.path.join(labels_dir + '/TP'))
-					if not(os.path.isdir(labels_dir + '/FP')):
-						os.makedirs(os.path.join(labels_dir + '/FP'))
+					# TP/FP 판정용 라벨 폴더 생성 (JPEGImages 구조일 때만, 이미지 폴더 안에 만들지 않도록)
+					if 'JPEGImages' in search_dir:
+						labels_dir = search_dir.replace('JPEGImages','labels')
+						os.makedirs(labels_dir + '/TP', exist_ok=True)
+						os.makedirs(labels_dir + '/FP', exist_ok=True)
 				else:
-					self.imlist = sort_image_paths([os.path.join(new_dir, f) for f in os.listdir(new_dir) 
-								if is_image_file(f)])
-					
 					# 각 이미지에 대한 라벨 파일 확인/생성
 					for f in self.imlist:
 						label = image_to_label_path(f)
@@ -2860,14 +2850,15 @@ class MainApp:
 								os.makedirs(os.path.join(pathstr[0]))
 							flabel = open(label, "wt")
 							flabel.close()
-				if self.imlist:
-					self.loaded_list_file_path = None
-					self.img_slider.config(to=len(self.imlist))
-					self.img_slider.set(self.ci + 1)
-					self.slider_info.config(text=f"{self.ci+1}/{len(self.imlist)}")
-					self._dir = new_dir
-					self.draw_image()
-			a.destroy()
+				self.loaded_list_file_path = None
+				self.img_slider.config(to=len(self.imlist))
+				self.img_slider.set(self.ci + 1)
+				self.slider_info.config(text=f"{self.ci+1}/{len(self.imlist)}")
+				self._dir = new_dir
+				self.save_last_open_path(new_dir)
+				print(f"[Open] 폴더 {new_dir}: 이미지 {len(self.imlist)}개")
+				self.draw_image()
+				self.draw_bbox()
 		except Exception as e:
 			print(f"Error loading folder: {e}")
 			messagebox.showerror("Error", f"Failed to load folder: {e}")
@@ -2926,20 +2917,25 @@ class MainApp:
 	def load_new_list(self):
 		"""새로운 이미지 리스트 파일 로드"""
 		try:
-			a = tk.Tk()
-			a.withdraw()
-			a.update()
-			file_path = tk.filedialog.askopenfilename(filetypes=[("Text files", "*.txt")])
+			file_path = filedialog.askopenfilename(parent=self.master, title="이미지 리스트 파일(.txt) 선택",
+				initialdir=self.get_last_open_dir(), filetypes=[("이미지 리스트", "*.txt"), ("모든 파일", "*.*")])
 			if file_path:  # 파일이 선택된 경우
-				self.reset_data()
 				try:
-					self.imlist, nofile, encoding = read_image_list_file(file_path)
+					images, nofile, encoding = read_image_list_file(file_path)
 				except Exception as e:
 					print(f"[ListLoad] failed to read list file: {e}")
-					messagebox.showerror("Error", f"Failed to load list:\n{e}")
-					a.destroy()
+					messagebox.showerror("리스트 열기 실패", f"리스트 파일을 읽지 못했습니다.\n{file_path}\n\n{e}")
 					return
-				self.imlist = sort_image_paths(self.imlist)
+				if not images:
+					sample = "\n".join(f"{p[0]}번째 줄: {p[1]}" if isinstance(p, tuple) else str(p) for p in list(nofile)[:3])
+					messagebox.showwarning(
+						"리스트 열기",
+						f"리스트에 있는 이미지를 하나도 찾지 못했습니다.\n{file_path}\n\n"
+						f"없는 경로 {len(nofile)}개 (네트워크 드라이브 연결/경로를 확인하세요)\n{sample}")
+					return
+				self.save_before_switching_data()
+				self.reset_data()
+				self.imlist = sort_image_paths(images)
 				print_missing_list_items(nofile)
 				print(f"[ListLoad] loaded={len(self.imlist)}, missing={len(nofile)}, encoding={encoding}")
 				encodings = []
@@ -2978,19 +2974,18 @@ class MainApp:
 				
 				if not success:
 					messagebox.showerror("오류", "지원되는 인코딩으로 파일을 읽을 수 없습니다.")
-					a.destroy()
 					return
 
-				if self.imlist:  # 유효한 이미지가 있는 경우
-					self.loaded_list_file_path = file_path
-					self.img_slider.config(to=len(self.imlist))
-					self.img_slider.set(self.ci + 1)
-					self.slider_info.config(text=f"{self.ci+1}/{len(self.imlist)}")
-					self._dir = file_path
-					self.draw_image()
-				else:
-					messagebox.showwarning("Warning", "No valid images found in the list")
-			a.destroy()
+				self.loaded_list_file_path = file_path
+				self.img_slider.config(to=len(self.imlist))
+				self.img_slider.set(self.ci + 1)
+				self.slider_info.config(text=f"{self.ci+1}/{len(self.imlist)}")
+				self._dir = file_path
+				self.save_last_open_path(file_path)
+				if nofile:
+					self.show_temporary_status(f"리스트 {len(self.imlist)}개 로드, 없는 경로 {len(nofile)}개 제외", duration=4000, bg_color='#D97706')
+				self.draw_image()
+				self.draw_bbox()
 		except Exception as e:
 			print(f"Error loading list: {e}")
 			messagebox.showerror("Error", f"Failed to load list: {e}")
@@ -3561,7 +3556,19 @@ class MainApp:
 			except:
 				pass
 
+	def show_empty_hint(self):
+		"""이미지가 없을 때 캔버스에 안내 문구 표시"""
+		self.canvas.delete("all")
+		self.canvas.update_idletasks()
+		w = max(self.canvas.winfo_width(), 400)
+		h = max(self.canvas.winfo_height(), 300)
+		self.canvas.create_text(w // 2, h // 2, text="Open Folder 또는 Open List 버튼으로 작업할 데이터를 여세요",
+			font=("맑은 고딕", 14), fill="gray40", tags="empty_hint")
+
 	def draw_image(self):
+		if not self.imlist:
+			self.show_empty_hint()
+			return
 		if self.ci == self.pi: return
 		self.canvas.delete("all")
 		try:
@@ -5773,6 +5780,7 @@ class MainApp:
 		self.draw_bbox()
 
 	def on_mouse_wheel(self, event):
+		if not self.imlist: return
 		# Ctrl 키와 함께 사용 시 확대/축소
 		if event.state & 0x4:  # Ctrl 키가 눌린 경우 (0x4 = Control modifier)
 			# 마우스 휠 위: 확대, 아래: 축소
@@ -6967,6 +6975,7 @@ class MainApp:
 		self.master.bind_all("<Key>", self.global_key_handler)
 
 	def on_key(self, event):
+		if not self.imlist: return
 		# print(f"on_key 함수 호출: {event.char}")
 		self.bbox_add = False;  self.cross_line = False;  bbox_crop = False
 		ckey = event.char
@@ -7485,6 +7494,7 @@ class MainApp:
 		return True
 
 	def on_mouse_right_click(self, event):
+		if not self.imlist: return
 		if getattr(self, 'copy_region_mode', False):
 			self.finish_copy_region_drawing()
 			return
@@ -7572,6 +7582,7 @@ class MainApp:
 			return
 
 	def on_mouse_down(self, event):
+		if not self.imlist: return
 		if getattr(self, 'copy_region_mode', False):
 			x, y = self.get_canvas_coordinates(event)
 			if self.imsize[0] and self.imsize[1]:
@@ -7775,6 +7786,7 @@ class MainApp:
 		return
 
 	def on_mouse_ctrl_down(self, event):
+		if not self.imlist: return
 		x, y = self.get_canvas_coordinates(event)
 
 		for i in range(len(self.bbox)):
@@ -7889,6 +7901,7 @@ class MainApp:
 		# draw_image() 제거 - 전체 화면 갱신 생략으로 속도 개선
 		# 이미지 파일에 이미 마스킹이 저장되었으므로, 페이지 전환 시 자동 반영됨
 	def on_mouse_up(self, event):
+		if not self.imlist: return
 		x, y = self.get_canvas_coordinates(event)
 
 		# bbox 수정 여부 플래그 저장 (False로 변경하기 전에)
@@ -7929,6 +7942,7 @@ class MainApp:
 		return
 
 	def on_mouse_move(self, event):
+		if not self.imlist: return
 		x, y = self.get_canvas_coordinates(event)
 			
 		# 크로스 라인 그리기
@@ -7967,6 +7981,7 @@ class MainApp:
 		view_y = int(original_y * self.zoom_ratio)
 		return view_x, view_y
 	def on_click_mouse_move(self, event):
+		if not self.imlist: return
 		x, y = self.get_canvas_coordinates(event)
 		if self.polygon_masking and not self.is_polygon_closed and len(self.polygon_points) > 0:
 			# 임시 선 업데이트 (마지막 포인트에서 현재 마우스 위치까지)
@@ -9244,6 +9259,7 @@ class MainApp:
 		tk.Button(button_frame, text="닫기", command=dialog.destroy, width=10).pack(side=tk.LEFT, padx=2)
 
 	def on_slider_change(self, value):
+		if not self.imlist: return
     # 슬라이더 값을 정수로 변환하고 0-인덱스로 조정
 		new_index = int(float(value)) - 1
 
