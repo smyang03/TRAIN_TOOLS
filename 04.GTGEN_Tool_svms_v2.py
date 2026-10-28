@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 from ast import dump
 import os
+import re
 import sys
 # PyInstaller RecursionError 방지 - 빌드 프로세스에서 recursion limit 증가
 sys.setrecursionlimit(100000)
@@ -34,6 +35,13 @@ _dir_goodbye = ""
 
 IMAGE_FILE_EXTENSIONS = ('.jpg', '.jpeg', '.png')
 LIST_FILE_ENCODINGS = ['utf-8', 'cp949', 'euc-kr', 'latin-1', 'shift-jis']
+
+def image_to_label_path(image_path):
+	"""이미지 경로에 대응하는 YOLO 라벨(txt) 경로. 화면 저장/범위 복사/삭제가 모두 같은 규칙을 쓴다."""
+	label_path = str(image_path).replace('JPEGImages', 'labels')
+	label_path = label_path.replace('images', 'annotations')
+	root, _ = os.path.splitext(label_path)
+	return root + '.txt'
 
 def is_image_file(path):
 	return os.path.splitext(str(path))[1].lower() in IMAGE_FILE_EXTENSIONS
@@ -1406,9 +1414,11 @@ class FileSafetyManager:
 				raise ValueError
 		except ValueError:
 			drive, tail = os.path.splitdrive(source_abs)
-			drive_name = drive.replace(':', '') or 'root'
+			drive_name = re.sub(r'[\\/:]+', '_', drive).strip('_') or 'root'
 			rel_path = os.path.join('_external', drive_name, tail.lstrip('\\/'))
 		backup_path = os.path.join(self.base_dir, 'original_backup', category, rel_path)
+		if os.path.normcase(os.path.abspath(backup_path)) == os.path.normcase(source_abs):
+			raise ValueError(f"backup path equals source: {source_abs}")
 		os.makedirs(os.path.dirname(backup_path), exist_ok=True)
 		return backup_path
 
@@ -1565,10 +1575,7 @@ class MaskLabelManager:
 
 class IouTrackManager:
 	def get_label_path_for_image(self, image_path):
-		label_path = image_path.replace('JPEGImages', 'labels')
-		label_path = label_path.replace('images', 'annotations')
-		root, _ = os.path.splitext(label_path)
-		return root + '.txt'
+		return image_to_label_path(image_path)
 
 	def calc_iou(self, box_a, box_b):
 		ax1, ay1, ax2, ay2 = box_a
@@ -2467,9 +2474,7 @@ class MainApp:
 			else:
 				self.imlist = sort_image_paths([os.path.join(cdir, f) for f in os.listdir(cdir) if is_image_file(f)])
 				for f in self.imlist:
-					label = f.replace('JPEGImages','labels')
-					label = label.replace('jpg','txt')
-					label = label.replace('png','txt')
+					label = image_to_label_path(f)
 					label = label.replace('/','\\')
 					if os.path.exists(label) is False:
 						pathstr = os.path.split(label)
@@ -2835,9 +2840,7 @@ class MainApp:
 					
 					# 각 이미지에 대한 라벨 파일 확인/생성
 					for f in self.imlist:
-						label = f.replace('JPEGImages','labels')
-						label = label.replace('jpg','txt')
-						label = label.replace('png','txt')
+						label = image_to_label_path(f)
 						label = label.replace('/','\\')
 						if os.path.exists(label) is False:
 							pathstr = os.path.split(label)
@@ -3044,9 +3047,7 @@ class MainApp:
 				
 				# 현재 파일 경로
 				img_path = self.imlist[i]
-				label_path = img_path.replace('JPEGImages', 'labels')
-				label_path = label_path.replace('.jpg', '.txt')
-				label_path = label_path.replace('.png', '.txt')
+				label_path = image_to_label_path(img_path)
 				if not self.backup_original_pair(img_path, label_path):
 					print(f"[DeleteRange] Backup failed. Skipped delete: {img_path}")
 					continue
@@ -3337,9 +3338,7 @@ class MainApp:
 			try:
 				# 대상 파일 경로 계산
 				target_img_path = self.imlist[i]
-				target_label_path = target_img_path.replace('JPEGImages', 'labels')
-				target_label_path = target_label_path.replace('.jpg', '.txt')
-				target_label_path = target_label_path.replace('.png', '.txt')
+				target_label_path = image_to_label_path(target_img_path)
 
 				# 타겟 이미지의 해상도 읽기 (선택/다중 선택 모드일 때만)
 				if not use_file_content:
@@ -3555,9 +3554,9 @@ class MainApp:
 				pass
 
 	def draw_image(self):
+		if self.ci == self.pi: return
 		self.canvas.delete("all")
 		try:
-			if self.ci == self.pi: return
 			previous_page_index = self.pi
 			self.page_move_delta = 0 if previous_page_index < 0 else self.ci - previous_page_index
 			self.pi = self.ci
@@ -3578,11 +3577,7 @@ class MainApp:
 				self.slider_info.config(text=f"{self.ci+1}/{len(self.imlist)}")
 			
 			self.im_fn = self.imlist[self.ci]
-			self.gt_fn = self.im_fn
-			self.gt_fn = self.gt_fn.replace('JPEGImages','labels')
-			self.gt_fn = self.gt_fn.replace('images','annotations')
-			self.gt_fn = self.gt_fn.replace('.jpg','.txt')
-			self.gt_fn = self.gt_fn.replace('.png','.txt')
+			self.gt_fn = image_to_label_path(self.im_fn)
 			self.canvas.delete("img")
 			fname, ext = os.path.splitext(self.im_fn)
 			if ext=='.db':
@@ -4238,11 +4233,7 @@ class MainApp:
 		if self.ci == self.pi: return
 		self.pi = self.ci		
 		self.im_fn = self.imlist[self.ci]
-		self.gt_fn = self.im_fn
-		self.gt_fn = self.gt_fn.replace('JPEGImages','labels')
-		self.gt_fn = self.gt_fn.replace('images','annotations')
-		self.gt_fn = self.gt_fn.replace('.jpg','.txt')
-		self.gt_fn = self.gt_fn.replace('.png','.txt')
+		self.gt_fn = image_to_label_path(self.im_fn)
 		self.canvas.delete("img")
 		im = Image.open(self.im_fn)
 		self.imsize = im.size
@@ -4461,9 +4452,7 @@ class MainApp:
 				# 대상 이미지 로드
 				target_img_path = self.imlist[i]
 				target_img = Image.open(target_img_path)
-				target_label_path = target_img_path.replace('JPEGImages', 'labels')
-				target_label_path = target_label_path.replace('.jpg', '.txt')
-				target_label_path = target_label_path.replace('.png', '.txt')
+				target_label_path = image_to_label_path(target_img_path)
 
 				# 이미지 크기 확인
 				if target_img.width != mask_width or target_img.height != mask_height:
@@ -4799,9 +4788,13 @@ class MainApp:
 			h = rc[4] * self.imsize[1]
 			x = (rc[1] - rc[3]/2) * self.imsize[0]
 			y = (rc[2] - rc[4]/2) * self.imsize[1]
+			# 왼쪽/위쪽으로 넘친 박스는 넘친 만큼 폭/높이를 줄여 경계에서 자른다
+			# (시작점만 0으로 당기면 박스가 안쪽으로 밀려 들어가 좌표가 바뀐다)
 			if x<0:
+				w=max(w+x, 1)
 				x=0
 			if y<0:
+				h=max(h+y, 1)
 				y=0
 			if x+w>self.imsize[0]:
 				w=self.imsize[0]-x-1
@@ -4973,6 +4966,9 @@ class MainApp:
 		if self.gt_fn is None:
 			print("WARNING: gt_fn is None, cannot write bbox")
 			return
+		if self.im_fn and os.path.normcase(os.path.abspath(self.gt_fn)) == os.path.normcase(os.path.abspath(self.im_fn)):
+			print(f"ERROR: label path equals image path, refusing to overwrite image: {self.im_fn}")
+			return
 
 		try:
 			self.bbox, removed = self.dedupe_bboxes(self.bbox, "write")
@@ -4984,6 +4980,11 @@ class MainApp:
 			)
 			if not self.write_text_files_transaction({self.gt_fn: output}, backup_category='labels'):
 				print(f"ERROR: Failed to save bbox transactionally: {self.gt_fn}")
+				if not getattr(self, '_label_save_error_shown', False):
+					self._label_save_error_shown = True
+					messagebox.showerror("라벨 저장 실패", f"라벨을 저장하지 못했습니다 (백업 또는 쓰기 실패).\n{self.gt_fn}\n\n콘솔 로그를 확인하세요.")
+				else:
+					self.show_temporary_status(f"라벨 저장 실패: {os.path.basename(self.gt_fn)}", duration=3000, bg_color='#DC2626')
 		except (IOError, PermissionError) as e:
 			print(f"ERROR: Failed to write bbox to {self.gt_fn}: {e}")
 			messagebox.showerror("File Write Error", f"Failed to save labels:\n{e}")
@@ -5378,9 +5379,9 @@ class MainApp:
 				labellst.append(rc[1])
 				drawn_count += 1
 			print(f"[FILTER DEBUG] draw_bbox: Drew {drawn_count} out of {len(self.bbox)} bboxes")
+			cnt = 0  # 표시할 라벨이 없어도 아래 작업 요약 위치 계산에 사용
 			if len(labellst) > 0:
 				counted_items = Counter(labellst)
-				cnt = 0
 				for item, count in counted_items.items():
 					text = f'{item} = {count}'
 					# 텍스트 길이에 따라 배경 사각형 너비 계산 (약 7픽셀/글자)
@@ -6154,6 +6155,9 @@ class MainApp:
 					if os.path.exists(normalized_path):
 						valid_images.append(normalized_path)
 
+				if not valid_images:
+					print(f"[ListSort] 존재하는 이미지가 없어 리스트 파일을 그대로 둡니다: {list_path}")
+					return
 				valid_images = sort_image_paths(valid_images)
 				with open(list_path, "wt", encoding='utf-8') as outfile:
 					for image_path in valid_images:
@@ -6250,9 +6254,7 @@ class MainApp:
 			else       : a_path[-2] = judge_string[c][0]
 
 		new_im_fn = '/'.join(a_path).replace('/','/')
-		new_gt_fn = new_im_fn.replace('.jpg','.txt')
-		new_gt_fn = new_gt_fn.replace('.png','.txt')
-		new_gt_fn = new_gt_fn.replace('JPEGImages','labels')
+		new_gt_fn = image_to_label_path(new_im_fn)
 		os.rename(self.im_fn, new_im_fn)
 		os.rename(self.gt_fn, new_gt_fn)
 		self.im_fn = new_im_fn  
@@ -6305,7 +6307,7 @@ class MainApp:
 
 			# 현재 파일 경로
 			current_im_fn = self.imlist[self.ci]
-			current_gt_fn = current_im_fn.replace('JPEGImages', 'labels').replace('.jpg', '.txt').replace('.png', '.txt').replace('.jpeg', '.txt')
+			current_gt_fn = image_to_label_path(current_im_fn)
 			if enable_backup and not self.backup_original_pair(current_im_fn, current_gt_fn):
 				messagebox.showerror("Backup Error", f"Backup failed. Delete stopped:\n{current_im_fn}")
 				break
@@ -6609,7 +6611,7 @@ class MainApp:
 		
 		try:
 			# 마스킹 정보 파일 경로
-			mask_info_file = self.im_fn.replace('.jpg', '_mask.npz').replace('.png', '_mask.npz')
+			mask_info_file = os.path.splitext(self.im_fn)[0] + '_mask.npz'
 			
 			# numpy 형식으로 마스킹 정보 저장
 			np.savez_compressed(mask_info_file, 
@@ -6624,7 +6626,7 @@ class MainApp:
 
 	def load_masking_info_from_file(self):
 		"""파일에서 마스킹 정보 로드"""
-		mask_info_file = self.im_fn.replace('.jpg', '_mask.npz').replace('.png', '_mask.npz')
+		mask_info_file = os.path.splitext(self.im_fn)[0] + '_mask.npz'
 		
 		if not os.path.exists(mask_info_file):
 			return False
@@ -7835,7 +7837,7 @@ class MainApp:
 		print(f"마스킹이 이미지 파일에 저장되었습니다: {self.im_fn}")
 
 		# 마스킹 정보 파일 삭제 (중복 저장 방지)
-		mask_info_file = self.im_fn.replace('.jpg', '_mask.npz').replace('.png', '_mask.npz')
+		mask_info_file = os.path.splitext(self.im_fn)[0] + '_mask.npz'
 		if os.path.exists(mask_info_file):
 			try:
 				os.remove(mask_info_file)
@@ -9429,9 +9431,7 @@ class MainApp:
 					try:
 						# Get target label file path
 						target_img_path = self.imlist[i]
-						target_label_path = target_img_path.replace('JPEGImages', 'labels')
-						target_label_path = target_label_path.replace('.jpg', '.txt')
-						target_label_path = target_label_path.replace('.png', '.txt')
+						target_label_path = image_to_label_path(target_img_path)
 						
 						# Create directory if needed
 						target_dir = os.path.dirname(target_label_path)

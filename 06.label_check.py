@@ -3030,11 +3030,7 @@ class ImageViewer:
                                             current_row += 2
                                 else:
                                     # 전체 이미지 모드일 때
-                                    if img_resized is None:
-                                        img_resized = img.resize((200, 200))
-                                        if len(self.image_cache) >= self.cache_limit:
-                                            self.image_cache.pop(next(iter(self.image_cache)))
-                                        self.image_cache[cache_key] = img_resized
+                                    img_resized = img.resize((200, 200))
                                     self.draw_boxes_on_image(img_resized, label_path, current_row, current_col, start_idx + idx)
                                     current_col += 1
                                     if current_col >= 5:
@@ -3147,58 +3143,58 @@ class ImageViewer:
                                 if overlap_class != "선택 안함":
                                     overlap_result = self.check_box_overlap(
                                         label_path, class_idx, int(overlap_class))
-                                    for line_idx, line in enumerate(lines):
-                                        try:
-                                            class_index, x_center, y_center, width, height = map(float, line.split())
-                                            if int(class_index) != class_idx:
-                                                continue
-                                                
-                                            left = int((float(x_center) - float(width)/2) * img.width)
-                                            top = int((float(y_center) - float(height)/2) * img.height)
-                                            right = int((float(x_center) + float(width)/2) * img.width)
-                                            bottom = int((float(y_center) + float(height)/2) * img.height)
-                                            
-                                            # 겹침 정보 확인
-                                            show_box = True
-                                            if overlap_class != "선택 안함":
-                                                # 박스별 겹침 정보 확인
-                                                has_overlap, max_iou, detail_info, all_boxes_info = overlap_result
-                                                
-                                                # 해당 박스의 겹침 정보 찾기
-                                                current_box_overlap = False
-                                                for box_info in all_boxes_info:
-                                                    if box_info['box_index'] == box_idx:
-                                                        current_box_overlap = box_info['has_overlap']
-                                                        break
-                                                        
-                                                # 필터 조건에 따라 박스 표시 여부 결정
-                                                if overlap_filter == "겹치는 것만" and not current_box_overlap:
-                                                    show_box = False
-                                                elif overlap_filter == "겹치지 않는 것만" and current_box_overlap:
-                                                    show_box = False
-                                            
-                                            # 표시 조건을 만족하는 경우만 박스 처리
-                                            if show_box:
-                                                # 박스 이미지 자르기
-                                                cropped = img.crop((left, top, right, bottom)).resize((100, 100))
-                                                # 박스 그리기
-                                                self.draw_boxes_on_image_corp(
-                                                    cropped, label_path, current_row, current_col, 
-                                                    class_idx, start_idx + idx, box_idx
-                                                )
-                                                
-                                                boxes_processed = True
-                                                current_col += 1
-                                                if current_col >= 12:
-                                                    current_col = 0
-                                                    current_row += 2
-                                            
-                                            # 박스 인덱스 증가
-                                            box_idx += 1
-                                            
-                                        except (ValueError, IndexError) as e:
-                                            print(f"Error processing line in {label_path}: {e}")
+                                for line_idx, line in enumerate(lines):
+                                    try:
+                                        class_index, x_center, y_center, width, height = map(float, line.split())
+                                        if int(class_index) != class_idx:
                                             continue
+                                            
+                                        left = int((float(x_center) - float(width)/2) * img.width)
+                                        top = int((float(y_center) - float(height)/2) * img.height)
+                                        right = int((float(x_center) + float(width)/2) * img.width)
+                                        bottom = int((float(y_center) + float(height)/2) * img.height)
+                                        
+                                        # 겹침 정보 확인
+                                        show_box = True
+                                        if overlap_class != "선택 안함":
+                                            # 박스별 겹침 정보 확인
+                                            has_overlap, max_iou, detail_info, all_boxes_info = overlap_result
+                                            
+                                            # 해당 박스의 겹침 정보 찾기
+                                            current_box_overlap = False
+                                            for box_info in all_boxes_info:
+                                                if box_info['box_index'] == box_idx:
+                                                    current_box_overlap = box_info['has_overlap']
+                                                    break
+                                                    
+                                            # 필터 조건에 따라 박스 표시 여부 결정
+                                            if overlap_filter == "겹치는 것만" and not current_box_overlap:
+                                                show_box = False
+                                            elif overlap_filter == "겹치지 않는 것만" and current_box_overlap:
+                                                show_box = False
+                                        
+                                        # 표시 조건을 만족하는 경우만 박스 처리
+                                        if show_box:
+                                            # 박스 이미지 자르기
+                                            cropped = img.crop((left, top, right, bottom)).resize((100, 100))
+                                            # 박스 그리기
+                                            self.draw_boxes_on_image_corp(
+                                                cropped, label_path, current_row, current_col, 
+                                                class_idx, start_idx + idx, box_idx
+                                            )
+                                            
+                                            boxes_processed = True
+                                            current_col += 1
+                                            if current_col >= 12:
+                                                current_col = 0
+                                                current_row += 2
+                                        
+                                        # 박스 인덱스 증가
+                                        box_idx += 1
+                                        
+                                    except (ValueError, IndexError) as e:
+                                        print(f"Error processing line in {label_path}: {e}")
+                                        continue
                             except Exception as e:
                                 print(f"Error reading label file {label_path}: {e}")
                             
@@ -5524,6 +5520,7 @@ class ImageViewer:
         Draw bounding boxes on full image with improved visualization for overlapping boxes.
         겹치는 박스 간의 관계를 더 명확하게 시각화합니다.
         """
+        image = image.copy()  # 캐시된 썸네일 원본에 박스가 누적되지 않도록 복사본에 그림
         draw = ImageDraw.Draw(image)
         img_path = self.get_image_path_from_label(label_path)
         
