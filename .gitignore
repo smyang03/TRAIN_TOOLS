@@ -24,6 +24,12 @@ wheels/
 venv/
 ENV/
 env/
+clip-interrogrator/
+dist/
+build/
+YOLO_COMPARE/
+clip-interrogrator2/
+logs/
 
 # IDE
 .vscode/

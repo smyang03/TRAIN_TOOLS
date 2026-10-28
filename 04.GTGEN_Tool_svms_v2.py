@@ -13,6 +13,7 @@ from PIL import Image, ImageTk
 import tkinter as tk
 from tkinter import messagebox
 from tkinter import filedialog
+from tkinter import ttk
 from functools import partial 
 import cv2
 import natsort
@@ -31,6 +32,165 @@ import json
 BASE_DIR = os.getcwd() + "\\"
 _dir_goodbye = ""
 
+IMAGE_FILE_EXTENSIONS = ('.jpg', '.jpeg', '.png')
+LIST_FILE_ENCODINGS = ['utf-8', 'cp949', 'euc-kr', 'latin-1', 'shift-jis']
+
+def is_image_file(path):
+	return os.path.splitext(str(path))[1].lower() in IMAGE_FILE_EXTENSIONS
+
+def image_sort_key(path):
+	normalized = os.path.normpath(str(path)).replace('\\', '/')
+	return os.path.normcase(normalized)
+
+def sort_image_paths(paths):
+	return natsort.natsorted(paths, key=image_sort_key)
+
+def to_list_file_path(path):
+	return str(path).replace('//192.168.79.253/', '/s_mnt/253/').rstrip('\r\n') + '\n'
+
+def normalize_list_image_path(line):
+	path = str(line).strip().lstrip('\ufeff')
+	if len(path) >= 2 and path[0] == path[-1] and path[0] in ('"', "'"):
+		path = path[1:-1]
+	return path.replace('/s_mnt/253/','//192.168.79.253/')
+
+def safe_path_exists(path):
+	try:
+		return os.path.exists(path)
+	except (OSError, ValueError) as e:
+		print(f"[ListLoad] path check failed: {path} ({e})")
+		return False
+
+def read_image_list_file(list_path):
+	attempts = []
+	for encoding in LIST_FILE_ENCODINGS:
+		valid_images = []
+		missing_images = []
+		try:
+			with open(list_path, "rt", encoding=encoding) as file:
+				for line_number, raw_line in enumerate(file, start=1):
+					image_path = normalize_list_image_path(raw_line)
+					if not image_path:
+						continue
+					if safe_path_exists(image_path):
+						valid_images.append(image_path)
+					else:
+						missing_images.append((line_number, image_path))
+		except UnicodeDecodeError as e:
+			print(f"[ListLoad] encoding failed: {encoding} ({e})")
+			continue
+		except Exception as e:
+			print(f"[ListLoad] read failed with {encoding}: {e}")
+			attempts.append((encoding, valid_images, missing_images, e))
+			continue
+
+		attempts.append((encoding, valid_images, missing_images, None))
+		if valid_images:
+			return valid_images, missing_images, encoding
+
+	if attempts:
+		encoding, valid_images, missing_images, error = max(attempts, key=lambda item: len(item[1]))
+		if error is None:
+			return valid_images, missing_images, encoding
+		raise error
+
+	raise RuntimeError("No supported encoding could read the list file.")
+
+def print_missing_list_items(missing_images, limit=50):
+	for line_number, image_path in missing_images[:limit]:
+		print(f"no file ({line_number}) : {image_path}")
+	if len(missing_images) > limit:
+		print(f"[ListLoad] {len(missing_images) - limit} more missing files omitted from log")
+
+def point_in_polygon(point, polygon):
+	x, y = point
+	inside = False
+	if len(polygon) < 3:
+		return False
+	p1x, p1y = polygon[-1]
+	for p2x, p2y in polygon:
+		if (p1y > y) != (p2y > y):
+			x_intersection = (p2x - p1x) * (y - p1y) / (p2y - p1y) + p1x
+			if x < x_intersection:
+				inside = not inside
+		p1x, p1y = p2x, p2y
+	return inside
+
+def label_line_center(line):
+	values = line.strip().split()
+	if len(values) < 5:
+		raise ValueError("label line must contain class, center, width, and height")
+	return float(values[1]), float(values[2])
+
+def merge_copy_region_label_lines(existing_lines, copied_lines, regions):
+	"""Replace target labels whose centers are inside active normalized copy regions."""
+	if not regions:
+		return list(copied_lines)
+	result = []
+	for line in existing_lines:
+		try:
+			center = label_line_center(line)
+			if any(point_in_polygon(center, region) for region in regions):
+				continue
+		except (ValueError, TypeError):
+			result.append(line)
+			continue
+		result.append(line)
+	filtered_copied = []
+	for line in copied_lines:
+		try:
+			if any(point_in_polygon(label_line_center(line), region) for region in regions):
+				filtered_copied.append(line)
+		except (ValueError, TypeError):
+			continue
+	return filtered_copied + result
+
+class CopyRegionManager:
+	def __init__(self, config_file='.copy_zones.json'):
+		self.config_file = config_file
+		self.zones = []
+		self.load()
+
+	def load(self):
+		if not os.path.exists(self.config_file):
+			return
+		try:
+			with open(self.config_file, 'r', encoding='utf-8') as f:
+				loaded = json.load(f)
+			self.zones = [z for z in loaded if isinstance(z, dict) and len(z.get('points', [])) >= 3]
+			for zone in self.zones:
+				zone['enabled'] = bool(zone.get('enabled', True))
+		except Exception as e:
+			print(f"[CopyZone] load failed: {e}")
+			self.zones = []
+
+	def save(self):
+		try:
+			with open(self.config_file, 'w', encoding='utf-8') as f:
+				json.dump(self.zones, f, indent=2)
+			return True
+		except Exception as e:
+			print(f"[CopyZone] save failed: {e}")
+			return False
+
+	def active_regions(self):
+		return [z['points'] for z in self.zones if z.get('enabled', True)]
+
+	def zone_at(self, point):
+		for index in range(len(self.zones) - 1, -1, -1):
+			zone = self.zones[index]
+			if point_in_polygon(point, zone.get('points', [])):
+				return index
+		return None
+
+	def toggle_at(self, point):
+		index = self.zone_at(point)
+		if index is None:
+			return None
+		self.zones[index]['enabled'] = not self.zones[index].get('enabled', True)
+		self.save()
+		return index
+
 # 폴리곤 제외 영역 관리 클래스
 class ExclusionZoneManager:
 	"""폴리곤 제외 영역을 관리하는 클래스"""
@@ -45,16 +205,19 @@ class ExclusionZoneManager:
 		self.use_global = True  # 전역 영역 사용 여부
 		self.load_global_zones()
 
-	def add_zone(self, points, use_global=True, class_ids=None):
+	def add_zone(self, points, use_global=True, class_ids=None, zone_type='polygon'):
 		"""새로운 제외 영역 추가 (points는 [(x,y), ...] 형태)
 		Args:
 			points: 폴리곤 점들
 			use_global: 전역 영역에 추가할지 여부
 			class_ids: 적용할 클래스 ID 리스트 (None 또는 빈 리스트면 모든 클래스에 적용)
 		"""
-		if len(points) >= 3:  # 최소 3개의 점이 있어야 폴리곤 형성
+		zone_type = zone_type if zone_type in ('polygon', 'point') else 'polygon'
+		required_points = 1 if zone_type == 'point' else 3
+		if len(points) >= required_points:
 			zone = {
 				'points': points,
+				'zone_type': zone_type,
 				'enabled': True,
 				'class_ids': class_ids if class_ids else []  # 빈 리스트면 모든 클래스에 적용
 			}
@@ -122,10 +285,42 @@ class ExclusionZoneManager:
 				if zone_class_ids and bbox_class_id not in zone_class_ids:
 					continue
 
-				overlap = self._bbox_polygon_overlap(x1, y1, x2, y2, zone['points'])
+				overlap = self._bbox_matches_zone(x1, y1, x2, y2, zone)
 				if overlap:
 					return True
 		return False
+
+	def _normalize_zone(self, zone):
+		"""Add default fields for zones saved by older versions."""
+		if not isinstance(zone, dict):
+			return None
+		points = zone.get('points') or []
+		if not points:
+			return None
+		if 'zone_type' not in zone:
+			zone['zone_type'] = 'point' if len(points) == 1 else 'polygon'
+		if zone['zone_type'] not in ('polygon', 'point'):
+			zone['zone_type'] = 'polygon'
+		zone['enabled'] = zone.get('enabled', True)
+		zone['class_ids'] = zone.get('class_ids', [])
+		return zone
+
+	def _bbox_matches_zone(self, x1, y1, x2, y2, zone):
+		points = zone.get('points') or []
+		if not points:
+			return False
+		zone_type = zone.get('zone_type', 'point' if len(points) == 1 else 'polygon')
+		if zone_type == 'point':
+			return self._point_in_bbox(points[0], x1, y1, x2, y2)
+		if len(points) < 3:
+			return False
+		return self._bbox_polygon_overlap(x1, y1, x2, y2, points)
+
+	def _point_in_bbox(self, point, x1, y1, x2, y2):
+		px, py = point
+		min_x, max_x = min(x1, x2), max(x1, x2)
+		min_y, max_y = min(y1, y2), max(y1, y2)
+		return min_x <= px <= max_x and min_y <= py <= max_y
 
 	def _bbox_polygon_overlap(self, x1, y1, x2, y2, polygon):
 		"""bbox와 폴리곤이 겹치는지 확인 (면적 기반)
@@ -221,7 +416,13 @@ class ExclusionZoneManager:
 		if os.path.exists(self.global_zone_file):
 			try:
 				with open(self.global_zone_file, 'r') as f:
-					self.global_zones = json.load(f)
+					loaded_zones = json.load(f)
+					if not isinstance(loaded_zones, list):
+						loaded_zones = []
+					self.global_zones = [
+						zone for zone in (self._normalize_zone(zone) for zone in loaded_zones)
+						if zone is not None
+					]
 				print(f"[ExclusionZone] 전역 제외 영역 로드: {len(self.global_zones)}개")
 			except Exception as e:
 				print(f"[ERROR] Failed to load global exclusion zones: {e}")
@@ -265,7 +466,7 @@ class ClassChangeZoneManager:
 		self.global_zone_file = os.path.join(self.base_dir, ".class_change_zones.json")
 		self.load_zones()
 
-	def add_zone(self, points, mode, target_class_id, source_class_id=None):
+	def add_zone(self, points, mode, target_class_id, source_class_id=None, zone_type='polygon'):
 		"""새로운 클래스 변경 영역 추가
 		Args:
 			points: 폴리곤 점들 [(x, y), ...]
@@ -273,9 +474,12 @@ class ClassChangeZoneManager:
 			target_class_id: 변경할 목표 클래스 ID
 			source_class_id: 필터 모드일 때 대상 클래스 ID (mode="filter"일 때만 사용)
 		"""
-		if len(points) >= 3:
+		zone_type = zone_type if zone_type in ('polygon', 'point') else 'polygon'
+		required_points = 1 if zone_type == 'point' else 3
+		if len(points) >= required_points:
 			zone = {
 				'points': points,
+				'zone_type': zone_type,
 				'enabled': True,
 				'mode': mode,  # "all" or "filter"
 				'target_class_id': target_class_id,
@@ -329,7 +533,7 @@ class ClassChangeZoneManager:
 					continue
 
 				# 폴리곤 내부에 있는지 확인
-				if self._bbox_in_polygon(x1, y1, x2, y2, zone['points']):
+				if self._bbox_matches_zone(x1, y1, x2, y2, zone):
 					# 모드에 따라 클래스 변경
 					if zone['mode'] == 'all':
 						# 모든 클래스를 target_class_id로 변경
@@ -363,6 +567,38 @@ class ClassChangeZoneManager:
 				new_bbox_list.append(bbox)
 
 		return new_bbox_list, changed_count
+
+	def _normalize_zone(self, zone):
+		"""Add default fields for zones saved by older versions."""
+		if not isinstance(zone, dict):
+			return None
+		points = zone.get('points') or []
+		if not points:
+			return None
+		if 'zone_type' not in zone:
+			zone['zone_type'] = 'point' if len(points) == 1 else 'polygon'
+		if zone['zone_type'] not in ('polygon', 'point'):
+			zone['zone_type'] = 'polygon'
+		zone['enabled'] = zone.get('enabled', True)
+		zone['mode'] = zone.get('mode', 'all')
+		return zone
+
+	def _bbox_matches_zone(self, x1, y1, x2, y2, zone):
+		points = zone.get('points') or []
+		if not points:
+			return False
+		zone_type = zone.get('zone_type', 'point' if len(points) == 1 else 'polygon')
+		if zone_type == 'point':
+			return self._point_in_bbox(points[0], x1, y1, x2, y2)
+		if len(points) < 3:
+			return False
+		return self._bbox_in_polygon(x1, y1, x2, y2, points)
+
+	def _point_in_bbox(self, point, x1, y1, x2, y2):
+		px, py = point
+		min_x, max_x = min(x1, x2), max(x1, x2)
+		min_y, max_y = min(y1, y2), max(y1, y2)
+		return min_x <= px <= max_x and min_y <= py <= max_y
 
 	def _bbox_in_polygon(self, x1, y1, x2, y2, polygon):
 		"""bbox가 폴리곤 내부에 있는지 확인 (중심점 기준)
@@ -412,7 +648,13 @@ class ClassChangeZoneManager:
 		if os.path.exists(self.global_zone_file):
 			try:
 				with open(self.global_zone_file, 'r') as f:
-					self.zones = json.load(f)
+					loaded_zones = json.load(f)
+					if not isinstance(loaded_zones, list):
+						loaded_zones = []
+					self.zones = [
+						zone for zone in (self._normalize_zone(zone) for zone in loaded_zones)
+						if zone is not None
+					]
 				print(f"[ClassChangeZone] 클래스 변경 영역 로드: {len(self.zones)}개")
 			except Exception as e:
 				print(f"[ERROR] Failed to load class change zones: {e}")
@@ -652,7 +894,11 @@ class ClassConfigManager:
 				data = json.load(f)
 				self.classes = data.get('classes', [])
 				# 백업 옵션 로드 (기본값: True)
-				self.enable_backup = data.get('enable_backup', True)
+				backup_value = data.get('enable_backup', True)
+				if isinstance(backup_value, str):
+					self.enable_backup = backup_value.strip().lower() not in ('false', '0', 'no', 'off', '')
+				else:
+					self.enable_backup = bool(backup_value)
 			self.save_last_config()
 			return True
 		except Exception as e:
@@ -700,7 +946,11 @@ class ClassConfigManager:
 
 	def get_button_configs(self):
 		"""버튼 생성에 필요한 정보 반환 [(name, id, key), ...] - key가 설정된 클래스만"""
-		return [(c['name'], c['id'], c['key']) for c in self.classes if c.get('key')]
+		return [
+			(c['name'], c['id'], normalize_shortcut_key(c.get('key')))
+			for c in self.classes
+			if normalize_shortcut_key(c.get('key'))
+		]
 
 # 클래스 필터 관리 클래스
 class ClassFilterManager:
@@ -739,6 +989,80 @@ class ClassFilterManager:
 	def is_filter_active(self):
 		"""필터가 활성화되어 있는지 확인"""
 		return self.filter_enabled
+
+def normalize_shortcut_key(key):
+	"""Return a Tk bind sequence for supported shortcut text."""
+	if key is None:
+		return None
+	key = str(key).strip()
+	if not key:
+		return None
+	if len(key) == 1:
+		return key
+
+	if key.startswith('<') and key.endswith('>'):
+		return key
+
+	compact = key.replace(' ', '')
+	lower_key = compact.lower()
+
+	named_keys = {
+		'enter': '<Return>',
+		'return': '<Return>',
+		'tab': '<Tab>',
+		'esc': '<Escape>',
+		'escape': '<Escape>',
+		'space': '<space>',
+		'delete': '<Delete>',
+		'del': '<Delete>',
+		'backspace': '<BackSpace>',
+		'up': '<Up>',
+		'down': '<Down>',
+		'left': '<Left>',
+		'right': '<Right>',
+		'plus': '+',
+		'minus': '-',
+	}
+	if lower_key in named_keys:
+		return named_keys[lower_key]
+
+	if lower_key.startswith('f') and lower_key[1:].isdigit():
+		return f"<F{lower_key[1:]}>"
+
+	if '+' in compact:
+		parts = [part for part in compact.split('+') if part]
+		if len(parts) < 2:
+			return None
+		modifier_map = {
+			'ctrl': 'Control',
+			'control': 'Control',
+			'shift': 'Shift',
+			'alt': 'Alt',
+			'option': 'Alt',
+		}
+		modifiers = []
+		for part in parts[:-1]:
+			modifier = modifier_map.get(part.lower())
+			if not modifier:
+				return None
+			if modifier not in modifiers:
+				modifiers.append(modifier)
+
+		key_part = parts[-1]
+		key_part_lower = key_part.lower()
+		if key_part_lower in named_keys:
+			key_part = named_keys[key_part_lower].strip('<>')
+		elif key_part_lower.startswith('f') and key_part_lower[1:].isdigit():
+			key_part = f"F{key_part_lower[1:]}"
+		elif len(key_part) != 1:
+			return None
+
+		return '<' + '-'.join(modifiers + [key_part]) + '>'
+
+	return None
+
+def is_simple_shortcut_key(key):
+	return bool(key and len(str(key)) == 1)
 
 # 클래스 설정 다이얼로그
 class ClassConfigDialog:
@@ -1008,17 +1332,25 @@ class ClassConfigDialog:
 				continue
 
 			# 단축키 중복 체크
-			if key and key in used_keys:
-				messagebox.showwarning("경고", f"단축키 '{key}'가 중복됩니다.")
+			normalized_key = normalize_shortcut_key(key)
+			if key and not normalized_key:
+				messagebox.showwarning(
+					"경고",
+					f"지원하지 않는 단축키 형식입니다: {key}\n"
+					"예: 1, a, <F1>, Ctrl+J, Shift+A, Space"
+				)
+				return
+			if normalized_key and normalized_key in used_keys:
+				messagebox.showwarning("경고", f"단축키 '{normalized_key}'가 중복됩니다.")
 				return
 
-			if key:
-				used_keys.add(key)
+			if normalized_key:
+				used_keys.add(normalized_key)
 
 			classes.append({
 				'id': i,
 				'name': name,
-				'key': key if key else None,
+				'key': normalized_key if normalized_key else None,
 				'color': color
 			})
 
@@ -1059,7 +1391,365 @@ keysetting = ['0','1','2','3','4','5','6','7','8','9','10','11','12','13','14','
 
 def get_list_jpg(_dir):
 	if not os.path.exists(_dir): os.makedirs(_dir)
-	return [_dir + '/' + f for f in os.listdir(_dir) if f.find('.jpg') >= 0 or f.find('.png') >= 0 ]
+	return sort_image_paths([os.path.join(_dir, f) for f in os.listdir(_dir) if is_image_file(f)])
+
+class FileSafetyManager:
+	def __init__(self, base_dir):
+		self.base_dir = base_dir
+
+	def get_backup_path(self, source_path, category):
+		source_abs = os.path.abspath(source_path)
+		base_abs = os.path.abspath(self.base_dir)
+		try:
+			rel_path = os.path.relpath(source_abs, base_abs)
+			if rel_path == '..' or rel_path.startswith('..' + os.sep) or os.path.isabs(rel_path):
+				raise ValueError
+		except ValueError:
+			drive, tail = os.path.splitdrive(source_abs)
+			drive_name = drive.replace(':', '') or 'root'
+			rel_path = os.path.join('_external', drive_name, tail.lstrip('\\/'))
+		backup_path = os.path.join(self.base_dir, 'original_backup', category, rel_path)
+		os.makedirs(os.path.dirname(backup_path), exist_ok=True)
+		return backup_path
+
+	def backup_file(self, source_path, category):
+		if not source_path or not os.path.exists(source_path):
+			return True
+		backup_path = self.get_backup_path(source_path, category)
+		if os.path.exists(backup_path):
+			return True
+		try:
+			shutil.copy2(source_path, backup_path)
+			return os.path.exists(backup_path)
+		except Exception as e:
+			print(f"[Backup] Failed to backup {source_path}: {e}")
+			return False
+
+	def backup_pair(self, image_path, label_path=None):
+		if not self.backup_file(image_path, 'JPEGImages'):
+			return False
+		if label_path and not self.backup_file(label_path, 'labels'):
+			return False
+		return True
+
+	def write_backup_text_if_missing(self, source_path, category, lines):
+		backup_path = self.get_backup_path(source_path, category)
+		if os.path.exists(backup_path):
+			return True
+		try:
+			with open(backup_path, 'w', encoding='utf-8') as f:
+				f.writelines(lines)
+			return os.path.exists(backup_path)
+		except Exception as e:
+			print(f"[Backup] Failed to write backup text {source_path}: {e}")
+			return False
+
+	def replace_files_transaction(self, replacements):
+		originals = {}
+		replaced = []
+		try:
+			for target_path in replacements:
+				if os.path.exists(target_path):
+					with open(target_path, 'rb') as f:
+						originals[target_path] = f.read()
+				else:
+					originals[target_path] = None
+
+			for target_path, temp_path in replacements.items():
+				os.replace(temp_path, target_path)
+				replaced.append(target_path)
+			return True
+		except Exception as e:
+			print(f"[Transaction] Replace failed: {e}")
+			for target_path in reversed(replaced):
+				try:
+					original = originals.get(target_path)
+					if original is None:
+						if os.path.exists(target_path):
+							os.remove(target_path)
+					else:
+						with open(target_path, 'wb') as f:
+							f.write(original)
+				except Exception as rollback_error:
+					print(f"[Transaction] Rollback failed for {target_path}: {rollback_error}")
+			for temp_path in replacements.values():
+				try:
+					if os.path.exists(temp_path):
+						os.remove(temp_path)
+				except Exception:
+					pass
+			return False
+
+	def write_text_files_transaction(self, file_text_map, backup_category='labels', enable_backup=True):
+		replacements = {}
+		try:
+			for target_path, text in file_text_map.items():
+				if enable_backup and not self.backup_file(target_path, backup_category):
+					print(f"[Transaction] Backup failed: {target_path}")
+					return False
+				target_dir = os.path.dirname(target_path)
+				if target_dir and not os.path.exists(target_dir):
+					os.makedirs(target_dir)
+				temp_path = target_path + '.tmp_gtgen'
+				with open(temp_path, 'w', encoding='utf-8') as f:
+					f.write(text)
+				replacements[target_path] = temp_path
+			return self.replace_files_transaction(replacements)
+		except Exception as e:
+			print(f"[Transaction] Prepare failed: {e}")
+			for temp_path in replacements.values():
+				try:
+					if os.path.exists(temp_path):
+						os.remove(temp_path)
+				except Exception:
+					pass
+			return False
+
+class MaskLabelManager:
+	def read_label_lines(self, label_path):
+		if not os.path.exists(label_path):
+			return []
+		try:
+			with open(label_path, 'r', encoding='utf-8') as f:
+				return f.readlines()
+		except UnicodeDecodeError:
+			with open(label_path, 'r', encoding='cp949') as f:
+				return f.readlines()
+
+	def bbox_overlaps_mask_pixels(self, x1, y1, x2, y2, mask, frame_width, frame_height):
+		if mask is None or len(mask) < 2 or len(mask[0]) == 0:
+			return False
+
+		min_x = int(max(0, min(x1, x2)))
+		max_x = int(min(frame_width, max(x1, x2)))
+		min_y = int(max(0, min(y1, y2)))
+		max_y = int(min(frame_height, max(y1, y2)))
+
+		if max_x <= min_x or max_y <= min_y:
+			return False
+
+		mask_y, mask_x = mask
+		overlap = (
+			(mask_x >= min_x) & (mask_x < max_x) &
+			(mask_y >= min_y) & (mask_y < max_y)
+		)
+		return bool(np.any(overlap))
+
+	def filter_label_lines_by_mask(self, label_path, image_width, image_height, mask):
+		labels_to_keep = []
+		lines = self.read_label_lines(label_path)
+		deleted_label_count = 0
+
+		for line in lines:
+			values = line.strip().split()
+			if len(values) < 5:
+				labels_to_keep.append(line)
+				continue
+			try:
+				_, cx, cy, w, h = map(float, values[:5])
+			except ValueError:
+				labels_to_keep.append(line)
+				continue
+
+			abs_x1 = int((cx - w / 2) * image_width)
+			abs_y1 = int((cy - h / 2) * image_height)
+			abs_x2 = int((cx + w / 2) * image_width)
+			abs_y2 = int((cy + h / 2) * image_height)
+
+			if self.bbox_overlaps_mask_pixels(abs_x1, abs_y1, abs_x2, abs_y2, mask, image_width, image_height):
+				deleted_label_count += 1
+			else:
+				labels_to_keep.append(line)
+
+		return labels_to_keep, len(lines), deleted_label_count
+
+class IouTrackManager:
+	def get_label_path_for_image(self, image_path):
+		label_path = image_path.replace('JPEGImages', 'labels')
+		label_path = label_path.replace('images', 'annotations')
+		root, _ = os.path.splitext(label_path)
+		return root + '.txt'
+
+	def calc_iou(self, box_a, box_b):
+		ax1, ay1, ax2, ay2 = box_a
+		bx1, by1, bx2, by2 = box_b
+		ax1, ax2 = min(ax1, ax2), max(ax1, ax2)
+		ay1, ay2 = min(ay1, ay2), max(ay1, ay2)
+		bx1, bx2 = min(bx1, bx2), max(bx1, bx2)
+		by1, by2 = min(by1, by2), max(by1, by2)
+
+		inter_x1 = max(ax1, bx1)
+		inter_y1 = max(ay1, by1)
+		inter_x2 = min(ax2, bx2)
+		inter_y2 = min(ay2, by2)
+		inter_w = max(0.0, inter_x2 - inter_x1)
+		inter_h = max(0.0, inter_y2 - inter_y1)
+		inter_area = inter_w * inter_h
+		if inter_area <= 0:
+			return 0.0
+
+		area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+		area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+		union = area_a + area_b - inter_area
+		if union <= 0:
+			return 0.0
+		return inter_area / union
+
+	def load_label_records(self, image_path):
+		label_path = self.get_label_path_for_image(image_path)
+		records = []
+		try:
+			with Image.open(image_path) as img:
+				width, height = img.size
+		except Exception as e:
+			print(f"[IOUTrack] Failed to read image size: {image_path}, {e}")
+			return records, label_path
+
+		if not os.path.exists(label_path):
+			return records, label_path
+
+		try:
+			with open(label_path, 'r', encoding='utf-8') as f:
+				lines = f.readlines()
+		except UnicodeDecodeError:
+			with open(label_path, 'r', encoding='cp949') as f:
+				lines = f.readlines()
+		except Exception as e:
+			print(f"[IOUTrack] Failed to read labels: {label_path}, {e}")
+			return records, label_path
+
+		for line_index, line in enumerate(lines):
+			parts = line.strip().split()
+			if len(parts) < 5:
+				continue
+			try:
+				class_id = int(float(parts[0]))
+				cx, cy, w, h = [float(v) for v in parts[1:5]]
+			except ValueError:
+				continue
+
+			x1 = (cx - w / 2.0) * width
+			y1 = (cy - h / 2.0) * height
+			x2 = (cx + w / 2.0) * width
+			y2 = (cy + h / 2.0) * height
+			records.append({
+				'line_index': line_index,
+				'class_id': class_id,
+				'line': line if line.endswith('\n') else line + '\n',
+				'box': [x1, y1, x2, y2],
+			})
+
+		return records, label_path
+
+	def track(self, imlist, gt_fn, start_idx, end_idx, selected_box, selected_class_id,
+			selected_label_line, selected_bbox_index, iou_threshold, same_class_only, max_missing=2):
+		prev_box = selected_box
+		missing_count = 0
+		result = {
+			'start_idx': start_idx,
+			'end_idx': end_idx,
+			'threshold': iou_threshold,
+			'same_class_only': same_class_only,
+			'class_id': selected_class_id,
+			'matches': [{
+				'frame_idx': start_idx,
+				'image_path': imlist[start_idx],
+				'label_path': gt_fn,
+				'bbox_index': selected_bbox_index,
+				'line_index': selected_bbox_index,
+				'line': selected_label_line,
+				'iou': 1.0,
+				'box': prev_box,
+			}],
+			'missing': [],
+			'stopped': False,
+		}
+
+		for frame_idx in range(start_idx + 1, end_idx + 1):
+			image_path = imlist[frame_idx]
+			records, label_path = self.load_label_records(image_path)
+			candidates = [
+				record for record in records
+				if (not same_class_only or record['class_id'] == selected_class_id)
+			]
+
+			best_record = None
+			best_iou = 0.0
+			for record in candidates:
+				iou = self.calc_iou(prev_box, record['box'])
+				if iou > best_iou:
+					best_iou = iou
+					best_record = record
+
+			if best_record is not None and best_iou >= iou_threshold:
+				result['matches'].append({
+					'frame_idx': frame_idx,
+					'image_path': image_path,
+					'label_path': label_path,
+					'bbox_index': best_record['line_index'],
+					'line_index': best_record['line_index'],
+					'line': best_record['line'],
+					'iou': best_iou,
+					'box': best_record['box'],
+				})
+				prev_box = best_record['box']
+				missing_count = 0
+			else:
+				result['missing'].append({
+					'frame_idx': frame_idx,
+					'image_path': image_path,
+					'label_path': label_path,
+					'best_iou': best_iou,
+				})
+				missing_count += 1
+				if missing_count > max_missing:
+					result['stopped'] = True
+					break
+
+		return result
+
+	def build_keep_only_label_text(self, label_path, matched_line, matched_line_index,
+			tracked_class_id, preserve_other_classes):
+		matched_line = matched_line if matched_line.endswith('\n') else matched_line + '\n'
+		if not preserve_other_classes:
+			return matched_line
+
+		try:
+			with open(label_path, 'r', encoding='utf-8') as f:
+				lines = f.readlines()
+		except UnicodeDecodeError:
+			with open(label_path, 'r', encoding='cp949') as f:
+				lines = f.readlines()
+		except FileNotFoundError:
+			return matched_line
+		except Exception as e:
+			print(f"[IOUTrack] Failed to preserve labels from {label_path}: {e}")
+			return matched_line
+
+		output_lines = []
+		matched_added = False
+		for line_index, line in enumerate(lines):
+			if line_index == matched_line_index:
+				output_lines.append(matched_line)
+				matched_added = True
+				continue
+
+			parts = line.strip().split()
+			if len(parts) < 5:
+				output_lines.append(line)
+				continue
+			try:
+				class_id = int(float(parts[0]))
+			except ValueError:
+				output_lines.append(line)
+				continue
+
+			if class_id != tracked_class_id:
+				output_lines.append(line)
+
+		if not matched_added:
+			output_lines.append(matched_line)
+		return ''.join(output_lines)
 
 class MainApp:
 	maskingframewidth=0
@@ -1115,9 +1805,17 @@ class MainApp:
 	# 제외 영역 기능 변수
 	exclusion_zone_mode = False  # 제외 영역 그리기 모드
 	exclusion_zone_points = []  # 현재 그리고 있는 제외 영역의 점들
+	exclusion_zone_draw_type = 'polygon'
 	exclusion_zone_enabled = False  # 제외 영역 기능 활성화 여부
 
 	def __init__(self, _dir):
+		global _dir_goodbye
+		self.file_safety_manager = FileSafetyManager(BASE_DIR)
+		self.mask_label_manager = MaskLabelManager()
+		self.iou_track_manager = IouTrackManager()
+		self.loaded_list_file_path = None
+		atexit.register(self.goodbye)
+
 		# 클래스 설정 관리자 초기화
 		self.class_config_manager = ClassConfigManager()
 
@@ -1132,8 +1830,13 @@ class MainApp:
 
 		# 클래스 변경 영역 관리자 초기화
 		self.class_change_zone_manager = ClassChangeZoneManager()
+		self.copy_region_manager = CopyRegionManager()
+		self.copy_region_mode = False
+		self.copy_region_points = []
+		self.copy_region_source_lines = None
 		self.class_change_zone_mode = False  # 클래스 변경 영역 그리기 모드
 		self.class_change_zone_points = []  # 현재 그리고 있는 클래스 변경 영역의 점들
+		self.class_change_zone_draw_type = 'polygon'
 		self.class_change_zone_config = None  # 클래스 변경 영역 설정
 		print(f"[ClassChangeZone] 클래스 변경 영역: {len(self.class_change_zone_manager.zones)}개")
 
@@ -1269,53 +1972,93 @@ class MainApp:
 
 		# 설정 파일 로드
 		cfg = configparser.ConfigParser()
-		cfg.read(BASE_DIR + 'config.ini')
+		cfg_path = os.path.join(BASE_DIR, 'config.ini')
+		try:
+			cfg.read(cfg_path, encoding='utf-8')
+		except UnicodeDecodeError:
+			cfg.read(cfg_path, encoding='cp949')
+		default_config = {
+			'Setting': {'NATPFP': 'False', 'SkipFrame': keysetting[0]},
+			'BasicKeySetting': {
+				'SkipLkey': keysetting[1], 'SkipRkey': keysetting[2],
+				'Lkey': keysetting[3], 'Rkey': keysetting[4],
+				'FirstPage': keysetting[5], 'LastPage': keysetting[6],
+				'Reload': keysetting[7], 'Delete': keysetting[8],
+				'Add': keysetting[9], 'Remove': keysetting[10],
+				'ResizeDown': keysetting[11], 'ResizeUp': keysetting[12],
+				'CopyKey': keysetting[13], 'ZoomIn': keysetting[14],
+				'ZoomOut': keysetting[15], 'CrossLine': keysetting[16],
+				'Help': keysetting[17], 'Crop': keysetting[28],
+				'Masking': keysetting[29], 'Mmasking': keysetting[30],
+				'MaskingSave': keysetting[31], 'LoadMasking': keysetting[32],
+				'ReLoadBackup': keysetting[33], 'CopyLabeling': keysetting[36],
+			},
+			'SpecialKeySetting': {
+				'NextRect': keysetting[18], 'PreRect': keysetting[19],
+				'ReduceUp': keysetting[20], 'ReduceDown': keysetting[21],
+				'ReduceRight': keysetting[22], 'ReduceLeft': keysetting[23],
+				'IncreaseUp': keysetting[24], 'IncreaseDown': keysetting[25],
+				'IncreaseRight': keysetting[26], 'IncreaseLeft': keysetting[27],
+				'ViewClass': keysetting[34], 'OnlySelect': keysetting[35],
+				'OnlyBox': keysetting[37],
+			},
+		}
+		for section, values in default_config.items():
+			if not cfg.has_section(section):
+				cfg.add_section(section)
+			for option, value in values.items():
+				if not cfg.has_option(section, option):
+					cfg.set(section, option, value)
+		if not os.path.exists(cfg_path):
+			with open(cfg_path, 'w', encoding='utf-8') as f:
+				cfg.write(f)
+			print(f"[Config] Default config.ini created: {cfg_path}")
 		
 		# TP/FP 분류 설정
-		if(cfg['Setting']['NATPFP']=='True'):
+		if(cfg.getboolean('Setting', 'NATPFP', fallback=False)):
 			self.CLASSIFY_TPFP=True
 		else:
 			self.CLASSIFY_TPFP=False
 		
 		# 키 설정 로드
-		keysetting[0]=cfg['Setting']['SkipFrame']
-		keysetting[1]=cfg['BasicKeySetting']['SkipLkey']
-		keysetting[2]=cfg['BasicKeySetting']['SkipRkey']
-		keysetting[3]=cfg['BasicKeySetting']['Lkey']
-		keysetting[4]=cfg['BasicKeySetting']['Rkey']
-		keysetting[5]=cfg['BasicKeySetting']['FirstPage']
-		keysetting[6]=cfg['BasicKeySetting']['LastPage']
-		keysetting[7]=cfg['BasicKeySetting']['Reload']
-		keysetting[8]=cfg['BasicKeySetting']['Delete']
-		keysetting[9]=cfg['BasicKeySetting']['Add']
-		keysetting[10]=cfg['BasicKeySetting']['Remove']
-		keysetting[11]=cfg['BasicKeySetting']['ResizeDown']
-		keysetting[12]=cfg['BasicKeySetting']['ResizeUp']
-		keysetting[13]=cfg['BasicKeySetting']['CopyKey']
-		keysetting[14]=cfg['BasicKeySetting']['ZoomIn']
-		keysetting[15]=cfg['BasicKeySetting']['ZoomOut']
-		keysetting[16]=cfg['BasicKeySetting']['CrossLine']
-		keysetting[17]=cfg['BasicKeySetting']['Help']        
-		keysetting[18]=cfg['SpecialKeySetting']['NextRect']
-		keysetting[19]=cfg['SpecialKeySetting']['PreRect']
-		keysetting[20]=cfg['SpecialKeySetting']['ReduceUp']
-		keysetting[21]=cfg['SpecialKeySetting']['ReduceDown']
-		keysetting[22]=cfg['SpecialKeySetting']['ReduceRight']
-		keysetting[23]=cfg['SpecialKeySetting']['ReduceLeft']
-		keysetting[24]=cfg['SpecialKeySetting']['IncreaseUp']
-		keysetting[25]=cfg['SpecialKeySetting']['IncreaseDown']
-		keysetting[26]=cfg['SpecialKeySetting']['IncreaseRight']
-		keysetting[27]=cfg['SpecialKeySetting']['IncreaseLeft']
-		keysetting[28]=cfg['BasicKeySetting']['Crop']
-		keysetting[29]=cfg['BasicKeySetting']['Masking']
-		keysetting[30]=cfg['BasicKeySetting']['Mmasking']
-		keysetting[31]=cfg['BasicKeySetting']['MaskingSave']
-		keysetting[32]=cfg['BasicKeySetting']['LoadMasking']
-		keysetting[33]=cfg['BasicKeySetting']['ReLoadBackup']
-		keysetting[34]=cfg['SpecialKeySetting']['ViewClass']
-		keysetting[35]=cfg['SpecialKeySetting']['OnlySelect']
-		keysetting[36]=cfg['BasicKeySetting']['CopyLabeling']
-		keysetting[37]=cfg['SpecialKeySetting']['OnlyBox']
+		keysetting[0]=cfg.get('Setting', 'SkipFrame', fallback=keysetting[0])
+		keysetting[1]=cfg.get('BasicKeySetting', 'SkipLkey', fallback=keysetting[1])
+		keysetting[2]=cfg.get('BasicKeySetting', 'SkipRkey', fallback=keysetting[2])
+		keysetting[3]=cfg.get('BasicKeySetting', 'Lkey', fallback=keysetting[3])
+		keysetting[4]=cfg.get('BasicKeySetting', 'Rkey', fallback=keysetting[4])
+		keysetting[5]=cfg.get('BasicKeySetting', 'FirstPage', fallback=keysetting[5])
+		keysetting[6]=cfg.get('BasicKeySetting', 'LastPage', fallback=keysetting[6])
+		keysetting[7]=cfg.get('BasicKeySetting', 'Reload', fallback=keysetting[7])
+		keysetting[8]=cfg.get('BasicKeySetting', 'Delete', fallback=keysetting[8])
+		keysetting[9]=cfg.get('BasicKeySetting', 'Add', fallback=keysetting[9])
+		keysetting[10]=cfg.get('BasicKeySetting', 'Remove', fallback=keysetting[10])
+		keysetting[11]=cfg.get('BasicKeySetting', 'ResizeDown', fallback=keysetting[11])
+		keysetting[12]=cfg.get('BasicKeySetting', 'ResizeUp', fallback=keysetting[12])
+		keysetting[13]=cfg.get('BasicKeySetting', 'CopyKey', fallback=keysetting[13])
+		keysetting[14]=cfg.get('BasicKeySetting', 'ZoomIn', fallback=keysetting[14])
+		keysetting[15]=cfg.get('BasicKeySetting', 'ZoomOut', fallback=keysetting[15])
+		keysetting[16]=cfg.get('BasicKeySetting', 'CrossLine', fallback=keysetting[16])
+		keysetting[17]=cfg.get('BasicKeySetting', 'Help', fallback=keysetting[17])
+		keysetting[18]=cfg.get('SpecialKeySetting', 'NextRect', fallback=keysetting[18])
+		keysetting[19]=cfg.get('SpecialKeySetting', 'PreRect', fallback=keysetting[19])
+		keysetting[20]=cfg.get('SpecialKeySetting', 'ReduceUp', fallback=keysetting[20])
+		keysetting[21]=cfg.get('SpecialKeySetting', 'ReduceDown', fallback=keysetting[21])
+		keysetting[22]=cfg.get('SpecialKeySetting', 'ReduceRight', fallback=keysetting[22])
+		keysetting[23]=cfg.get('SpecialKeySetting', 'ReduceLeft', fallback=keysetting[23])
+		keysetting[24]=cfg.get('SpecialKeySetting', 'IncreaseUp', fallback=keysetting[24])
+		keysetting[25]=cfg.get('SpecialKeySetting', 'IncreaseDown', fallback=keysetting[25])
+		keysetting[26]=cfg.get('SpecialKeySetting', 'IncreaseRight', fallback=keysetting[26])
+		keysetting[27]=cfg.get('SpecialKeySetting', 'IncreaseLeft', fallback=keysetting[27])
+		keysetting[28]=cfg.get('BasicKeySetting', 'Crop', fallback=keysetting[28])
+		keysetting[29]=cfg.get('BasicKeySetting', 'Masking', fallback=keysetting[29])
+		keysetting[30]=cfg.get('BasicKeySetting', 'Mmasking', fallback=keysetting[30])
+		keysetting[31]=cfg.get('BasicKeySetting', 'MaskingSave', fallback=keysetting[31])
+		keysetting[32]=cfg.get('BasicKeySetting', 'LoadMasking', fallback=keysetting[32])
+		keysetting[33]=cfg.get('BasicKeySetting', 'ReLoadBackup', fallback=keysetting[33])
+		keysetting[34]=cfg.get('SpecialKeySetting', 'ViewClass', fallback=keysetting[34])
+		keysetting[35]=cfg.get('SpecialKeySetting', 'OnlySelect', fallback=keysetting[35])
+		keysetting[36]=cfg.get('BasicKeySetting', 'CopyLabeling', fallback=keysetting[36])
+		keysetting[37]=cfg.get('SpecialKeySetting', 'OnlyBox', fallback=keysetting[37])
 		# keysetting[38]=cfg['BasicKeySetting']['ResetLabeling']  # 제거됨 - 위험한 기능
 
 		# 버튼별 클래스 ID를 저장할 딕셔너리
@@ -1398,6 +2141,16 @@ class MainApp:
 		
 		self.btnLoadList = tk.Button(self.button_frame, text="Open List", command=self.load_new_list, bd=1)
 		self.btnLoadList.pack(side=tk.LEFT, padx=0)
+
+		self.sort_list_on_load_var = tk.BooleanVar()
+		self.sort_list_on_load_var.set(True)
+		self.chk_sort_list_on_load = tk.Checkbutton(
+			self.button_frame,
+			text="Sort List Fixed",
+			variable=self.sort_list_on_load_var,
+			state=tk.DISABLED
+		)
+		self.chk_sort_list_on_load.pack(side=tk.LEFT, padx=5)
 		
 		self.btnHelp = tk.Button(self.button_frame, text="Help", command=self.print_help, bd=1)
 		self.btnHelp.pack(side=tk.RIGHT, padx=0)
@@ -1532,6 +2285,9 @@ class MainApp:
 		self.copy_masking_btn = tk.Button(self.copy_row_frame, text="실행", command=self.copy_masking_to_range, bd=1)
 		self.copy_masking_btn.pack(side=tk.LEFT, padx=2)
 
+		self.masking_dry_run_btn = tk.Button(self.copy_row_frame, text="Dry-run", command=self.preview_masking_delete_to_range, bd=1)
+		self.masking_dry_run_btn.pack(side=tk.LEFT, padx=2)
+
 		# 마스킹 자동복사 체크박스
 		self.auto_copy_masking_var = tk.BooleanVar()
 		self.auto_copy_masking_var.set(False)
@@ -1616,6 +2372,42 @@ class MainApp:
 		self.page_move_btn = tk.Button(self.actions_row_frame, text="Go", command=self.move_to_page, bd=1)
 		self.page_move_btn.pack(side=tk.LEFT, padx=2)
 
+		# ========== 3줄: 시계열 IOU 추적 ==========
+		self.track_row_frame = tk.Frame(self.copy_functions_frame)
+		self.track_row_frame.pack(side=tk.TOP, padx=5, fill="x", expand=True, pady=2)
+
+		self.track_label = tk.Label(self.track_row_frame, text="[IOU추적]", bd=0, fg="blue")
+		self.track_label.pack(side=tk.LEFT, padx=2)
+
+		self.track_range_label = tk.Label(self.track_row_frame, text="범위:", bd=0)
+		self.track_range_label.pack(side=tk.LEFT, padx=1)
+
+		self.track_range_entry = tk.Entry(self.track_row_frame, width=5)
+		self.track_range_entry.pack(side=tk.LEFT, padx=1)
+		self.track_range_entry.insert(0, "30")
+
+		self.track_iou_label = tk.Label(self.track_row_frame, text="IOU:", bd=0)
+		self.track_iou_label.pack(side=tk.LEFT, padx=1)
+
+		self.track_iou_entry = tk.Entry(self.track_row_frame, width=5)
+		self.track_iou_entry.pack(side=tk.LEFT, padx=1)
+		self.track_iou_entry.insert(0, "0.20")
+
+		self.track_same_class_var = tk.BooleanVar()
+		self.track_same_class_var.set(True)
+		self.track_same_class_chk = tk.Checkbutton(
+			self.track_row_frame,
+			text="동일클래스",
+			variable=self.track_same_class_var
+		)
+		self.track_same_class_chk.pack(side=tk.LEFT, padx=2)
+
+		self.track_preview_btn = tk.Button(self.track_row_frame, text="Preview", command=self.preview_iou_track, bd=1)
+		self.track_preview_btn.pack(side=tk.LEFT, padx=2)
+
+		self.track_keep_btn = tk.Button(self.track_row_frame, text="Keep Only", command=self.apply_iou_track_keep_only, bd=1)
+		self.track_keep_btn.pack(side=tk.LEFT, padx=2)
+
 		self.setup_label_list_ui()
 
 		# 3. 캔버스 프레임 (스크롤바 포함)
@@ -1660,20 +2452,20 @@ class MainApp:
 				break
 		
 		# 이미지 리스트 로드 코드
-		if ext != '.txt':
+		if ext != '.txt' and not getattr(self, 'folder_loaded', False):
 			cdir = os.path.abspath(_dir)
 			if self.CLASSIFY_TPFP:
 				self.imlist = get_list_jpg(cdir)
 				self.imlist += get_list_jpg(cdir + '/TP')
 				self.imlist += get_list_jpg(cdir + '/FP')
-				self.imlist = natsort.natsorted(self.imlist, key=lambda f: (os.path.dirname(f), os.path.basename(f)))
+				self.imlist = sort_image_paths(self.imlist)
 				labelsname = cdir.replace('JPEGImages','labels')
 				if not(os.path.isdir(labelsname + '/TP')):
 					os.makedirs(os.path.join(labelsname + '/TP'))
 				if not(os.path.isdir(labelsname + '/FP')):
 					os.makedirs(os.path.join(labelsname + '/FP'))
 			else:
-				self.imlist = [cdir + '/' + f for f in natsort.natsorted(os.listdir(cdir)) if f.find('.jpg') >= 0 or f.find('.png') >= 0]
+				self.imlist = sort_image_paths([os.path.join(cdir, f) for f in os.listdir(cdir) if is_image_file(f)])
 				for f in self.imlist:
 					label = f.replace('JPEGImages','labels')
 					label = label.replace('jpg','txt')
@@ -1690,10 +2482,11 @@ class MainApp:
 		_dir_goodbye = _dir
 		self.setup_input_validation()
 		self.setup_input_focus_handling()
-		# self.improve_key_bindings()
+		self.improve_key_bindings()
 
 			# 초기에 캔버스에 포커스 설정
 		self.canvas.focus_set()
+		self.apply_modern_theme()
 
     # == UI 레이아웃 구성 시작 ==
 		self.process()
@@ -1720,17 +2513,16 @@ class MainApp:
 				search_path = folder_path
 
 			# 이미지 파일 찾기
-			image_extensions = ['.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG']
 			image_files = []
 
 			for root, dirs, files in os.walk(search_path):
 				for file in files:
-					if any(file.endswith(ext) for ext in image_extensions):
+					if is_image_file(file):
 						full_path = os.path.join(root, file)
 						image_files.append(full_path)
 
 			# 자연스러운 정렬
-			image_files = natsort.natsorted(image_files)
+			image_files = sort_image_paths(image_files)
 
 			if len(image_files) == 0:
 				print(f"[WARNING] 폴더에서 이미지 파일을 찾을 수 없습니다: {folder_path}")
@@ -1739,12 +2531,14 @@ class MainApp:
 
 			# 이미지 리스트 설정
 			self.imlist = image_files
+			self.loaded_list_file_path = None
+			self.folder_loaded = True
 			print(f"[INFO] {len(image_files)}개의 이미지 파일을 로드했습니다.")
 
 			# 첫 번째 이미지 로드
 			if len(self.imlist) > 0:
 				self.ci = 0
-				self.load_image()
+				self.draw_image()
 
 		except Exception as e:
 			print(f"[ERROR] 폴더에서 이미지 로드 중 오류: {e}")
@@ -1880,13 +2674,25 @@ class MainApp:
 				time.sleep(2)				
 				_dir = dirname.replace(".txt",".evaluation")
 			if inputtype=="0":
-				encodings = ['utf-8', 'cp949', 'euc-kr', 'latin-1', 'shift-jis']
-				success = False
+				try:
+					self.imlist, nofile, encoding = read_image_list_file(dirname)
+				except Exception as e:
+					print(f"[ListLoad] failed to read list file: {e}")
+					a.destroy()
+					return None
+				self.imlist = sort_image_paths(self.imlist)
+				print_missing_list_items(nofile)
+				print(f"[ListLoad] loaded={len(self.imlist)}, missing={len(nofile)}, encoding={encoding}")
+				if not self.imlist:
+					print("[ListLoad] no valid images found in the list file.")
+					a.destroy()
+					return None
+				encodings = []
+				success = True
 
 				for encoding in encodings:
 					try:
 						with open(dirname, "rt", encoding=encoding) as file:
-							lineidx = 0
 							nofile = []
 							self.imlist = []  # 리스트 초기화
 							
@@ -1894,12 +2700,10 @@ class MainApp:
 								line = file.readline()
 								if not line:
 									break
-								line = line.replace('/s_mnt/253/','//192.168.79.253/')
-								line = line.replace('\n','')
-								print(f"{str(lineidx)} : {line}")
+								line = line.strip().replace('/s_mnt/253/','//192.168.79.253/')
+								print(f"{str(len(self.imlist))} : {line}")
 								if os.path.exists(line):					
-									self.imlist.insert(lineidx, line)
-									lineidx += 1
+									self.imlist.append(line)
 								else: 
 									nofile.append(line)
 							
@@ -1909,12 +2713,9 @@ class MainApp:
 							
 							# 존재하는 파일만 다시 저장
 							with open(dirname, "wt", encoding=encoding) as f:
-								self.imlist = natsort.natsorted(self.imlist, key=lambda f: (os.path.dirname(f), os.path.basename(f)))
+								self.imlist = sort_image_paths(self.imlist)
 								for existfilename in self.imlist:
-									existfilename = existfilename.replace('//192.168.79.253/','/s_mnt/253/')
-									existfilename = existfilename.replace('.png','.png\n')
-									existfilename = existfilename.replace('.jpg','.jpg\n')
-									f.write(existfilename)
+									f.write(to_list_file_path(existfilename))
 							
 							success = True
 							print(f"파일을 성공적으로 로드했습니다. 사용된 인코딩: {encoding}")
@@ -1934,8 +2735,9 @@ class MainApp:
 					a.destroy()
 					return None
 				self.CLASSIFY_TPFP=False
+				self.loaded_list_file_path = dirname
 				_dir = dirname
-		elif ext != '.jpg' and ext != '.png':
+		elif not is_image_file(dirname):
 			# 비디오 파일 처리 (기본 모드만 지원)
 			capture = cv2.VideoCapture(dirname)
 			pathstr = os.path.splitext(dirname)
@@ -2019,7 +2821,7 @@ class MainApp:
 					self.imlist = get_list_jpg(new_dir)
 					self.imlist += get_list_jpg(new_dir + '/TP')
 					self.imlist += get_list_jpg(new_dir + '/FP')
-					self.imlist = natsort.natsorted(self.imlist, key=lambda f: (os.path.dirname(f), os.path.basename(f)))
+					self.imlist = sort_image_paths(self.imlist)
 					
 					# TP/FP 폴더 생성
 					labels_dir = new_dir.replace('JPEGImages','labels')
@@ -2028,8 +2830,8 @@ class MainApp:
 					if not(os.path.isdir(labels_dir + '/FP')):
 						os.makedirs(os.path.join(labels_dir + '/FP'))
 				else:
-					self.imlist = [new_dir + '/' + f for f in natsort.natsorted(os.listdir(new_dir)) 
-								if f.find('.jpg') >= 0 or f.find('.png') >= 0]
+					self.imlist = sort_image_paths([os.path.join(new_dir, f) for f in os.listdir(new_dir) 
+								if is_image_file(f)])
 					
 					# 각 이미지에 대한 라벨 파일 확인/생성
 					for f in self.imlist:
@@ -2044,6 +2846,7 @@ class MainApp:
 							flabel = open(label, "wt")
 							flabel.close()
 				if self.imlist:
+					self.loaded_list_file_path = None
 					self.img_slider.config(to=len(self.imlist))
 					self.img_slider.set(self.ci + 1)
 					self.slider_info.config(text=f"{self.ci+1}/{len(self.imlist)}")
@@ -2085,6 +2888,26 @@ class MainApp:
 
 		# 두 축 모두에서 겹침 -> 면적 겹침 있음
 		return True
+
+	def check_original_bbox_mask_pixel_overlap(self, x1, y1, x2, y2, mask=None):
+		"""원본 이미지 좌표 bbox가 실제 마스킹 픽셀과 겹치는지 확인."""
+		mask = mask if mask is not None else getattr(self, 'masking', None)
+		frame_width = getattr(self, 'maskingframewidth', getattr(self, 'original_width', 0))
+		frame_height = getattr(self, 'maskingframeheight', getattr(self, 'original_height', 0))
+		return self.mask_label_manager.bbox_overlaps_mask_pixels(x1, y1, x2, y2, mask, frame_width, frame_height)
+
+	def check_bbox_mask_pixel_overlap(self, bbox, mask=None):
+		"""뷰 좌표 bbox가 실제 마스킹 픽셀과 겹치는지 확인."""
+		x1, y1 = self.convert_view_to_original(bbox[3], bbox[4])
+		x2, y2 = self.convert_view_to_original(bbox[5], bbox[6])
+		return self.check_original_bbox_mask_pixel_overlap(x1, y1, x2, y2, mask)
+
+	def read_label_lines_for_masking(self, label_path):
+		return self.mask_label_manager.read_label_lines(label_path)
+
+	def filter_label_lines_by_current_mask(self, label_path, image_width, image_height):
+		return self.mask_label_manager.filter_label_lines_by_mask(label_path, image_width, image_height, self.masking)
+
 	def load_new_list(self):
 		"""새로운 이미지 리스트 파일 로드"""
 		try:
@@ -2094,20 +2917,37 @@ class MainApp:
 			file_path = tk.filedialog.askopenfilename(filetypes=[("Text files", "*.txt")])
 			if file_path:  # 파일이 선택된 경우
 				self.reset_data()
-				encodings = ['utf-8', 'cp949', 'euc-kr', 'latin-1', 'shift-jis']
-				success = False
+				try:
+					self.imlist, nofile, encoding = read_image_list_file(file_path)
+				except Exception as e:
+					print(f"[ListLoad] failed to read list file: {e}")
+					messagebox.showerror("Error", f"Failed to load list:\n{e}")
+					a.destroy()
+					return
+				self.imlist = sort_image_paths(self.imlist)
+				print_missing_list_items(nofile)
+				print(f"[ListLoad] loaded={len(self.imlist)}, missing={len(nofile)}, encoding={encoding}")
+				encodings = []
+				success = True
 		
 				for encoding in encodings:
 					try:
 						with open(file_path, "rt", encoding=encoding) as file:
 							self.imlist = []
+							nofile = []
 							for line in file:
 								line = line.strip()
 								line = line.replace('/s_mnt/253/','//192.168.79.253/')
 								if os.path.exists(line):
 									self.imlist.append(line)
 								else:
+									nofile.append(line)
 									print(f"Warning: File not found - {line}")
+
+						self.imlist = sort_image_paths(self.imlist)
+						with open(file_path, "wt", encoding=encoding) as file:
+							for image_path in self.imlist:
+								file.write(to_list_file_path(image_path))
 						
 						success = True
 						print(f"파일을 성공적으로 로드했습니다. 사용된 인코딩: {encoding}")
@@ -2125,12 +2965,13 @@ class MainApp:
 					messagebox.showerror("오류", "지원되는 인코딩으로 파일을 읽을 수 없습니다.")
 					a.destroy()
 					return
-				
+
 				if self.imlist:  # 유효한 이미지가 있는 경우
+					self.loaded_list_file_path = file_path
 					self.img_slider.config(to=len(self.imlist))
 					self.img_slider.set(self.ci + 1)
 					self.slider_info.config(text=f"{self.ci+1}/{len(self.imlist)}")
-					self._dir = os.path.dirname(self.imlist[0])
+					self._dir = file_path
 					self.draw_image()
 				else:
 					messagebox.showwarning("Warning", "No valid images found in the list")
@@ -2169,7 +3010,7 @@ class MainApp:
 		progress_label = tk.Label(progress_window, text="파일을 삭제 중입니다...", pady=10)
 		progress_label.pack()
 		
-		progress_bar = tk.ttk.Progressbar(progress_window, orient="horizontal", 
+		progress_bar = ttk.Progressbar(progress_window, orient="horizontal",
 										length=250, mode="determinate")
 		progress_bar.pack(pady=10)
 		
@@ -2184,13 +3025,6 @@ class MainApp:
 		# 삭제할 이미지 목록 생성 (역순으로 삭제하여 인덱스 문제 방지)
 		to_delete_indices = list(range(start_frame - 1, end_frame))
 		to_delete_indices.reverse()  # 역순으로 정렬
-		
-		# backup 폴더 확인
-		d_path = 'original_backup/JPEGImages/'            
-		if not(os.path.isdir(d_path)):
-			os.makedirs(os.path.join(d_path))
-		if not(os.path.isdir('original_backup/labels/')):
-			os.makedirs(os.path.join('original_backup/labels/'))
 		
 		# 삭제 진행
 		deleted_count = 0
@@ -2213,18 +3047,9 @@ class MainApp:
 				label_path = img_path.replace('JPEGImages', 'labels')
 				label_path = label_path.replace('.jpg', '.txt')
 				label_path = label_path.replace('.png', '.txt')
-				
-				# 백업
-				backup_img_path = d_path + self.make_path(img_path)
-				backup_label_path = 'original_backup/labels/' + self.make_path(label_path)
-				
-				# 백업이 없는 경우에만 백업 생성
-				if not os.path.exists(backup_img_path) and os.path.exists(img_path):
-					img = Image.open(img_path)
-					img.save(backup_img_path)
-				
-				if not os.path.exists(backup_label_path) and os.path.exists(label_path):
-					shutil.copyfile(label_path, backup_label_path)
+				if not self.backup_original_pair(img_path, label_path):
+					print(f"[DeleteRange] Backup failed. Skipped delete: {img_path}")
+					continue
 				
 				# 파일 삭제
 				if os.path.exists(img_path):
@@ -2485,7 +3310,7 @@ class MainApp:
 		progress_label = tk.Label(progress_window, text="라벨을 복사 중입니다...", pady=10)
 		progress_label.pack()
 		
-		progress_bar = tk.ttk.Progressbar(progress_window, orient="horizontal", 
+		progress_bar = ttk.Progressbar(progress_window, orient="horizontal",
 										length=250, mode="determinate")
 		progress_bar.pack(pady=10)
 		
@@ -2570,52 +3395,25 @@ class MainApp:
 					print(f"라벨 읽기 오류: {e}")
 					# 읽기 실패 시 결정: 계속 진행 또는 건너뛰기
 
-				# 백업 생성은 별도 try 블록
-				try:
-					if os.path.exists(target_label_path):
-						backup_dir = 'original_backup/labels/'
-						if not os.path.isdir(backup_dir):
-							os.makedirs(backup_dir)
+				output_lines = []
+				copy_regions = self.copy_region_manager.active_regions()
+				if copy_regions:
+					output_lines = merge_copy_region_label_lines(existing_labels, copytext, copy_regions)
+				elif preserve_mode == "preserve":
+					output_lines.extend(existing_labels)
+					if copy_mode == "selected":
+						is_duplicate = any(existing_label.strip() == copytext[0].strip() for existing_label in existing_labels)
+						if not is_duplicate:
+							output_lines.extend(copytext)
+					else:
+						output_lines.extend(copytext)
+				else:
+					output_lines.extend(copytext)
 
-						backup_path = backup_dir + self.make_path(target_label_path)
-						if not os.path.exists(backup_path):
-							shutil.copyfile(target_label_path, backup_path)
-				except Exception as e:
-					print(f"백업 생성 오류: {e}")
+				if not self.write_text_files_transaction({target_label_path: ''.join(output_lines)}, backup_category='labels'):
+					print(f"[LabelCopy] Transaction failed. Skipped frame: {target_label_path}")
+					continue
 
-				# 라벨 쓰기는 별도 try 블록
-				try:
-					with open(target_label_path, 'w', encoding='utf-8') as f:
-						if preserve_mode == "preserve":
-							# 기존 라벨 유지하고 새 라벨 추가
-							f.writelines(existing_labels)
-
-							if copy_mode == "selected":
-								# 중복 검사
-								is_duplicate = False
-								for existing_label in existing_labels:
-									if existing_label.strip() == copytext[0].strip():
-										is_duplicate = True
-										break
-
-								# 중복이 아닌 경우 새 라벨 추가
-								if not is_duplicate:
-									f.writelines(copytext)
-							else:
-								# 다중 선택 또는 전체 복사 시 중복 검사 없이 추가
-								f.writelines(copytext)
-						else:
-							# replace 모드: 기존 라벨 지우고 새 라벨만 쓰기
-							f.writelines(copytext)
-				except Exception as e:
-					print(f"라벨 쓰기 오류: {e}")
-					# 쓰기 실패 시 백업에서 복원 시도
-					try:
-						if os.path.exists(backup_path):
-							shutil.copyfile(backup_path, target_label_path)
-					except:
-						print("백업 복원 실패")
-						
 				success_count += 1
 					
 			except Exception as e:
@@ -2635,8 +3433,96 @@ class MainApp:
 		# 현재 이미지 다시 표시
 		self.draw_image()
 
-	def show_temporary_status(self, message, duration=2000, bg_color='#4CAF50'):
+	def start_copy_region_drawing(self):
+		self.copy_region_mode = True
+		self.copy_region_points = []
+		messagebox.showinfo("Copy region", "Left-click points to draw a copy region. Right-click to save it.")
+
+	def finish_copy_region_drawing(self):
+		if len(self.copy_region_points) < 3:
+			self.copy_region_mode = False
+			self.copy_region_points = []
+			return
+		self.copy_region_manager.zones.append({
+			'points': list(self.copy_region_points),
+			'enabled': True,
+		})
+		self.copy_region_manager.save()
+		self.copy_region_mode = False
+		self.copy_region_points = []
+		self.draw_bbox()
+
+	def show_copy_region_context_menu(self, event, normalized_point):
+		menu = tk.Menu(self.master, tearoff=0)
+		original_point = (
+			normalized_point[0] * self.imsize[0] / max(self.zoom_ratio, 0.0001),
+			normalized_point[1] * self.imsize[1] / max(self.zoom_ratio, 0.0001),
+		)
+		exclusion_index = next((i for i, zone in enumerate(self.exclusion_zone_manager.global_zones)
+			if point_in_polygon(original_point, zone.get('points', []))), None)
+		class_change_index = next((i for i, zone in enumerate(self.class_change_zone_manager.zones)
+			if point_in_polygon(original_point, zone.get('points', []))), None)
+		if exclusion_index is not None:
+			zone = self.exclusion_zone_manager.global_zones[exclusion_index]
+			menu.add_command(
+				label="Enable exclusion zone" if not zone.get('enabled', True) else "Disable exclusion zone",
+				command=lambda: self.toggle_exclusion_zone_from_canvas(exclusion_index),
+			)
+		if class_change_index is not None:
+			zone = self.class_change_zone_manager.zones[class_change_index]
+			menu.add_command(
+				label="Enable class change zone" if not zone.get('enabled', True) else "Disable class change zone",
+				command=lambda: self.toggle_class_change_zone_from_canvas(class_change_index),
+			)
+		if exclusion_index is not None or class_change_index is not None:
+			menu.add_separator()
+		menu.add_command(label="Draw exclusion zone", command=lambda: self.start_exclusion_zone_drawing('polygon'))
+		zone_index = self.copy_region_manager.zone_at(normalized_point)
+		if zone_index is not None:
+			zone = self.copy_region_manager.zones[zone_index]
+			label = "복사영역 끄기" if zone.get('enabled', True) else "복사영역 켜기"
+			menu.add_command(label=label, command=lambda: self.toggle_copy_region(zone_index))
+			menu.add_command(label="복사영역 삭제", command=lambda: self.delete_copy_region(zone_index))
+			menu.add_separator()
+			menu.add_command(label="Draw new copy region", command=self.start_copy_region_drawing)
+		else:
+			menu.add_command(label="Draw copy region here", command=self.start_copy_region_drawing)
+		try:
+			menu.tk_popup(event.x_root, event.y_root)
+		finally:
+			menu.grab_release()
+
+	def toggle_exclusion_zone_from_canvas(self, index):
+		self.exclusion_zone_manager.toggle_zone(index)
+		if self.exclusion_zone_manager.global_zones[index].get('enabled', True):
+			self.exclusion_zone_enabled = True
+			self.exclusion_zone_manager.save_enabled_state(True)
+		self.exclusion_zone_manager.save_global_zones()
+		self.draw_bbox()
+
+	def toggle_class_change_zone_from_canvas(self, index):
+		self.class_change_zone_manager.toggle_zone(index)
+		self.class_change_zone_manager.save_zones()
+		self.draw_bbox()
+
+	def toggle_copy_region(self, index):
+		if 0 <= index < len(self.copy_region_manager.zones):
+			zone = self.copy_region_manager.zones[index]
+			zone['enabled'] = not zone.get('enabled', True)
+			self.copy_region_manager.save()
+			self.draw_bbox()
+
+	def delete_copy_region(self, index):
+		if 0 <= index < len(self.copy_region_manager.zones):
+			self.copy_region_manager.zones.pop(index)
+			self.copy_region_manager.save()
+			self.draw_bbox()
+
+	def show_temporary_status(self, message, duration=2000, bg_color=None):
 		"""화면 하단에 일시 상태 메시지 표시"""
+		if bg_color is None:
+			bg_color = getattr(self, 'theme_colors', {}).get('success_bg', '#059669')
+
 		# 기존 상태 레이블 제거
 		if hasattr(self, 'status_label') and self.status_label:
 			try:
@@ -2672,6 +3558,8 @@ class MainApp:
 		self.canvas.delete("all")
 		try:
 			if self.ci == self.pi: return
+			previous_page_index = self.pi
+			self.page_move_delta = 0 if previous_page_index < 0 else self.ci - previous_page_index
 			self.pi = self.ci
 
 			# 페이지 전환 시 pending 작업 카운터 및 작업 내역 초기화
@@ -3366,10 +4254,136 @@ class MainApp:
 		self.canvas.create_image(0, 0, image=self.canvas.image, anchor='nw', tags="img")
 		self.master.title('[%d/%d] %s' % (self.ci+1, len(self.imlist), self.im_fn))
 
+		if self.copy_region_source_lines is not None:
+			existing_lines = []
+			if os.path.exists(self.gt_fn):
+				try:
+					with open(self.gt_fn, 'r', encoding='utf-8') as f:
+						existing_lines = f.readlines()
+				except (OSError, UnicodeDecodeError) as e:
+					print(f"[CopyRegion] target label read failed: {e}")
+			merged_lines = merge_copy_region_label_lines(
+				existing_lines,
+				self.copy_region_source_lines,
+				self.copy_region_manager.active_regions(),
+			)
+			self.bbox = []
+			for line in merged_lines:
+				try:
+					values = [float(value) for value in line.strip().split()]
+					if len(values) >= 5:
+						values[0] = int(values[0])
+						self.bbox.append(self.convert_rel2abs(values[:5]))
+				except (ValueError, IndexError):
+					continue
+			self.write_bbox()
+			self.copy_region_source_lines = None
+
 		if self.CLASSIFY_TPFP: self.draw_criteria()
 		#self.load_bbox()
 		self.draw_bbox()
 		return
+
+	def get_masking_copy_range(self):
+		try:
+			start_frame = int(self.start_frame_entry.get())
+			end_frame = int(self.end_frame_entry.get())
+		except ValueError:
+			messagebox.showerror("오류", "시작 및 종료 프레임 번호는 숫자여야 합니다.")
+			return None
+
+		if start_frame < 1 or end_frame > len(self.imlist) or start_frame > end_frame:
+			messagebox.showerror("오류", f"프레임 범위는 1에서 {len(self.imlist)} 사이여야 합니다.")
+			return None
+		return start_frame, end_frame
+
+	def collect_masking_delete_preview(self, start_frame, end_frame):
+		if not hasattr(self, 'masking') or not self.has_saved_masking:
+			messagebox.showwarning("경고", "저장된 마스킹이 없습니다. 먼저 마스킹을 생성하고 저장해주세요.")
+			return None
+
+		mask_width = self.maskingframewidth
+		mask_height = self.maskingframeheight
+		preview = []
+
+		for i in range(start_frame - 1, end_frame):
+			if i == self.ci:
+				continue
+			target_img_path = self.imlist[i]
+			try:
+				with Image.open(target_img_path) as target_img:
+					if target_img.width != mask_width or target_img.height != mask_height:
+						preview.append({
+							'frame_idx': i,
+							'image_path': target_img_path,
+							'label_path': self.get_label_path_for_image(target_img_path),
+							'original': 0,
+							'deleted': 0,
+							'skipped': True,
+							'reason': 'size mismatch',
+						})
+						continue
+			except Exception as e:
+				preview.append({
+					'frame_idx': i,
+					'image_path': target_img_path,
+					'label_path': self.get_label_path_for_image(target_img_path),
+					'original': 0,
+					'deleted': 0,
+					'skipped': True,
+					'reason': str(e),
+				})
+				continue
+
+			label_path = self.get_label_path_for_image(target_img_path)
+			_, original_count, deleted_count = self.filter_label_lines_by_current_mask(label_path, mask_width, mask_height)
+			preview.append({
+				'frame_idx': i,
+				'image_path': target_img_path,
+				'label_path': label_path,
+				'original': original_count,
+				'deleted': deleted_count,
+				'skipped': False,
+				'reason': '',
+			})
+
+		return preview
+
+	def preview_masking_delete_to_range(self):
+		range_values = self.get_masking_copy_range()
+		if not range_values:
+			return
+		start_frame, end_frame = range_values
+		preview = self.collect_masking_delete_preview(start_frame, end_frame)
+		if preview is None:
+			return
+
+		total_deleted = sum(item['deleted'] for item in preview)
+		affected_frames = sum(1 for item in preview if item['deleted'] > 0)
+		skipped_frames = sum(1 for item in preview if item['skipped'])
+		detail_lines = []
+		for item in preview:
+			if item['deleted'] > 0 or item['skipped']:
+				if item['skipped']:
+					detail_lines.append(f"{item['frame_idx'] + 1}: skipped ({item['reason']})")
+				else:
+					detail_lines.append(f"{item['frame_idx'] + 1}: delete {item['deleted']}/{item['original']}")
+			if len(detail_lines) >= 20:
+				break
+
+		msg = (
+			f"마스킹 삭제 Dry-run\n\n"
+			f"범위: {start_frame} ~ {end_frame}\n"
+			f"삭제 예정 라벨: {total_deleted}개\n"
+			f"영향 프레임: {affected_frames}개\n"
+			f"스킵 프레임: {skipped_frames}개"
+		)
+		if detail_lines:
+			msg += "\n\n" + "\n".join(detail_lines)
+			if len(detail_lines) < affected_frames + skipped_frames:
+				msg += "\n..."
+		messagebox.showinfo("마스킹 Dry-run", msg)
+
 	def copy_masking_to_range(self):
 		"""현재 저장된 마스킹을 지정된 범위의 이미지들에 복사"""
 		# 저장된 마스킹이 없으면 경고 메시지 표시하고 종료
@@ -3410,7 +4424,7 @@ class MainApp:
 		progress_label = tk.Label(progress_window, text="마스킹을 복사 중입니다...", pady=10)
 		progress_label.pack()
 		
-		progress_bar = tk.ttk.Progressbar(progress_window, orient="horizontal", 
+		progress_bar = ttk.Progressbar(progress_window, orient="horizontal",
 										length=250, mode="determinate")
 		progress_bar.pack(pady=10)
 		
@@ -3427,7 +4441,6 @@ class MainApp:
 		self.master.update()
 		
 		# 폴리곤 포인트 정보 저장 여부 확인
-		has_polygon = hasattr(self, 'saved_polygon_points') and self.saved_polygon_points
 		
 		# 지정된 범위의 이미지에 마스킹 적용
 		success_count = 0
@@ -3448,127 +4461,77 @@ class MainApp:
 				# 대상 이미지 로드
 				target_img_path = self.imlist[i]
 				target_img = Image.open(target_img_path)
+				target_label_path = target_img_path.replace('JPEGImages', 'labels')
+				target_label_path = target_label_path.replace('.jpg', '.txt')
+				target_label_path = target_label_path.replace('.png', '.txt')
 
 				# 이미지 크기 확인
 				if target_img.width != mask_width or target_img.height != mask_height:
 					print(f"이미지 {i+1}의 크기가 마스킹과 일치하지 않습니다. 건너뜁니다.")
 					continue
 
-				# 백업 폴더 및 파일 확인
-				d_path = 'original_backup/JPEGImages/'
-				if not(os.path.isdir(d_path)):
-					os.makedirs(os.path.join(d_path))
-
-				img_path = d_path + self.make_path(target_img_path)
-				if not os.path.exists(img_path):
-					shutil.copyfile(target_img_path, img_path)
+				label_backup_path = target_label_path if self.remove_overlapping_labels.get() else None
+				if not self.backup_original_pair(target_img_path, label_backup_path):
+					print(f"[MaskCopy] Backup failed. Skipped frame: {target_img_path}")
+					continue
 
 				# 마스킹 적용
 				target_img_array = array(target_img)
 				target_img_array[self.masking] = [255, 0, 255]
 				target_img = Image.fromarray(target_img_array)
+				replacements = {}
+				temp_paths = []
+				deleted_label_count = 0
+				original_label_count = 0
+
+				try:
+					temp_img_path = target_img_path + '.tmp_gtgen'
+					image_format = Image.registered_extensions().get(os.path.splitext(target_img_path)[1].lower())
+					if image_format:
+						target_img.save(temp_img_path, format=image_format)
+					else:
+						target_img.save(temp_img_path)
+					replacements[target_img_path] = temp_img_path
+					temp_paths.append(temp_img_path)
+
+					if self.remove_overlapping_labels.get():
+						label_dir = os.path.dirname(target_label_path)
+						if label_dir and not os.path.exists(label_dir):
+							os.makedirs(label_dir)
+						labels_to_keep, original_label_count, deleted_label_count = self.filter_label_lines_by_current_mask(
+							target_label_path,
+							mask_width,
+							mask_height
+						)
+						temp_label_path = target_label_path + '.tmp_gtgen'
+						with open(temp_label_path, 'w', encoding='utf-8') as f:
+							f.writelines(labels_to_keep)
+						replacements[target_label_path] = temp_label_path
+						temp_paths.append(temp_label_path)
+
+					if not self.replace_files_transaction(replacements):
+						print(f"[MaskCopy] Transaction failed. Skipped frame: {target_img_path}")
+						continue
+
+					if deleted_label_count > 0:
+						print(f"[MaskCopy] Frame {i+1}: deleted {deleted_label_count}/{original_label_count} labels by mask pixels")
+						total_labels_deleted += deleted_label_count
+						modified_label_files.append(target_label_path)
+
+					success_count += 1
+					continue
+				except Exception as e:
+					print(f"[MaskCopy] Prepare failed for frame {i+1}: {e}")
+					for temp_path in temp_paths:
+						try:
+							if os.path.exists(temp_path):
+								os.remove(temp_path)
+						except Exception:
+							pass
+					continue
 
 				# 이미지 저장
-				target_img.save(target_img_path)
 
-				# 마스킹과 겹치는 라벨 삭제 옵션이 켜져 있는 경우
-				if self.remove_overlapping_labels.get():
-					try:
-						# 대상 라벨 파일 경로
-						target_label_path = target_img_path.replace('JPEGImages', 'labels')
-						target_label_path = target_label_path.replace('.jpg', '.txt')
-						target_label_path = target_label_path.replace('.png', '.txt')
-
-						# 라벨 디렉토리 확인
-						label_dir = os.path.dirname(target_label_path)
-						if not os.path.exists(label_dir):
-							os.makedirs(label_dir)
-
-						# 백업 생성
-						if os.path.exists(target_label_path):
-							backup_dir = 'original_backup/labels/'
-							if not os.path.isdir(backup_dir):
-								os.makedirs(backup_dir)
-
-							backup_path = backup_dir + self.make_path(target_label_path)
-							if not os.path.exists(backup_path):
-								shutil.copyfile(target_label_path, backup_path)
-
-						# 마스킹 영역 계산 (원본 이미지 기준)
-						if has_polygon:
-							# 폴리곤 마스킹의 경우 저장된 폴리곤 좌표 사용
-							min_x = min(p[0] for p in self.saved_polygon_points)
-							min_y = min(p[1] for p in self.saved_polygon_points)
-							max_x = max(p[0] for p in self.saved_polygon_points)
-							max_y = max(p[1] for p in self.saved_polygon_points)
-
-							mask_area = [min_x, min_y, max_x, max_y]
-							print(f"[MaskCopy] 폴리곤 마스킹 영역: {mask_area}")
-						else:
-							# 일반 마스킹의 경우 마스킹된 픽셀 영역 계산
-							if len(self.masking[0]) > 0:  # 마스킹된 픽셀이 있는 경우
-								mask_y1 = min(self.masking[0]) if len(self.masking[0]) > 0 else 0
-								mask_y2 = max(self.masking[0]) if len(self.masking[0]) > 0 else 0
-								mask_x1 = min(self.masking[1]) if len(self.masking[1]) > 0 else 0
-								mask_x2 = max(self.masking[1]) if len(self.masking[1]) > 0 else 0
-
-								# 원본 이미지 좌표를 캔버스 좌표로 변환
-								view_x1, view_y1 = self.convert_original_to_view(mask_x1, mask_y1)
-								view_x2, view_y2 = self.convert_original_to_view(mask_x2, mask_y2)
-
-								mask_area = [view_x1, view_y1, view_x2, view_y2]
-								print(f"[MaskCopy] 일반 마스킹 영역: {mask_area}")
-
-						# 기존 라벨 로드
-						labels_to_keep = []
-						original_label_count = 0
-						deleted_label_count = 0
-
-						if os.path.exists(target_label_path):
-							with open(target_label_path, 'r') as f:
-								lines = f.readlines()
-								original_label_count = len(lines)
-
-								for line in lines:
-									values = line.strip().split()
-									if len(values) >= 5:
-										cls_id, cx, cy, w, h = map(float, values)
-
-										# YOLO 형식에서 절대 좌표 계산 (픽셀 단위)
-										abs_x1 = int((cx - w/2) * mask_width)
-										abs_y1 = int((cy - h/2) * mask_height)
-										abs_x2 = int((cx + w/2) * mask_width)
-										abs_y2 = int((cy + h/2) * mask_height)
-
-										# 캔버스 좌표로 변환
-										view_x1, view_y1 = self.convert_original_to_view(abs_x1, abs_y1)
-										view_x2, view_y2 = self.convert_original_to_view(abs_x2, abs_y2)
-
-										# 바운딩 박스 (캔버스 좌표)
-										bbox = [False, class_name[int(cls_id)], int(cls_id), view_x1, view_y1, view_x2, view_y2]
-
-										# 바운딩 박스가 마스킹 영역과 겹치는지 확인 (면적 기반)
-										if not self.check_bbox_mask_overlap(mask_area, bbox):
-											# 겹치지 않는 경우 (유지)
-											labels_to_keep.append(line)
-										else:
-											# 겹치는 경우 삭제
-											deleted_label_count += 1
-
-						# 라벨 파일 다시 쓰기
-						with open(target_label_path, 'w') as f:
-							f.writelines(labels_to_keep)
-
-						if deleted_label_count > 0:
-							print(f"[MaskCopy] 프레임 {i+1}: {original_label_count}개 라벨 중 {deleted_label_count}개 삭제됨 (면적 기반)")
-							total_labels_deleted += deleted_label_count
-							modified_label_files.append(target_label_path)
-
-					except Exception as e:
-						print(f"라벨 처리 중 오류 발생: {e}")
-				
-				success_count += 1
-				
 			except Exception as e:
 				print(f"이미지 {i+1} 처리 중 오류 발생: {e}")
 		
@@ -3734,7 +4697,7 @@ class MainApp:
 
 		display_img = Image.fromarray(self.current_img_array)
 		if self.remove_overlapping_labels.get():
-			self.remove_labels_overlapping_with_mask(self.m_area)
+			self.remove_labels_overlapping_with_mask()
 
 		self.canvas.delete("masking")
 		self.bbox_masking = False
@@ -3769,11 +4732,11 @@ class MainApp:
 		# self.canvas.image = ImageTk.PhotoImage(self.img.resize(self.imsize, Image.LANCZOS))
 		# self.canvas.create_image(0, 0, image=self.canvas.image, anchor='nw', tags="img")
 
-	def remove_labels_overlapping_with_mask(self, mask_area):
+	def remove_labels_overlapping_with_mask(self, mask_area=None):
 		"""마스킹 영역과 겹치는 라벨 삭제
-		
+
 		Args:
-			mask_area: 마스킹 영역 [x1, y1, x2, y2] (뷰 좌표)
+			mask_area: 하위 호환용 영역 값. 실제 삭제 판정은 마스크 픽셀을 기준으로 수행.
 		"""
 		if not self.bbox:
 			return
@@ -3783,9 +4746,13 @@ class MainApp:
 		
 		# 겹치는 라벨 찾기
 		for i, box in enumerate(self.bbox):
-			if self.check_bbox_mask_overlap(mask_area, box):
+			if self.check_bbox_mask_pixel_overlap(box):
 				to_remove.append(i)
-		
+
+		if to_remove and not self.backup_original_file(self.gt_fn, 'labels'):
+			messagebox.showerror("Backup Error", f"Backup failed. Labels were not removed:\n{self.gt_fn}")
+			return
+
 		# 역순으로 삭제 (인덱스 변화 방지)
 		for i in sorted(to_remove, reverse=True):
 			self.bbox.pop(i)
@@ -3882,6 +4849,44 @@ class MainApp:
 		if r[3] > self.imsize[1]: r[3] = self.imsize[1]
 		return r
 
+	def bbox_dedupe_key(self, bbox):
+		rel = self.convert_abs2rel(bbox)
+		return (int(rel[0]),) + tuple(round(float(value), 5) for value in rel[1:])
+
+	def dedupe_bboxes(self, bboxes, context="bbox"):
+		seen = set()
+		deduped = []
+		removed = 0
+		for bbox in bboxes:
+			try:
+				key = self.bbox_dedupe_key(bbox)
+			except Exception as e:
+				print(f"[LabelDedupe] key failed in {context}: {e}")
+				deduped.append(bbox)
+				continue
+			if key in seen:
+				removed += 1
+				continue
+			seen.add(key)
+			deduped.append(bbox)
+		if removed:
+			print(f"[LabelDedupe] removed {removed} duplicate labels ({context})")
+		return deduped, removed
+
+	def has_same_bbox(self, candidate_bbox):
+		try:
+			candidate_key = self.bbox_dedupe_key(candidate_bbox)
+		except Exception as e:
+			print(f"[LabelDedupe] candidate key failed: {e}")
+			return False
+		for bbox in self.bbox:
+			try:
+				if self.bbox_dedupe_key(bbox) == candidate_key:
+					return True
+			except Exception:
+				continue
+		return False
+
 	def load_bbox(self):
 		# 페이지 이동 전 현재 페이지 데이터 저장 (자동 복사용)
 		self.save_current_page_data()
@@ -3912,6 +4917,8 @@ class MainApp:
 			pass
 		except (IOError, PermissionError) as e:
 			print(f"ERROR: Failed to load bbox from {self.gt_fn}: {e}")
+
+		self.bbox, _ = self.dedupe_bboxes(self.bbox, "load")
 
 		# === 자동 필터링 적용 ===
 		total_deleted = 0
@@ -3968,13 +4975,211 @@ class MainApp:
 			return
 
 		try:
-			with open(self.gt_fn, 'wt') as f:
-				for rc in self.bbox:
-					f.write(' '.join(str(e) for e in self.convert_abs2rel(rc)) + '\n')
+			self.bbox, removed = self.dedupe_bboxes(self.bbox, "write")
+			if self.selid >= len(self.bbox):
+				self.selid = len(self.bbox) - 1
+			output = ''.join(
+				' '.join(str(e) for e in self.convert_abs2rel(rc)) + '\n'
+				for rc in self.bbox
+			)
+			if not self.write_text_files_transaction({self.gt_fn: output}, backup_category='labels'):
+				print(f"ERROR: Failed to save bbox transactionally: {self.gt_fn}")
 		except (IOError, PermissionError) as e:
 			print(f"ERROR: Failed to write bbox to {self.gt_fn}: {e}")
 			messagebox.showerror("File Write Error", f"Failed to save labels:\n{e}")
 		return
+
+	def get_label_path_for_image(self, image_path):
+		return self.iou_track_manager.get_label_path_for_image(image_path)
+
+	def calc_iou_original(self, box_a, box_b):
+		return self.iou_track_manager.calc_iou(box_a, box_b)
+
+	def get_bbox_original_coords(self, bbox):
+		x1, y1 = self.convert_view_to_original(bbox[3], bbox[4])
+		x2, y2 = self.convert_view_to_original(bbox[5], bbox[6])
+		return [x1, y1, x2, y2]
+
+	def build_current_label_line(self, bbox):
+		return ' '.join(str(e) for e in self.convert_abs2rel(bbox)) + '\n'
+
+	def load_tracking_label_records(self, image_path):
+		return self.iou_track_manager.load_label_records(image_path)
+
+	def run_iou_track(self):
+		if self.selid < 0 or self.selid >= len(self.bbox):
+			messagebox.showwarning("IOU 추적", "먼저 추적할 bbox를 선택하세요.")
+			return None
+
+		try:
+			track_range = int(self.track_range_entry.get())
+		except ValueError:
+			messagebox.showerror("IOU 추적", "추적 범위는 숫자여야 합니다.")
+			return None
+
+		try:
+			iou_threshold = float(self.track_iou_entry.get())
+		except ValueError:
+			messagebox.showerror("IOU 추적", "IOU 값은 숫자여야 합니다.")
+			return None
+
+		if track_range < 1:
+			messagebox.showerror("IOU 추적", "추적 범위는 1 이상이어야 합니다.")
+			return None
+		if iou_threshold < 0 or iou_threshold > 1:
+			messagebox.showerror("IOU 추적", "IOU 값은 0~1 사이여야 합니다.")
+			return None
+
+		start_idx = self.ci
+		end_idx = min(len(self.imlist) - 1, start_idx + track_range)
+		selected_bbox = copy.deepcopy(self.bbox[self.selid])
+		selected_class_id = int(selected_bbox[2])
+		same_class_only = self.track_same_class_var.get() if hasattr(self, 'track_same_class_var') else True
+		result = self.iou_track_manager.track(
+			self.imlist,
+			self.gt_fn,
+			start_idx,
+			end_idx,
+			self.get_bbox_original_coords(selected_bbox),
+			selected_class_id,
+			self.build_current_label_line(selected_bbox),
+			self.selid,
+			iou_threshold,
+			same_class_only,
+			max_missing=2
+		)
+		self.last_iou_track_result = result
+		return result
+
+	def preview_iou_track(self):
+		result = self.run_iou_track()
+		if not result:
+			return
+
+		match_count = len(result['matches'])
+		missing_count = len(result['missing'])
+		iou_values = [m['iou'] for m in result['matches'][1:]]
+		avg_iou = sum(iou_values) / len(iou_values) if iou_values else 1.0
+		last_frame = result['matches'][-1]['frame_idx'] + 1 if result['matches'] else result['start_idx'] + 1
+		msg = (
+			f"IOU 추적 미리보기\n\n"
+			f"범위: {result['start_idx'] + 1} ~ {result['end_idx'] + 1}\n"
+			f"매칭: {match_count} 프레임\n"
+			f"미매칭: {missing_count} 프레임\n"
+			f"평균 IOU: {avg_iou:.3f}\n"
+			f"마지막 매칭 프레임: {last_frame}"
+		)
+		if result['stopped']:
+			msg += "\n\n연속 미매칭으로 추적을 조기 중단했습니다."
+		messagebox.showinfo("IOU 추적", msg)
+		self.show_iou_track_review(result)
+		self.show_temporary_status(f"IOU 추적 미리보기: {match_count}개 매칭, {missing_count}개 미매칭", duration=2500, bg_color='#2563EB')
+
+	def show_iou_track_review(self, result):
+		rows = []
+		for item in result.get('matches', []):
+			rows.append({
+				'frame_idx': item['frame_idx'],
+				'status': 'MATCH',
+				'iou': item.get('iou', 1.0),
+				'best_iou': item.get('iou', 1.0),
+			})
+		for item in result.get('missing', []):
+			rows.append({
+				'frame_idx': item['frame_idx'],
+				'status': 'MISS',
+				'iou': None,
+				'best_iou': item.get('best_iou', 0.0),
+			})
+		rows.sort(key=lambda item: item['frame_idx'])
+
+		window = tk.Toplevel(self.master)
+		window.title("IOU Track Review")
+		window.geometry("520x420")
+		window.transient(self.master)
+
+		threshold = result.get('threshold', result.get('iou_threshold', 0.0))
+		header = tk.Label(
+			window,
+			text=f"Frames {result['start_idx'] + 1} - {result['end_idx'] + 1} / threshold {threshold:.2f}",
+			anchor='w'
+		)
+		header.pack(fill=tk.X, padx=10, pady=(10, 4))
+
+		list_frame = tk.Frame(window)
+		list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
+		scrollbar = tk.Scrollbar(list_frame)
+		scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+		listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, font=("Consolas", 10))
+		listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+		scrollbar.config(command=listbox.yview)
+
+		for row in rows:
+			if row['status'] == 'MATCH':
+				text = f"{row['frame_idx'] + 1:5d}  MATCH  iou={row['iou']:.3f}"
+			else:
+				text = f"{row['frame_idx'] + 1:5d}  MISS   best={row['best_iou']:.3f}"
+			listbox.insert(tk.END, text)
+
+		def go_selected():
+			selection = listbox.curselection()
+			if not selection:
+				return
+			frame_idx = rows[selection[0]]['frame_idx']
+			self.write_bbox()
+			self.ci = frame_idx
+			if hasattr(self, 'img_slider'):
+				self.img_slider.set(self.ci + 1)
+			if hasattr(self, 'slider_info'):
+				self.slider_info.config(text=f"{self.ci + 1}/{len(self.imlist)}")
+			self.pi = -1
+			self.draw_image()
+
+		def keep_only_and_close():
+			window.destroy()
+			self.apply_iou_track_keep_only()
+
+		button_frame = tk.Frame(window)
+		button_frame.pack(fill=tk.X, padx=10, pady=(4, 10))
+		tk.Button(button_frame, text="Go", command=go_selected, width=10).pack(side=tk.LEFT, padx=(0, 6))
+		tk.Button(button_frame, text="Keep Only", command=keep_only_and_close, width=12).pack(side=tk.LEFT, padx=(0, 6))
+		tk.Button(button_frame, text="Close", command=window.destroy, width=10).pack(side=tk.RIGHT)
+
+	def apply_iou_track_keep_only(self):
+		result = self.run_iou_track()
+		if not result:
+			return
+
+		targets = result['matches']
+		if not targets:
+			messagebox.showwarning("IOU 추적", "적용할 매칭 결과가 없습니다.")
+			return
+
+		if not messagebox.askyesno(
+			"IOU 추적 Keep Only",
+			f"{len(targets)}개 프레임에서 추적된 bbox만 남기고 나머지 라벨을 삭제합니다.\n계속하시겠습니까?"
+		):
+			return
+
+		preserve_other_classes = result.get('same_class_only', False)
+		tracked_class_id = result.get('class_id')
+		file_text_map = {}
+		for item in targets:
+			file_text_map[item['label_path']] = self.iou_track_manager.build_keep_only_label_text(
+				item['label_path'],
+				item['line'],
+				item.get('line_index', -1),
+				tracked_class_id,
+				preserve_other_classes
+			)
+		if not self.write_text_files_transaction(file_text_map, backup_category='labels'):
+			messagebox.showerror("IOU 추적", "라벨 저장 준비 또는 적용 중 오류가 발생했습니다. 변경은 중단되었습니다.")
+			return
+
+		self.pi = -1
+		self.draw_image()
+		mode_msg = "same-class only" if preserve_other_classes else "all labels"
+		self.show_temporary_status(f"IOU Keep Only applied: {len(file_text_map)} frames ({mode_msg})", duration=2500, bg_color='#0F766E')
 
 	def toggle_auto_copy_labels(self):
 		"""라벨 자동 복사 기능 활성화/비활성화"""
@@ -4062,6 +5267,10 @@ class MainApp:
 		applied = False
 		label_copied = False
 		masking_copied = False
+		allow_auto_copy = getattr(self, 'page_move_delta', 0) == 1
+		if (self.auto_copy_labels_enabled or self.auto_copy_masking_enabled) and not allow_auto_copy:
+			print(f"[AutoCopy] skipped: page_move_delta={getattr(self, 'page_move_delta', 0)}")
+			return
 
 		# 마스킹 자동 복사를 먼저 적용 (라벨 삭제 로직 실행)
 		if self.auto_copy_masking_enabled and self.prev_page_masking is not None:
@@ -4084,6 +5293,8 @@ class MainApp:
 
 		# 라벨 자동 복사 적용 (마스킹 이후)
 		if self.auto_copy_labels_enabled and self.prev_page_labels:
+			copied_count = 0
+			skipped_count = 0
 			# 원본 좌표를 현재 줌 비율로 변환하여 적용
 			for original_bbox in self.prev_page_labels:
 				screen_bbox = [
@@ -4095,10 +5306,14 @@ class MainApp:
 					original_bbox[5] * self.zoom_ratio,  # x2 (화면)
 					original_bbox[6] * self.zoom_ratio   # y2 (화면)
 				]
+				if self.has_same_bbox(screen_bbox):
+					skipped_count += 1
+					continue
 				self.bbox.append(copy.deepcopy(screen_bbox))
+				copied_count += 1
 
-			print(f"[AutoCopy] 라벨 자동 복사 적용: {len(self.prev_page_labels)}개")
-			label_copied = True
+			print(f"[AutoCopy] label auto-copy applied: copied={copied_count}, skipped_duplicates={skipped_count}")
+			label_copied = copied_count > 0
 
 		# 마스킹이 복사된 경우 load_masking()으로 화면 표시 및 파일 저장
 		# 이때 내부에서 겹치는 라벨도 삭제됨
@@ -4339,21 +5554,30 @@ class MainApp:
 
 		# 전역 제외 영역 표시
 		for i, zone in enumerate(self.exclusion_zone_manager.global_zones):
-			if zone['points']:
+			zone_points = zone.get('points', [])
+			if zone_points:
 				# 폴리곤 색상 (활성화 여부에 따라)
 				color = 'orange' if zone['enabled'] else 'gray'
+				zone_type = zone.get('zone_type', 'point' if len(zone_points) == 1 else 'polygon')
+				if zone_type == 'point':
+					screen_x = zone_points[0][0] * self.zoom_ratio
+					screen_y = zone_points[0][1] * self.zoom_ratio
+					self.canvas.create_oval(screen_x-6, screen_y-6, screen_x+6, screen_y+6, fill=color, outline='white', width=2, tags="exclusion_zone")
+					self.canvas.create_text(screen_x+10, screen_y-10, text=f"제외점 {i+1}", fill=color, font='Arial 10 bold', anchor='sw', tags="exclusion_zone")
+					continue
+
 				# 폴리곤 그리기 - 원본 좌표를 화면 좌표로 변환 (줌 비율 적용)
 				points = []
-				for point in zone['points']:
+				for point in zone_points:
 					screen_x = point[0] * self.zoom_ratio
 					screen_y = point[1] * self.zoom_ratio
 					points.extend([screen_x, screen_y])
 				self.canvas.create_polygon(points, outline=color, fill='', width=2, dash=(5, 5), tags="exclusion_zone")
 
 				# 영역 번호 표시
-				if zone['points']:
-					center_x = sum(p[0] * self.zoom_ratio for p in zone['points']) / len(zone['points'])
-					center_y = sum(p[1] * self.zoom_ratio for p in zone['points']) / len(zone['points'])
+				if zone_points:
+					center_x = sum(p[0] * self.zoom_ratio for p in zone_points) / len(zone_points)
+					center_y = sum(p[1] * self.zoom_ratio for p in zone_points) / len(zone_points)
 					self.canvas.create_text(center_x, center_y, text=f"제외영역 {i+1}", fill=color, font='Arial 10 bold', tags="exclusion_zone")
 
 		# 현재 그리고 있는 제외 영역 표시 (이미 화면 좌표로 저장되어 있음)
@@ -4379,30 +5603,37 @@ class MainApp:
 
 		# 등록된 클래스 변경 영역 표시
 		for i, zone in enumerate(self.class_change_zone_manager.zones):
-			if zone['points']:
+			zone_points = zone.get('points', [])
+			if zone_points:
 				# 폴리곤 색상 (활성화 여부에 따라)
 				color = 'lime' if zone['enabled'] else 'gray'
+				target_class = self.class_config_manager.get_class_name(zone['target_class_id'])
+				if zone['mode'] == 'all':
+					mode_text = f"모두→{target_class}"
+				else:
+					source_class = self.class_config_manager.get_class_name(zone['source_class_id'])
+					mode_text = f"{source_class}→{target_class}"
+
+				zone_type = zone.get('zone_type', 'point' if len(zone_points) == 1 else 'polygon')
+				if zone_type == 'point':
+					screen_x = zone_points[0][0] * self.zoom_ratio
+					screen_y = zone_points[0][1] * self.zoom_ratio
+					self.canvas.create_oval(screen_x-6, screen_y-6, screen_x+6, screen_y+6, fill=color, outline='white', width=2, tags="class_change_zone")
+					self.canvas.create_text(screen_x+10, screen_y-10, text=f"변경점 {i+1}\n{mode_text}", fill=color, font='Arial 10 bold', anchor='sw', tags="class_change_zone")
+					continue
+
 				# 폴리곤 그리기 - 원본 좌표를 화면 좌표로 변환 (줌 비율 적용)
 				points = []
-				for point in zone['points']:
+				for point in zone_points:
 					screen_x = point[0] * self.zoom_ratio
 					screen_y = point[1] * self.zoom_ratio
 					points.extend([screen_x, screen_y])
 				self.canvas.create_polygon(points, outline=color, fill='', width=2, dash=(5, 5), tags="class_change_zone")
 
 				# 영역 번호 및 모드 정보 표시
-				if zone['points']:
-					center_x = sum(p[0] * self.zoom_ratio for p in zone['points']) / len(zone['points'])
-					center_y = sum(p[1] * self.zoom_ratio for p in zone['points']) / len(zone['points'])
-
-					# 모드 정보 텍스트
-					target_class = self.class_config_manager.get_class_name(zone['target_class_id'])
-					if zone['mode'] == 'all':
-						mode_text = f"모두→{target_class}"
-					else:
-						source_class = self.class_config_manager.get_class_name(zone['source_class_id'])
-						mode_text = f"{source_class}→{target_class}"
-
+				if zone_points:
+					center_x = sum(p[0] * self.zoom_ratio for p in zone_points) / len(zone_points)
+					center_y = sum(p[1] * self.zoom_ratio for p in zone_points) / len(zone_points)
 					self.canvas.create_text(center_x, center_y, text=f"클래스변경 {i+1}\n{mode_text}",
 											fill=color, font='Arial 10 bold', tags="class_change_zone")
 
@@ -4479,15 +5710,22 @@ class MainApp:
 		pyautogui.press('ctrl')
 
 	def on_reload_backup(self, event):
-		path = self.make_path(self.im_fn)
-		origin_path = 'original_backup/JPEGImages/'+path
-		if os.path.exists(origin_path):
-			self.img = Image.open(origin_path)
-			self.img.save(self.im_fn)			
-			origin_path = origin_path.replace('JPEGImages','labels')
-			origin_path = origin_path.replace('.jpg','.txt')
-			origin_path = origin_path.replace('.png','.txt')
-			shutil.copyfile(origin_path, self.gt_fn)
+		image_backup_path = self.get_backup_path(self.im_fn, 'JPEGImages')
+		legacy_image_backup_path = os.path.join('original_backup', 'JPEGImages', self.make_path(self.im_fn))
+		if not os.path.exists(image_backup_path) and os.path.exists(legacy_image_backup_path):
+			image_backup_path = legacy_image_backup_path
+		if os.path.exists(image_backup_path):
+			self.img = Image.open(image_backup_path)
+			self.img.save(self.im_fn)
+
+			label_backup_path = self.get_backup_path(self.gt_fn, 'labels')
+			legacy_label_backup_path = legacy_image_backup_path.replace('JPEGImages', 'labels')
+			legacy_label_backup_path = legacy_label_backup_path.replace('.jpg', '.txt')
+			legacy_label_backup_path = legacy_label_backup_path.replace('.png', '.txt')
+			if not os.path.exists(label_backup_path) and os.path.exists(legacy_label_backup_path):
+				label_backup_path = legacy_label_backup_path
+			if os.path.exists(label_backup_path):
+				shutil.copyfile(label_backup_path, self.gt_fn)
 		self.canvas.delete("img")
 		im = Image.open(self.im_fn)
 		self.imsize = im.size
@@ -4869,12 +6107,29 @@ class MainApp:
 		# 모든 버튼에 이벤트 바인딩
 		for button in standard_buttons + class_buttons:
 			button.bind("<ButtonRelease-1>", lambda e: self.canvas.focus_set())
-		for key, button in self.key_button_map.items():
-			if key:  # 키가 빈 값이 아닌 경우에만 바인딩
-				self.canvas.bind(key, lambda event, btn=button: 
-					self.change_class(self.button_class_map[btn]))
-		
+		self.bind_class_shortcuts()
+
 		return
+
+	def bind_class_shortcuts(self):
+		for key, button in list(self.key_button_map.items()):
+			normalized_key = normalize_shortcut_key(key)
+			if not normalized_key:
+				continue
+			self.key_button_map[normalized_key] = button
+			try:
+				self.canvas.bind(
+					normalized_key,
+					lambda event, btn=button: self.handle_class_shortcut(btn)
+				)
+			except tk.TclError as e:
+				print(f"[Shortcut] Failed to bind class shortcut {normalized_key}: {e}")
+
+	def handle_class_shortcut(self, button):
+		if button in self.button_class_map:
+			self.change_class(self.button_class_map[button])
+		return "break"
+
 	def toggle_size_display(self):
 		# 크기 정보 표시 여부가 변경되면 현재 바운딩 박스 다시 그리기
 		self.draw_bbox()
@@ -4889,21 +6144,22 @@ class MainApp:
 		self.onlybox = self.show_only_box_var.get()
 		self.draw_bbox()
 
-	def goodbye():
-		fname, ext = os.path.splitext(_dir_goodbye)
-		if ext == '.txt' :
-			with open(self._dir, "r") as infile:
-				lines = infile.readlines()
+	def goodbye(self):
+		list_path = getattr(self, 'loaded_list_file_path', None)
+		if list_path and os.path.exists(list_path):
+			try:
+				valid_images = []
+				for image_path in getattr(self, 'imlist', []):
+					normalized_path = str(image_path).replace('/s_mnt/253/','//192.168.79.253/')
+					if os.path.exists(normalized_path):
+						valid_images.append(normalized_path)
 
-			with open(self._dir, "wt") as outfile:
-				for pos, line in enumerate(lines):					
-					line = line.replace('/s_mnt/253/','//192.168.79.253/')
-					line = line.replace('\n','')
-					if os.path.exists(line) is False :
-						line = line.replace('//192.168.79.253/','/s_mnt/253/')
-						line = line.replace('.png','.png\n')
-						line = line.replace('.jpg','.jpg\n')
-						outfile.write(line)
+				valid_images = sort_image_paths(valid_images)
+				with open(list_path, "wt", encoding='utf-8') as outfile:
+					for image_path in valid_images:
+						outfile.write(to_list_file_path(image_path))
+			except Exception as e:
+				print(f"[ListSort] Failed to save sorted list file: {e}")
 		print("GTGEN_Tool Exited.\n")
 		try:
 			os.startfile(BASE_DIR + "RemoveDefaultdll.exe")
@@ -4911,8 +6167,7 @@ class MainApp:
 			# UAC 거부 또는 권한 문제 시 무시하고 계속 진행
 			print(f"RemoveDefaultdll.exe 실행 실패 (무시됨): {e}")
 		return
-	atexit.register(goodbye)
-	
+
 	def change_class(self, clsid):
 		if self.selid < 0:
 			return
@@ -4939,7 +6194,7 @@ class MainApp:
 			self.show_temporary_status(
 				f"✓ 클래스 변경 (파일 저장, 화면 갱신 생략) - 작업: {self.pending_operation_count}개",
 				duration=1000,
-				bg_color='#2196F3'
+				bg_color='#2563EB'
 			)
 			print(f"[SpeedOptimization] 클래스 변경 - txt 저장 완료, draw_image() 생략")
 		return
@@ -5042,14 +6297,6 @@ class MainApp:
 		# 백업 설정 확인
 		enable_backup = self.class_config_manager.enable_backup if hasattr(self.class_config_manager, 'enable_backup') else True
 
-		# 백업 디렉토리 생성 (백업이 활성화된 경우만)
-		if enable_backup:
-			d_path = 'original_backup/JPEGImages/'
-			if not(os.path.isdir(d_path)):
-				os.makedirs(os.path.join(d_path))
-			if not(os.path.isdir('original_backup/labels/')):
-				os.makedirs(os.path.join('original_backup/labels'))
-
 		# 연속 삭제
 		deleted_count = 0
 		for i in range(actual_delete):
@@ -5059,20 +6306,9 @@ class MainApp:
 			# 현재 파일 경로
 			current_im_fn = self.imlist[self.ci]
 			current_gt_fn = current_im_fn.replace('JPEGImages', 'labels').replace('.jpg', '.txt').replace('.png', '.txt').replace('.jpeg', '.txt')
-
-			# 백업 (활성화된 경우만)
-			if enable_backup:
-				try:
-					img_path = d_path + self.make_path(current_im_fn)
-					curimg = current_im_fn.replace('\\','/')
-					img = Image.open(curimg)
-					img.save(img_path)
-
-					gt_fn = self.make_path(current_gt_fn)
-					if os.path.exists(current_gt_fn):
-						shutil.copyfile(current_gt_fn, "original_backup/labels/"+gt_fn)
-				except Exception as e:
-					print(f"[Backup] 백업 생성 오류: {e}")
+			if enable_backup and not self.backup_original_pair(current_im_fn, current_gt_fn):
+				messagebox.showerror("Backup Error", f"Backup failed. Delete stopped:\n{current_im_fn}")
+				break
 
 			# 파일 삭제
 			try:
@@ -5227,25 +6463,11 @@ class MainApp:
 			print("Size Not Match")
 			messagebox.showwarning("경고", "저장된 마스킹과 현재 이미지의 크기가 일치하지 않습니다.")
 			return
-		
+		if not self.backup_original_pair(self.im_fn, self.gt_fn):
+			messagebox.showerror("Backup Error", f"Backup failed. Masking was not applied:\n{self.im_fn}")
+			return
+
 		try:
-			# 백업 디렉토리 확인 및 생성
-			d_path = 'original_backup/JPEGImages/'
-			if not(os.path.isdir(d_path)):
-				os.makedirs(os.path.join(d_path))
-			if not(os.path.isdir('original_backup/labels/')):
-				os.makedirs(os.path.join('original_backup/labels'))
-			
-			# 이미지 백업 생성
-			img_path = d_path + self.make_path(self.im_fn)
-			if not os.path.exists(img_path):
-				shutil.copyfile(self.im_fn, img_path)
-			
-			# 라벨 백업 생성
-			gt_path = "original_backup/labels/"+self.make_path(self.gt_fn)
-			if not os.path.exists(gt_path):
-				shutil.copyfile(self.gt_fn, gt_path)
-			
 			# === 메모리상에서 마스킹 적용 ===
 			# 현재 이미지를 배열로 변환하여 작업 배열 생성
 			self.original_img_array = array(im.copy())
@@ -5369,7 +6591,7 @@ class MainApp:
 			self.show_temporary_status(
 				f"✓ 라벨 삭제 (파일 저장, 화면 갱신 생략) - 작업: {self.pending_operation_count}개",
 				duration=1500,
-				bg_color='#4CAF50'
+				bg_color='#059669'
 			)
 			print(f"[SpeedOptimization] 라벨 삭제 - txt 저장 완료, draw_image() 생략")
 
@@ -5426,6 +6648,10 @@ class MainApp:
 	def save_masking_if_dirty(self):
 		if self.is_masking_dirty and self.current_img_array is not None:
 			try:
+				if not self.backup_original_pair(self.im_fn, self.gt_fn):
+					messagebox.showerror("Backup Error", f"Backup failed. Masking was not saved:\n{self.im_fn}")
+					return
+
 				# 현재 작업중인 이미지를 파일에 저장
 				masked_img = Image.fromarray(self.current_img_array)
 				
@@ -5512,18 +6738,10 @@ class MainApp:
 			self.is_polygon_closed = False
 			
 			# 폴리곤 마스킹에 필요한 백업 생성
-			d_path = 'original_backup/JPEGImages/'
-			if not os.path.isdir(d_path):
-				os.makedirs(os.path.join(d_path))
-			if not os.path.isdir('original_backup/labels/'):
-				os.makedirs(os.path.join('original_backup/labels/'))
-				
-			img_path = d_path + self.make_path(self.im_fn)
-			if not os.path.exists(img_path):
-				self.img = Image.open(self.im_fn)
-				path = self.make_path(self.im_fn)
-				img_path = 'original_backup/JPEGImages/'+path
-				self.img.save(img_path)
+			if not self.backup_current_image_and_bbox():
+				messagebox.showerror("Backup Error", f"Backup failed. Polygon masking was not started:\n{self.im_fn}")
+				self.polygon_masking = False
+				return
 				
 			# 원본 이미지 로드
 			self.img = Image.open(self.im_fn)
@@ -5629,52 +6847,85 @@ class MainApp:
 
 	# 5. 캔버스에 키 입력 이벤트 재설정 (단축키 문제 해결)
 	def global_key_handler(self, event):
-		"""전역 키 이벤트 핸들러"""
-		focused_widget = self.master.focus_get()
-		
-		# 현재 포커스가 입력 필드에 있는 경우 단축키 처리하지 않음
-		entry_widgets = [
-			self.start_frame_entry, 
-			self.end_frame_entry,
-			self.delete_start_frame_entry, 
-			self.delete_end_frame_entry,
-			self.label_start_frame_entry, 
-			self.label_end_frame_entry
-		]
-		
-		if focused_widget in entry_widgets:
-			# 입력 필드에 포커스가 있으면 일반적인 입력 처리
+		"""Handle shortcuts outside the canvas without stealing dialog/input typing."""
+		if event.widget == getattr(self, 'canvas', None):
 			return
-		
-		# 입력 필드에 포커스가 없는 경우 캔버스로 포커스 설정 후 키 이벤트 처리
+
+		focused_widget = self.master.focus_get()
+		if self.should_ignore_global_shortcut(focused_widget):
+			return
+
 		if focused_widget != self.canvas:
 			self.canvas.focus_set()
 
+		shortcut_key = self.event_to_shortcut_key(event)
+		if shortcut_key in self.key_button_map:
+			button = self.key_button_map[shortcut_key]
+			if button in self.button_class_map:
+				self.change_class(self.button_class_map[button])
+				return "break"
+		if event.char and event.char in self.key_button_map:
+			button = self.key_button_map[event.char]
+			if button in self.button_class_map:
+				self.change_class(self.button_class_map[button])
+				return "break"
+
 		if event.char == 'p':
-			print("글로벌 핸들러: p 키 감지됨")
 			self.on_polygon_masking_key(event)
-			return "break"  # 이벤트 전파 중지
-    
-		elif event.char == 'h':
-			print("글로벌 핸들러: h 키 감지됨")
+			return "break"
+		if event.char == 'h':
 			self.on_close_polygon_key(event)
-			return "break"  # 이벤트 전파 중지
-		if focused_widget != self.canvas:
-			self.canvas.focus_set()
-		# 기존의 on_key 메서드 호출
+			return "break"
+
 		if self.polygon_masking or self.bbox_masking or self.mouse_masking:
-				# 캔버스에 포커스 설정만 하고 on_key는 호출하지 않음
-			if focused_widget != self.canvas:
-				self.canvas.focus_set()
 			return
-		
-		# 일반 모드일 때만 on_key 호출
-		if focused_widget != self.canvas:
-			self.canvas.focus_set()
-		# 기존의 on_key 메서드 호출
-		if event.char == keysetting[29]:  # 마스킹 키
-			return  # 이벤트 전파 중지
-		self.on_key(event)
+		if event.char == keysetting[29]:
+			return
+		if event.char:
+			self.on_key(event)
+			return "break"
+
+	def should_ignore_global_shortcut(self, focused_widget):
+		if focused_widget is None:
+			return False
+		try:
+			if focused_widget.winfo_toplevel() != self.master:
+				return True
+		except Exception:
+			return True
+
+		widget = focused_widget
+		while widget is not None:
+			try:
+				widget_class = widget.winfo_class()
+			except Exception:
+				return True
+			if widget_class in ('Entry', 'Text', 'Spinbox', 'TEntry', 'TCombobox'):
+				return True
+			if widget == self.master:
+				break
+			widget = getattr(widget, 'master', None)
+		return False
+
+	def event_to_shortcut_key(self, event):
+		has_control = bool(event.state & 0x0004)
+		has_shift = bool(event.state & 0x0001)
+		has_alt = bool(event.state & 0x0008 or event.state & 0x20000)
+		if event.char and len(event.char) == 1 and not (has_control or has_shift or has_alt):
+			return event.char
+
+		modifiers = []
+		if has_control:
+			modifiers.append('Control')
+		if has_shift:
+			modifiers.append('Shift')
+		if has_alt:
+			modifiers.append('Alt')
+
+		keysym = getattr(event, 'keysym', '') or ''
+		if modifiers and keysym:
+			return '<' + '-'.join(modifiers + [keysym]) + '>'
+		return normalize_shortcut_key(keysym)
 	def improve_key_bindings(self):
 		"""캔버스의 키 입력 이벤트 우선순위 설정"""
 		# 기존의 키 바인딩을 유지하되 캔버스 포커스 설정 강화
@@ -5721,6 +6972,13 @@ class MainApp:
 			self.next_frame()
 		elif ckey == keysetting[13]:
 			bboxtmp = self.bbox
+			if self.copy_region_manager.active_regions():
+				self.copy_region_source_lines = [
+					' '.join(str(e) for e in self.convert_abs2rel(rc)) + '\n'
+					for rc in self.bbox
+				]
+			else:
+				self.copy_region_source_lines = None
 			self.ci += 1
 			self.bbox = bboxtmp
 			copyflag = True
@@ -5854,11 +7112,369 @@ class MainApp:
 			# 처리할 슬래시가 없는 경우
 			return None
 		p = p[:index][::-1]
-		return p 
+		return p
+
+	def get_backup_path(self, source_path, category):
+		"""Return a stable backup path under BASE_DIR/original_backup."""
+		return self.file_safety_manager.get_backup_path(source_path, category)
+
+	def is_backup_enabled(self):
+		config_manager = getattr(self, 'class_config_manager', None)
+		return bool(getattr(config_manager, 'enable_backup', True))
+
+	def backup_original_file(self, source_path, category):
+		if not self.is_backup_enabled():
+			return True
+		return self.file_safety_manager.backup_file(source_path, category)
+
+	def backup_original_pair(self, image_path, label_path=None):
+		if not self.is_backup_enabled():
+			return True
+		return self.file_safety_manager.backup_pair(image_path, label_path)
+
+	def backup_current_image_and_bbox(self):
+		if not self.is_backup_enabled():
+			return True
+		if not self.backup_original_file(self.im_fn, 'JPEGImages'):
+			return False
+		lines = [' '.join(str(e) for e in self.convert_abs2rel(rc)) + '\n' for rc in copy.deepcopy(self.bbox)]
+		return self.file_safety_manager.write_backup_text_if_missing(self.gt_fn, 'labels', lines)
+
+	def replace_files_transaction(self, replacements):
+		"""Replace prepared temp files atomically enough for local batch operations."""
+		return self.file_safety_manager.replace_files_transaction(replacements)
+
+	def write_text_files_transaction(self, file_text_map, backup_category='labels'):
+		return self.file_safety_manager.write_text_files_transaction(
+			file_text_map,
+			backup_category,
+			enable_backup=self.is_backup_enabled()
+		)
+
+	def apply_modern_theme(self):
+		colors = {
+			'app_bg': '#e9edf3',
+			'panel_bg': '#f8fafc',
+			'surface_bg': '#ffffff',
+			'toolbar_bg': '#eef2f7',
+			'canvas_bg': '#d8dee7',
+			'input_bg': '#ffffff',
+			'text_fg': '#111827',
+			'muted_fg': '#475569',
+			'border': '#cbd5e1',
+			'button_bg': '#334155',
+			'button_active': '#1f2937',
+			'primary_bg': '#2563eb',
+			'primary_active': '#1d4ed8',
+			'danger_bg': '#dc2626',
+			'danger_active': '#b91c1c',
+			'success_bg': '#059669',
+			'success_active': '#047857',
+			'accent_bg': '#0f766e',
+			'accent_active': '#115e59',
+			'selected_bg': '#dbeafe',
+			'disabled_fg': '#94a3b8'
+		}
+		self.theme_colors = colors
+
+		def safe_config(widget, **options):
+			for option, value in options.items():
+				try:
+					widget.configure(**{option: value})
+				except Exception:
+					pass
+
+		try:
+			self.master.configure(bg=colors['app_bg'])
+			self.master.option_add('*Font', ('맑은 고딕', 9))
+			self.master.option_add('*Background', colors['panel_bg'])
+			self.master.option_add('*Foreground', colors['text_fg'])
+			self.master.option_add('*Toplevel.Background', colors['panel_bg'])
+			self.master.option_add('*Frame.Background', colors['panel_bg'])
+			self.master.option_add('*LabelFrame.Background', colors['panel_bg'])
+			self.master.option_add('*LabelFrame.Foreground', colors['muted_fg'])
+			self.master.option_add('*Label.Background', colors['panel_bg'])
+			self.master.option_add('*Label.Foreground', colors['text_fg'])
+			self.master.option_add('*Checkbutton.Background', colors['panel_bg'])
+			self.master.option_add('*Checkbutton.Foreground', colors['text_fg'])
+			self.master.option_add('*Checkbutton.activeBackground', colors['panel_bg'])
+			self.master.option_add('*Checkbutton.activeForeground', colors['text_fg'])
+			self.master.option_add('*Radiobutton.Background', colors['panel_bg'])
+			self.master.option_add('*Radiobutton.Foreground', colors['text_fg'])
+			self.master.option_add('*Radiobutton.activeBackground', colors['panel_bg'])
+			self.master.option_add('*Radiobutton.activeForeground', colors['text_fg'])
+			self.master.option_add('*Canvas.Background', colors['surface_bg'])
+			self.master.option_add('*selectBackground', colors['selected_bg'])
+			self.master.option_add('*selectForeground', colors['text_fg'])
+			self.master.option_add('*Button.Background', colors['button_bg'])
+			self.master.option_add('*Button.Foreground', colors['surface_bg'])
+			self.master.option_add('*Button.activeBackground', colors['button_active'])
+			self.master.option_add('*Button.activeForeground', colors['surface_bg'])
+			self.master.option_add('*Entry.Background', colors['input_bg'])
+			self.master.option_add('*Entry.Foreground', colors['text_fg'])
+			self.master.option_add('*Entry.insertBackground', colors['text_fg'])
+			self.master.option_add('*Listbox.Background', colors['surface_bg'])
+			self.master.option_add('*Listbox.Foreground', colors['text_fg'])
+			self.master.option_add('*Text.Background', colors['surface_bg'])
+			self.master.option_add('*Text.Foreground', colors['text_fg'])
+			self.master.option_add('*Text.insertBackground', colors['text_fg'])
+			style = ttk.Style()
+			try:
+				style.theme_use('clam')
+			except Exception:
+				pass
+			style.configure(
+				'TProgressbar',
+				troughcolor=colors['surface_bg'],
+				background=colors['primary_bg'],
+				bordercolor=colors['border'],
+				lightcolor=colors['primary_bg'],
+				darkcolor=colors['primary_bg']
+			)
+			style.configure(
+				'TCombobox',
+				fieldbackground=colors['input_bg'],
+				background=colors['surface_bg'],
+				foreground=colors['text_fg'],
+				bordercolor=colors['border'],
+				arrowcolor=colors['muted_fg']
+			)
+		except Exception:
+			pass
+
+		def button_colors(widget):
+			class_buttons = getattr(self, 'button_class_map', {})
+			if widget in class_buttons:
+				return colors['surface_bg'], colors['text_fg'], colors['selected_bg']
+
+			text = ''
+			try:
+				text = str(widget.cget('text')).lower()
+			except Exception:
+				pass
+
+			danger_words = ('remove', 'delete', '삭제', '모두 삭제', '자동삭제')
+			primary_words = ('open', 'load', '로드', '실행', 'execute', 'go', 'preview', 'keep only', '적용', '저장', '확인')
+			success_words = ('add', '추가', 'copy', '복사')
+			accent_words = ('filter', '필터', 'config', '설정', 'help', '도움')
+
+			if any(word in text for word in danger_words):
+				return colors['danger_bg'], colors['surface_bg'], colors['danger_active']
+			if any(word in text for word in primary_words):
+				return colors['primary_bg'], colors['surface_bg'], colors['primary_active']
+			if any(word in text for word in success_words):
+				return colors['success_bg'], colors['surface_bg'], colors['success_active']
+			if any(word in text for word in accent_words):
+				return colors['accent_bg'], colors['surface_bg'], colors['accent_active']
+			return colors['button_bg'], colors['surface_bg'], colors['button_active']
+
+		def style_widget(widget):
+			try:
+				if isinstance(widget, (tk.Frame, tk.LabelFrame)):
+					safe_config(widget, bg=colors['panel_bg'], highlightbackground=colors['border'], highlightcolor=colors['border'])
+					if isinstance(widget, tk.LabelFrame):
+						safe_config(widget, fg=colors['muted_fg'], bd=1, relief=tk.SOLID)
+				elif isinstance(widget, tk.Label):
+					safe_config(widget, bg=colors['panel_bg'])
+					current_fg = str(widget.cget('fg')).lower()
+					if current_fg in ('blue', '#0000ff'):
+						safe_config(widget, fg=colors['primary_bg'])
+					elif current_fg in ('green', '#008000'):
+						safe_config(widget, fg=colors['success_bg'])
+					elif current_fg in ('red', '#ff0000'):
+						safe_config(widget, fg=colors['danger_bg'])
+					elif current_fg in ('gray', 'grey', '#808080'):
+						safe_config(widget, fg=colors['muted_fg'])
+					else:
+						safe_config(widget, fg=colors['text_fg'])
+				elif isinstance(widget, (tk.Checkbutton, tk.Radiobutton)):
+					safe_config(
+						widget,
+						bg=colors['panel_bg'],
+						fg=colors['text_fg'],
+						activebackground=colors['panel_bg'],
+						activeforeground=colors['text_fg'],
+						selectcolor=colors['surface_bg']
+					)
+				elif isinstance(widget, tk.Canvas):
+					canvas_bg = colors['canvas_bg'] if widget is getattr(self, 'canvas', None) else colors['surface_bg']
+					safe_config(widget, bg=canvas_bg, highlightthickness=1, highlightbackground=colors['border'])
+				elif isinstance(widget, tk.Button):
+					bg, fg, active_bg = button_colors(widget)
+					safe_config(
+						widget,
+						bg=bg,
+						fg=fg,
+						activebackground=active_bg,
+						activeforeground=colors['surface_bg'],
+						disabledforeground=colors['disabled_fg'],
+						relief=tk.FLAT,
+						bd=0,
+						highlightthickness=1,
+						highlightbackground=colors['border'],
+						padx=6,
+						pady=2,
+						cursor='hand2'
+					)
+				elif isinstance(widget, (tk.Entry, tk.Spinbox)):
+					safe_config(
+						widget,
+						bg=colors['input_bg'],
+						fg=colors['text_fg'],
+						insertbackground=colors['text_fg'],
+						relief=tk.FLAT,
+						bd=1,
+						highlightthickness=1,
+						highlightbackground=colors['border'],
+						highlightcolor=colors['primary_bg']
+					)
+				elif isinstance(widget, tk.Listbox):
+					safe_config(
+						widget,
+						bg=colors['surface_bg'],
+						fg=colors['text_fg'],
+						selectbackground=colors['selected_bg'],
+						selectforeground=colors['text_fg'],
+						relief=tk.FLAT,
+						bd=1,
+						highlightthickness=1,
+						highlightbackground=colors['border'],
+						highlightcolor=colors['primary_bg']
+					)
+				elif isinstance(widget, tk.Text):
+					safe_config(
+						widget,
+						bg=colors['surface_bg'],
+						fg=colors['text_fg'],
+						insertbackground=colors['text_fg'],
+						selectbackground=colors['selected_bg'],
+						selectforeground=colors['text_fg'],
+						relief=tk.FLAT,
+						highlightthickness=1,
+						highlightbackground=colors['border']
+					)
+				elif isinstance(widget, tk.Scrollbar):
+					safe_config(widget, bg=colors['toolbar_bg'], activebackground=colors['border'], troughcolor=colors['surface_bg'])
+			except Exception:
+				pass
+			for child in widget.winfo_children():
+				style_widget(child)
+
+		style_widget(self.master)
+
+	def _zone_type_label(self, zone_type):
+		return "점" if zone_type == 'point' else "다각형"
+
+	def start_exclusion_zone_drawing(self, zone_type='polygon'):
+		zone_type = 'point' if zone_type == 'point' else 'polygon'
+		self.exclusion_zone_mode = True
+		self.exclusion_zone_points = []
+		self.exclusion_zone_draw_type = zone_type
+		if zone_type == 'point':
+			message = "캔버스에서 좌클릭으로 기준 점을 찍으세요.\n점이 bbox 안에 들어오면 제외됩니다."
+		else:
+			message = "캔버스에서 좌클릭으로 점을 추가하세요.\n우클릭 또는 첫 점을 다시 클릭하면 완성됩니다."
+		messagebox.showinfo("제외 영역 추가", message)
+
+	def finish_exclusion_point_zone(self):
+		if len(self.exclusion_zone_points) < 1:
+			return False
+		selected_class_ids = self.select_classes_for_exclusion_zone(title="제외 영역 클래스 선택")
+		if selected_class_ids is not None:
+			original_points = [(px / self.zoom_ratio, py / self.zoom_ratio)
+							  for px, py in self.exclusion_zone_points[:1]]
+			added = self.exclusion_zone_manager.add_zone(
+				original_points,
+				use_global=True,
+				class_ids=selected_class_ids,
+				zone_type='point'
+			)
+			if added:
+				self.exclusion_zone_manager.save_global_zones()
+				if selected_class_ids:
+					class_names = [self.class_config_manager.get_class_name(cid) for cid in selected_class_ids]
+					class_info = f"적용 클래스: {', '.join(class_names)}"
+				else:
+					class_info = "적용 클래스: 모든 클래스"
+				messagebox.showinfo("제외 점 추가", f"전역 제외 점이 추가되었습니다.\n{class_info}")
+		self.exclusion_zone_mode = False
+		self.exclusion_zone_points = []
+		self.exclusion_zone_draw_type = 'polygon'
+		self.draw_bbox()
+		return True
+
+	def start_class_change_zone_drawing(self, config, zone_type='polygon'):
+		zone_type = 'point' if zone_type == 'point' else 'polygon'
+		self.class_change_zone_mode = True
+		self.class_change_zone_points = []
+		self.class_change_zone_draw_type = zone_type
+		self.class_change_zone_config = config
+		if zone_type == 'point':
+			message = "캔버스에서 좌클릭으로 기준 점을 찍으세요.\n점이 bbox 안에 들어오면 클래스가 변경됩니다."
+		else:
+			message = "캔버스에서 좌클릭으로 점을 추가하세요.\n우클릭 또는 첫 점을 다시 클릭하면 완성됩니다."
+		messagebox.showinfo("클래스 변경 영역 추가", message)
+
+	def finish_class_change_point_zone(self):
+		if len(self.class_change_zone_points) < 1:
+			return False
+		config = self.class_change_zone_config
+		if not config:
+			self.class_change_zone_mode = False
+			self.class_change_zone_points = []
+			self.class_change_zone_draw_type = 'polygon'
+			return False
+		original_points = [(px / self.zoom_ratio, py / self.zoom_ratio)
+						  for px, py in self.class_change_zone_points[:1]]
+		self.class_change_zone_manager.add_zone(
+			original_points,
+			mode=config['mode'],
+			target_class_id=config['target_class_id'],
+			source_class_id=config.get('source_class_id'),
+			zone_type='point'
+		)
+		self.class_change_zone_manager.save_zones()
+
+		target_class = self.class_config_manager.get_class_name(config['target_class_id'])
+		if config['mode'] == 'all':
+			mode_info = f"모든 클래스 → {target_class}"
+		else:
+			source_class = self.class_config_manager.get_class_name(config['source_class_id'])
+			mode_info = f"{source_class} → {target_class}"
+		messagebox.showinfo("클래스 변경 점 추가", f"클래스 변경 점이 추가되었습니다.\n{mode_info}")
+
+		self.class_change_zone_mode = False
+		self.class_change_zone_points = []
+		self.class_change_zone_draw_type = 'polygon'
+		self.class_change_zone_config = None
+		self.draw_bbox()
+		return True
 
 	def on_mouse_right_click(self, event):
+		if getattr(self, 'copy_region_mode', False):
+			self.finish_copy_region_drawing()
+			return
 		"""우클릭 이벤트 처리"""
 		x, y = self.get_canvas_coordinates(event)
+		if not self.exclusion_zone_mode and not self.class_change_zone_mode:
+			point = (x / self.imsize[0], y / self.imsize[1]) if self.imsize[0] and self.imsize[1] else (0, 0)
+			self.show_copy_region_context_menu(event, point)
+			return
+
+		if self.exclusion_zone_mode and getattr(self, 'exclusion_zone_draw_type', 'polygon') == 'point':
+			self.exclusion_zone_mode = False
+			self.exclusion_zone_points = []
+			self.exclusion_zone_draw_type = 'polygon'
+			self.draw_bbox()
+			return
+
+		if self.class_change_zone_mode and getattr(self, 'class_change_zone_draw_type', 'polygon') == 'point':
+			self.class_change_zone_mode = False
+			self.class_change_zone_points = []
+			self.class_change_zone_draw_type = 'polygon'
+			self.class_change_zone_config = None
+			self.draw_bbox()
+			return
 
 		# 제외 영역 그리기 모드에서 우클릭 시 폴리곤 완성
 		if self.exclusion_zone_mode and len(self.exclusion_zone_points) >= 3:
@@ -5922,10 +7538,21 @@ class MainApp:
 			return
 
 	def on_mouse_down(self, event):
+		if getattr(self, 'copy_region_mode', False):
+			x, y = self.get_canvas_coordinates(event)
+			if self.imsize[0] and self.imsize[1]:
+				self.copy_region_points.append((x / self.imsize[0], y / self.imsize[1]))
+			self.draw_bbox()
+			return
 		x, y = self.get_canvas_coordinates(event)
 
 		# 제외 영역 그리기 모드
 		if self.exclusion_zone_mode:
+			if getattr(self, 'exclusion_zone_draw_type', 'polygon') == 'point':
+				self.exclusion_zone_points = [(x, y)]
+				self.finish_exclusion_point_zone()
+				return
+
 			# 첫 점을 다시 클릭했는지 확인 (폴리곤 닫기)
 			if len(self.exclusion_zone_points) >= 3:
 				first_point = self.exclusion_zone_points[0]
@@ -5964,6 +7591,11 @@ class MainApp:
 
 		# 클래스 변경 영역 그리기 모드
 		if self.class_change_zone_mode:
+			if getattr(self, 'class_change_zone_draw_type', 'polygon') == 'point':
+				self.class_change_zone_points = [(x, y)]
+				self.finish_class_change_point_zone()
+				return
+
 			print(f"[DEBUG] 클래스 변경 영역 그리기 모드: 점 개수 = {len(self.class_change_zone_points)}")
 			# 첫 점을 다시 클릭했는지 확인 (폴리곤 닫기)
 			if len(self.class_change_zone_points) >= 3:
@@ -6010,24 +7642,10 @@ class MainApp:
 		if self.bbox_crop:
 			self.area = [x, y, x+10, y+10]
 			self.bbox_move_start_pt = [x, y]
-			d_path = 'original_backup/JPEGImages/'            
-			if not(os.path.isdir(d_path)):
-				os.makedirs(os.path.join(d_path))
-			if not(os.path.isdir('original_backup/labels/')):
-				os.makedirs(os.path.join('original_backup/labels'))
-			img_path = d_path + self.make_path(self.im_fn)
-			if not os.path.exists(img_path):
-				self.img = Image.open(self.im_fn)
-				path = self.make_path(self.im_fn)
-				img_path = 'original_backup/JPEGImages/'+path
-				self.img.save(img_path)
-				gt_fn = self.make_path(self.gt_fn)
-				f = open("original_backup/labels/"+gt_fn, 'wt')
-				box = copy.deepcopy(self.bbox)
-				for rc in box:
-					f.write(' '.join(str(e) for e in self.convert_abs2rel(rc)) + '\n')
-			else:
-				self.img = Image.open(self.im_fn)
+			if not self.backup_current_image_and_bbox():
+				messagebox.showerror("Backup Error", f"Backup failed. Crop was not started:\n{self.im_fn}")
+				return
+			self.img = Image.open(self.im_fn)
 		elif self.bbox_add:
 			for rc in self.bbox: rc[0] = False
 			#self.bbox.append([True, class_name[0], -1, x, y, x+10, y+10])
@@ -6041,47 +7659,21 @@ class MainApp:
 		elif self.bbox_masking:
 			self.m_area = [x, y, x+10, y+10]
 			self.bbox_move_start_pt = [x, y]
-			d_path = 'original_backup/JPEGImages/'
-			if not(os.path.isdir(d_path)):
-				os.makedirs(os.path.join(d_path))
-			if not(os.path.isdir('original_backup/labels/')):
-				os.makedirs(os.path.join('original_backup/labels'))
-			img_path = d_path + self.make_path(self.im_fn)
-			if not os.path.exists(img_path):
-				self.img = Image.open(self.im_fn)
-				path = self.make_path(self.im_fn)
-				img_path = 'original_backup/JPEGImages/'+path
-				self.img.save(img_path)
-			gt_fn = self.make_path(self.gt_fn)
-			with open("original_backup/labels/"+gt_fn, 'wt') as f:
-				box = copy.deepcopy(self.bbox)
-				for rc in box:
-					f.write(' '.join(str(e) for e in self.convert_abs2rel(rc)) + '\n')
+			if not self.backup_current_image_and_bbox():
+				messagebox.showerror("Backup Error", f"Backup failed. Rect masking was not started:\n{self.im_fn}")
+				return
 		elif self.mouse_masking:
 			self.bbox_move_start_pt = [x, y]
+			if not self.backup_current_image_and_bbox():
+				messagebox.showerror("Backup Error", f"Backup failed. Mouse masking was not started:\n{self.im_fn}")
+				return
 			point_size = max(3, int(3 * self.zoom_ratio))
 			# self.canvas.create_rectangle([x-3, y-3, x+3, y+3], fill='magenta2', outline='', tags='masking_m')
 			self.canvas.create_rectangle(
             [x-point_size, y-point_size, x+point_size, y+point_size], 
             fill='magenta2', outline='', tags='masking_m'
-        	)
+			)
 			self.m_masking_img([x, y])
-			d_path = 'original_backup/JPEGImages/'
-			if not(os.path.isdir(d_path)):
-				os.makedirs(os.path.join(d_path))
-			if not(os.path.isdir('original_backup/labels/')):
-				os.makedirs(os.path.join('original_backup/labels'))
-			img_path = d_path + self.make_path(self.im_fn)
-			if not os.path.exists(img_path):
-				self.img = Image.open(self.im_fn)
-				path = self.make_path(self.im_fn)
-				img_path = 'original_backup/JPEGImages/'+path
-				self.img.save(img_path)
-			gt_fn = self.make_path(self.gt_fn)
-			with open("original_backup/labels/"+gt_fn, 'wt') as f:
-				box = copy.deepcopy(self.bbox)
-				for rc in box:
-					f.write(' '.join(str(e) for e in self.convert_abs2rel(rc)) + '\n')
 		elif self.polygon_masking:
 			# 폴리곤이 닫혀있지 않은 경우에만 점 추가
 			if not self.is_polygon_closed:
@@ -6168,22 +7760,10 @@ class MainApp:
 		
 		# 현재 선택된 라벨의 좌표 정보
 		bbox = self.bbox[self.selid]
-		
-		# 백업 생성
-		d_path = 'original_backup/JPEGImages/'
-		if not os.path.isdir(d_path):
-			os.makedirs(os.path.join(d_path))
-		if not os.path.isdir('original_backup/labels/'):
-			os.makedirs(os.path.join('original_backup/labels/'))
-		
-		img_path = d_path + self.make_path(self.im_fn)
-		if not os.path.exists(img_path):
-			shutil.copyfile(self.im_fn, img_path)
-		
-		gt_path = "original_backup/labels/" + self.make_path(self.gt_fn)
-		if not os.path.exists(gt_path):
-			shutil.copyfile(self.gt_fn, gt_path)
-		
+		if not self.backup_original_pair(self.im_fn, self.gt_fn):
+			messagebox.showerror("Backup Error", f"Backup failed. Label-to-mask was not applied:\n{self.im_fn}")
+			return
+
 		# 이미지 로드
 		self.img = Image.open(self.im_fn)
 		self.original_width = self.img.width
@@ -6430,18 +8010,24 @@ class MainApp:
         command=lambda idx=class_idx: self.change_class(idx),
         bd=1
     )
-		button.pack(side=tk.LEFT, padx=0)
+		pack_options = {'side': tk.LEFT, 'padx': 0}
+		if hasattr(self, 'loadLabel'):
+			pack_options['before'] = self.loadLabel
+		button.pack(**pack_options)
 		
 		# 우클릭 이벤트 바인딩
-		button.bind("<Button-3>", lambda event, btn=button, idx=class_idx: 
+		button.bind("<Button-3>", lambda event, btn=button, idx=class_idx:
 					self.show_class_menu(event, btn, idx))
+		if hasattr(self, 'canvas'):
+			button.bind("<ButtonRelease-1>", lambda e: self.canvas.focus_set())
 		
 		# 버튼과 클래스 인덱스 매핑 저장
 		self.button_class_map[button] = class_idx
 		
 		# 키 매핑 저장 (키가 지정된 경우)
-		if key is not None:
-			self.key_button_map[key] = button
+		normalized_key = normalize_shortcut_key(key)
+		if normalized_key is not None:
+			self.key_button_map[normalized_key] = button
 		
 		return button
 
@@ -6466,18 +8052,6 @@ class MainApp:
 			menu.tk_popup(event.x_root, event.y_root)
 		finally:
 			menu.grab_release()
-
-	def set_button_class(self, button, class_idx):
-		"""버튼의 클래스 ID 변경"""
-		if 0 <= class_idx < len(class_name):
-			# 버튼 텍스트 변경
-			button.config(text=class_name[class_idx])
-			
-			# 버튼 명령 업데이트
-			button.config(command=lambda idx=class_idx: self.change_class(idx))
-			
-			# 매핑 업데이트
-			self.button_class_map[button] = class_idx
 
 	def open_class_search_dialog(self, button):
 		"""클래스 검색 다이얼로그 열기"""
@@ -6691,30 +8265,25 @@ class MainApp:
 		print("폴리곤 마스킹이 적용되었습니다.")
 
 	def remove_labels_overlapping_with_polygon(self):
-		"""폴리곤과 겹치는 라벨 삭제"""
-		if not hasattr(self, 'saved_polygon_points') or not self.saved_polygon_points:
+		"""폴리곤 마스크 픽셀과 겹치는 라벨 삭제"""
+		if not hasattr(self, 'masking') or self.masking is None:
 			return
-		
+
 		if not self.bbox:
 			return
 		
 		# 삭제할 라벨 인덱스 리스트 (역순으로 삭제하기 위해)
 		to_remove = []
 		
-		# 폴리곤 영역의 바운딩 박스 계산 (간단한 접근)
-		min_x = min(p[0] for p in self.saved_polygon_points)
-		min_y = min(p[1] for p in self.saved_polygon_points)
-		max_x = max(p[0] for p in self.saved_polygon_points)
-		max_y = max(p[1] for p in self.saved_polygon_points)
-		
-		# 마스킹 영역 (캔버스 좌표)
-		mask_area = [min_x, min_y, max_x, max_y]
-		
 		# 겹치는 라벨 찾기
 		for i, box in enumerate(self.bbox):
-			if self.check_bbox_mask_overlap(mask_area, box):
+			if self.check_bbox_mask_pixel_overlap(box):
 				to_remove.append(i)
-		
+
+		if to_remove and not self.backup_original_file(self.gt_fn, 'labels'):
+			messagebox.showerror("Backup Error", f"Backup failed. Labels were not removed:\n{self.gt_fn}")
+			return
+
 		# 역순으로 삭제 (인덱스 변화 방지)
 		for i in sorted(to_remove, reverse=True):
 			self.bbox.pop(i)
@@ -6787,10 +8356,10 @@ class MainApp:
 
 [제외 영역 기능]
 1. '제외영역' 버튼 클릭
-2. '영역 추가' 클릭하여 폴리곤 그리기 모드 활성화
-3. 캔버스에서 좌클릭으로 점 추가
-4. 우클릭 또는 첫 점을 다시 클릭하여 폴리곤 완성
-5. '기능 활성화' 체크 시 다음 페이지부터 해당 영역의 라벨 자동 삭제
+2. '다각형 추가' 또는 '점 추가' 선택
+3. 다각형은 캔버스에서 좌클릭으로 점 추가 후 우클릭 또는 첫 점 재클릭으로 완성
+4. 점은 캔버스에서 좌클릭 한 번으로 추가
+5. '기능 활성화' 체크 시 다음 페이지부터 해당 영역/점의 라벨 자동 삭제
 
 [클래스 자동 삭제 기능]
 1. '자동삭제' 버튼 클릭
@@ -6867,7 +8436,7 @@ class MainApp:
 		"""제외 영역 관리 다이얼로그"""
 		dialog = tk.Toplevel(self.master)
 		dialog.title("제외 영역 관리")
-		dialog.geometry("400x500")
+		dialog.geometry("650x500")
 		dialog.transient(self.master)
 		dialog.grab_set()
 
@@ -6900,7 +8469,10 @@ class MainApp:
 			listbox.delete(0, tk.END)
 			for i, zone in enumerate(self.exclusion_zone_manager.global_zones):
 				status = "✓" if zone['enabled'] else "✗"
-				point_count = len(zone['points'])
+				zone_points = zone.get('points', [])
+				point_count = len(zone_points)
+				zone_type = zone.get('zone_type', 'point' if point_count == 1 else 'polygon')
+				type_label = self._zone_type_label(zone_type)
 
 				# 클래스 정보 표시
 				zone_class_ids = zone.get('class_ids', [])
@@ -6910,7 +8482,7 @@ class MainApp:
 				else:
 					class_info = " - 모든 클래스"
 
-				listbox.insert(tk.END, f"{status} 영역 {i+1} ({point_count}개 점){class_info}")
+				listbox.insert(tk.END, f"{status} {type_label} {i+1} ({point_count}개 점){class_info}")
 
 		refresh_list()
 
@@ -6920,9 +8492,12 @@ class MainApp:
 
 		def add_zone():
 			"""제외 영역 추가 모드 활성화"""
-			self.exclusion_zone_mode = True
-			self.exclusion_zone_points = []
-			messagebox.showinfo("제외 영역 추가", "캔버스에서 좌클릭으로 점을 추가하세요.\n우클릭 또는 첫 점을 다시 클릭하면 완성됩니다.")
+			self.start_exclusion_zone_drawing('polygon')
+			dialog.destroy()
+
+		def add_point_zone():
+			"""제외 점 추가 모드 활성화"""
+			self.start_exclusion_zone_drawing('point')
 			dialog.destroy()
 
 		def remove_zone():
@@ -6977,7 +8552,8 @@ class MainApp:
 					self.draw_bbox()  # 화면 갱신
 					messagebox.showinfo("클래스 편집", "적용 클래스가 업데이트되었습니다.")
 
-		tk.Button(button_frame, text="영역 추가", command=add_zone, width=10).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="다각형 추가", command=add_zone, width=12).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="점 추가", command=add_point_zone, width=10).pack(side=tk.LEFT, padx=2)
 		tk.Button(button_frame, text="삭제", command=remove_zone, width=10).pack(side=tk.LEFT, padx=2)
 		tk.Button(button_frame, text="클래스 편집", command=edit_classes, width=10).pack(side=tk.LEFT, padx=2)
 		tk.Button(button_frame, text="활성화/비활성화", command=toggle_zone, width=15).pack(side=tk.LEFT, padx=2)
@@ -7084,13 +8660,13 @@ class MainApp:
 		"""클래스 변경 영역 관리 다이얼로그"""
 		dialog = tk.Toplevel(self.master)
 		dialog.title("클래스 변경 영역 관리")
-		dialog.geometry("500x550")
+		dialog.geometry("820x550")
 		dialog.transient(self.master)
 		dialog.grab_set()
 
 		# 설명 레이블
 		tk.Label(dialog, text="클래스 변경 영역을 관리합니다", font=("맑은 고딕", 10, "bold")).pack(pady=10)
-		tk.Label(dialog, text="폴리곤 영역 내 bbox의 클래스를 변경합니다", fg="blue").pack()
+		tk.Label(dialog, text="다각형 영역 또는 기준 점이 닿는 bbox의 클래스를 변경합니다", fg="blue").pack()
 
 		# 영역 리스트
 		list_frame = tk.LabelFrame(dialog, text="클래스 변경 영역 목록")
@@ -7107,7 +8683,10 @@ class MainApp:
 			listbox.delete(0, tk.END)
 			for i, zone in enumerate(self.class_change_zone_manager.zones):
 				status = "✓" if zone['enabled'] else "✗"
-				point_count = len(zone['points'])
+				zone_points = zone.get('points', [])
+				point_count = len(zone_points)
+				zone_type = zone.get('zone_type', 'point' if point_count == 1 else 'polygon')
+				type_label = self._zone_type_label(zone_type)
 				mode = zone['mode']
 				target_class = self.class_config_manager.get_class_name(zone['target_class_id'])
 
@@ -7117,7 +8696,7 @@ class MainApp:
 					source_class = self.class_config_manager.get_class_name(zone['source_class_id'])
 					mode_info = f"{source_class} → {target_class}"
 
-				listbox.insert(tk.END, f"{status} 영역 {i+1} ({point_count}개 점) - {mode_info}")
+				listbox.insert(tk.END, f"{status} {type_label} {i+1} ({point_count}개 점) - {mode_info}")
 
 		refresh_list()
 
@@ -7125,18 +8704,18 @@ class MainApp:
 		button_frame = tk.Frame(dialog)
 		button_frame.pack(pady=10)
 
-		def add_zone_all():
+		def add_zone_all(zone_type='polygon'):
 			"""모든 클래스 변경 영역 추가"""
 			# 목표 클래스 선택
 			target_class_id = self.select_single_class_dialog("목표 클래스 선택", "모든 클래스를 변경할 목표 클래스를 선택하세요")
 			if target_class_id is not None:
-				self.class_change_zone_mode = True
-				self.class_change_zone_points = []
-				self.class_change_zone_config = {'mode': 'all', 'target_class_id': target_class_id}
-				messagebox.showinfo("클래스 변경 영역 추가", "캔버스에서 좌클릭으로 점을 추가하세요.\n우클릭 또는 첫 점을 다시 클릭하면 완성됩니다.")
+				self.start_class_change_zone_drawing(
+					{'mode': 'all', 'target_class_id': target_class_id},
+					zone_type
+				)
 				dialog.destroy()
 
-		def add_zone_filter():
+		def add_zone_filter(zone_type='polygon'):
 			"""특정 클래스 필터 변경 영역 추가"""
 			# 원본 클래스 선택
 			source_class_id = self.select_single_class_dialog("원본 클래스 선택", "변경할 원본 클래스를 선택하세요")
@@ -7144,14 +8723,14 @@ class MainApp:
 				# 목표 클래스 선택
 				target_class_id = self.select_single_class_dialog("목표 클래스 선택", "변경할 목표 클래스를 선택하세요")
 				if target_class_id is not None:
-					self.class_change_zone_mode = True
-					self.class_change_zone_points = []
-					self.class_change_zone_config = {
-						'mode': 'filter',
-						'source_class_id': source_class_id,
-						'target_class_id': target_class_id
-					}
-					messagebox.showinfo("클래스 변경 영역 추가", "캔버스에서 좌클릭으로 점을 추가하세요.\n우클릭 또는 첫 점을 다시 클릭하면 완성됩니다.")
+					self.start_class_change_zone_drawing(
+						{
+							'mode': 'filter',
+							'source_class_id': source_class_id,
+							'target_class_id': target_class_id
+						},
+						zone_type
+					)
 					dialog.destroy()
 
 		def remove_zone():
@@ -7198,8 +8777,10 @@ class MainApp:
 			else:
 				messagebox.showwarning("경고", "등록된 클래스 변경 영역이 없습니다.")
 
-		tk.Button(button_frame, text="영역 추가 (전체)", command=add_zone_all, width=15).pack(side=tk.LEFT, padx=2)
-		tk.Button(button_frame, text="영역 추가 (필터)", command=add_zone_filter, width=15).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="다각형 추가 (전체)", command=lambda: add_zone_all('polygon'), width=16).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="점 추가 (전체)", command=lambda: add_zone_all('point'), width=14).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="다각형 추가 (필터)", command=lambda: add_zone_filter('polygon'), width=16).pack(side=tk.LEFT, padx=2)
+		tk.Button(button_frame, text="점 추가 (필터)", command=lambda: add_zone_filter('point'), width=14).pack(side=tk.LEFT, padx=2)
 		tk.Button(button_frame, text="삭제", command=remove_zone, width=10).pack(side=tk.LEFT, padx=2)
 
 		button_frame2 = tk.Frame(dialog)
@@ -7470,9 +9051,47 @@ class MainApp:
 		if classes is not None:
 			# 설정 저장
 			self.class_config_manager.save_config(classes, config_filename, enable_backup)
+			self.apply_class_config_runtime()
 			backup_status = "활성화" if enable_backup else "비활성화"
 			messagebox.showinfo("클래스 설정 변경",
-				f"클래스 설정이 저장되었습니다.\n설정 파일: {self.class_config_manager.config_file}\n백업 설정: {backup_status}\n\n변경사항을 적용하려면 프로그램을 재시작해주세요.")
+				f"클래스 설정이 저장되고 즉시 적용되었습니다.\n설정 파일: {self.class_config_manager.config_file}\n백업 설정: {backup_status}")
+
+	def apply_class_config_runtime(self):
+		"""Apply class names, colors, buttons, and shortcuts without restarting."""
+		global class_name, class_color
+		class_name = self.class_config_manager.get_class_names()
+		class_color = self.class_config_manager.get_class_colors()
+
+		for button in list(getattr(self, 'class_buttons', [])):
+			try:
+				button.destroy()
+			except Exception:
+				pass
+		self.class_buttons = []
+		self.button_class_map = {}
+		self.key_button_map = {}
+
+		for name, class_id, key in self.class_config_manager.get_button_configs():
+			button = self.create_class_button(name, class_id, key)
+			self.class_buttons.append(button)
+
+		if hasattr(self, 'canvas'):
+			self.bind_class_shortcuts()
+			self.canvas.focus_set()
+		if hasattr(self, 'configFileLabel'):
+			self.configFileLabel.config(text=f"[{self.class_config_manager.get_config_filename()}]")
+		if hasattr(self, 'class_filter_manager'):
+			self.class_filter_manager.clear_filter()
+		if hasattr(self, 'bbox'):
+			for bbox in self.bbox:
+				if len(bbox) > 2 and isinstance(bbox[2], int) and 0 <= bbox[2] < len(class_name):
+					bbox[1] = class_name[bbox[2]]
+		try:
+			self.apply_modern_theme()
+			self.draw_bbox()
+			self.update_label_list()
+		except Exception as e:
+			print(f"[ClassConfig] Runtime refresh warning: {e}")
 
 	def manage_class_filter(self):
 		"""클래스 필터 관리 다이얼로그"""
@@ -7792,7 +9411,7 @@ class MainApp:
 				progress_label = tk.Label(progress, text="Processing...")
 				progress_label.pack(pady=5)
 				
-				progress_bar = tk.ttk.Progressbar(progress, orient="horizontal", length=250, mode="determinate")
+				progress_bar = ttk.Progressbar(progress, orient="horizontal", length=250, mode="determinate")
 				progress_bar.pack(pady=10)
 				progress_bar["maximum"] = end_frame - start_frame + 1
 				
@@ -7819,16 +9438,6 @@ class MainApp:
 						if not os.path.exists(target_dir):
 							os.makedirs(target_dir)
 						
-						# Backup if exists
-						if os.path.exists(target_label_path):
-							backup_dir = 'original_backup/labels/'
-							if not os.path.isdir(backup_dir):
-								os.makedirs(backup_dir)
-							
-							backup_path = backup_dir + self.make_path(target_label_path)
-							if not os.path.exists(backup_path):
-								shutil.copyfile(target_label_path, backup_path)
-						
 						# Read existing annotations if not replacing
 						existing_annotations = []
 						if not replace_var.get() and os.path.exists(target_label_path):
@@ -7841,16 +9450,14 @@ class MainApp:
 										if class_id not in selected_classes:
 											existing_annotations.append(line)
 						
-						# Write annotations
-						with open(target_label_path, 'w') as f:
-							# Write existing annotations not in selected classes
-							f.writelines(existing_annotations)
-							
-							# Add new annotations of selected classes
-							for bbox in annotations_to_copy:
-								rel_coords = self.convert_abs2rel(bbox)
-								f.write(' '.join(str(e) for e in rel_coords) + '\n')
-						
+						output_lines = list(existing_annotations)
+						for bbox in annotations_to_copy:
+							rel_coords = self.convert_abs2rel(bbox)
+							output_lines.append(' '.join(str(e) for e in rel_coords) + '\n')
+						if not self.write_text_files_transaction({target_label_path: ''.join(output_lines)}, backup_category='labels'):
+							print(f"Error processing frame {i+1}: transaction failed")
+							continue
+
 						success_count += 1
 						
 					except Exception as e:

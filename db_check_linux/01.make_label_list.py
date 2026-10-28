@@ -2,6 +2,7 @@ import traceback
 import numpy as np
 import os.path
 import random
+import shutil
 from pathlib import Path
 import sys
 import os
@@ -174,6 +175,30 @@ def print_class_statistics(obj_annotation, title):
         if obj_annotation[i] > 0:  # 0보다 큰 값만 출력
             print(f"클래스 {i-1}: {int(obj_annotation[i])}개")
 
+def get_folder_stats_key(input_source, image_path):
+    """폴더별 통계에 사용할 경로 키 생성"""
+    if os.path.isdir(input_source):
+        rel_dir = os.path.relpath(os.path.dirname(image_path), input_source)
+        if rel_dir == '.':
+            return '(root)'
+        return rel_dir.replace(os.sep, '/')
+
+    return os.path.basename(os.path.dirname(image_path)) or '(root)'
+
+def print_folder_statistics(folder_stats, title="폴더별 수량 통계"):
+    """폴더별 처리 수량 출력"""
+    if not folder_stats:
+        return
+
+    print(f"\n{title}:")
+    for folder_name in sorted(folder_stats.keys()):
+        folder_stat = folder_stats[folder_name]
+        print(f"  {folder_name}: {folder_stat['total']}개 파일 | "
+              f"어노테이션 {folder_stat['annotations']}개 | "
+              f"라벨 없음 {folder_stat['no_label']}개 | "
+              f"빈 라벨 {folder_stat['empty_label']}개 | "
+              f"에러 {folder_stat['error']}개")
+
 def create_empty_label(label_path, logger=None):
     """빈 라벨 파일 생성"""
     try:
@@ -205,7 +230,376 @@ def validate_paths(image_path, label_path, logger=None):
     
     return issues
 
-def create_complete_dataset_list(input_path, output_path, keyword=None, output_prefix=None):
+try:
+    from PIL import Image as _PILImage
+except ImportError:  # PIL 없으면 픽셀 환산 없이 비율 통계만 표시
+    _PILImage = None
+
+import unicodedata
+from collections import Counter
+
+SIZE_AREA_BOUNDS = [0.01, 0.03, 0.10, 0.30]     # √(w×h) 비율 구간 경계
+SIZE_HEIGHT_BOUNDS = [0.02, 0.05, 0.10, 0.25]   # 높이 비율 구간 경계
+SIZE_SHAPE_BOUNDS = [0.5, 0.9, 1.1, 2.0]        # 세로/가로(px) 구간 경계
+SIZE_AREA_NAMES = ['tiny', 'small', 'medium', 'large', 'xlarge']
+SIZE_SHAPE_NAMES = ['가로로 긴', '가로형', '정사각형', '세로형', '세로로 긴']
+
+
+def _disp_width(text):
+    """cmd 출력 폭 계산 (한글 등 전각 문자는 2칸)"""
+    return sum(2 if unicodedata.east_asian_width(c) in ('W', 'F') else 1 for c in str(text))
+
+
+def _pad(text, width, align='left'):
+    """전각 문자를 고려한 패딩"""
+    text = str(text)
+    gap = max(width - _disp_width(text), 0)
+    return text + ' ' * gap if align == 'left' else ' ' * gap + text
+
+
+def _render_table(headers, rows, aligns=None, indent='  '):
+    """헤더/행 리스트를 열 폭 맞춘 표 문자열 리스트로 변환"""
+    aligns = aligns or ['right'] * len(headers)
+    widths = [_disp_width(h) for h in headers]
+    for row in rows:
+        if row is None:
+            continue
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], _disp_width(cell))
+    sep = ' | '
+    out = [indent + sep.join(_pad(h, widths[i], aligns[i]) for i, h in enumerate(headers))]
+    out.append(indent + '-' * (sum(widths) + len(sep) * (len(widths) - 1)))
+    for row in rows:
+        if row is None:  # 구분선
+            out.append(out[1])
+            continue
+        out.append(indent + sep.join(_pad(c, widths[i], aligns[i]) for i, c in enumerate(row)))
+    return out
+
+
+def parse_percent_bounds(text, default):
+    """'1,3,10,30' 형식(%)을 오름차순 비율 리스트로 변환. 비어 있으면 기본값"""
+    text = (text or '').strip()
+    if not text:
+        return list(default)
+    values = sorted({float(v.strip()) / 100.0 for v in text.split(',') if v.strip()})
+    if not values or values[0] <= 0 or values[-1] >= 1:
+        raise ValueError("구간 경계는 0~100 사이 % 값이어야 합니다")
+    return values
+
+
+def read_image_size(image_path):
+    """이미지 해상도 (W, H). 헤더만 읽으므로 빠름. 실패 시 None"""
+    if _PILImage is None:
+        return None
+    try:
+        with _PILImage.open(image_path) as im:
+            return im.size
+    except Exception:
+        return None
+
+
+def _bucket_index(value, bounds):
+    for i, b in enumerate(bounds):
+        if value < b:
+            return i
+    return len(bounds)
+
+
+def _new_agg():
+    return {'n': 0, 'w': 0.0, 'h': 0.0, 'pn': 0, 'pw': 0.0, 'ph': 0.0,
+            'pmin': None, 'pmax': None}
+
+
+def _agg_add(agg, w, h, pw=None, ph=None, pval=None):
+    agg['n'] += 1
+    agg['w'] += w
+    agg['h'] += h
+    if pw is not None:
+        agg['pn'] += 1
+        agg['pw'] += pw
+        agg['ph'] += ph
+        agg['pmin'] = pval if agg['pmin'] is None else min(agg['pmin'], pval)
+        agg['pmax'] = pval if agg['pmax'] is None else max(agg['pmax'], pval)
+
+
+def new_size_stats(area_bounds=None, height_bounds=None):
+    """객체 크기 통계 누적용 구조 생성"""
+    area_bounds = list(area_bounds or SIZE_AREA_BOUNDS)
+    height_bounds = list(height_bounds or SIZE_HEIGHT_BOUNDS)
+    return {
+        'area_bounds': area_bounds,
+        'height_bounds': height_bounds,
+        'area': [_new_agg() for _ in range(len(area_bounds) + 1)],
+        'area_total': _new_agg(),
+        'height': [_new_agg() for _ in range(len(height_bounds) + 1)],
+        'height_total': _new_agg(),
+        'shape': [0] * (len(SIZE_SHAPE_BOUNDS) + 1),
+        'shape_sum': 0.0,
+        'shape_n': 0,
+        'class': defaultdict(lambda: {
+            'all': _new_agg(),
+            'area_cnt': [0] * (len(area_bounds) + 1),
+            'height_cnt': [0] * (len(height_bounds) + 1),
+        }),
+        'resolution': Counter(),
+        'no_resolution_images': 0,
+        'abnormal_cnt': 0,
+        'min_box': None,   # (√면적비, w, h, pw, ph)
+        'max_box': None,
+    }
+
+
+def add_image_sizes(size_stats, image_path, boxes):
+    """
+    이미지 한 장의 박스들을 크기 통계에 누적
+    boxes: [(class_id, cx, cy, w, h), ...] (YOLO 정규화 좌표)
+    """
+    if not boxes:
+        return
+    res = read_image_size(image_path)
+    if res:
+        size_stats['resolution'][res] += 1
+    else:
+        size_stats['no_resolution_images'] += 1
+
+    for class_id, cx, cy, w, h in boxes:
+        if w <= 0 or h <= 0:
+            size_stats['abnormal_cnt'] += 1
+            continue
+        eps = 1e-3
+        if (cx - w / 2 < -eps or cy - h / 2 < -eps or
+                cx + w / 2 > 1 + eps or cy + h / 2 > 1 + eps):
+            size_stats['abnormal_cnt'] += 1  # 이미지 밖으로 나간 박스 (집계는 계속)
+
+        side = (w * h) ** 0.5
+        pw = ph = pside = None
+        if res:
+            pw, ph = w * res[0], h * res[1]
+            pside = (pw * ph) ** 0.5
+
+        ai = _bucket_index(side, size_stats['area_bounds'])
+        hi = _bucket_index(h, size_stats['height_bounds'])
+        _agg_add(size_stats['area'][ai], w, h, pw, ph, pside)
+        _agg_add(size_stats['area_total'], w, h, pw, ph, pside)
+        _agg_add(size_stats['height'][hi], w, h, pw, ph, ph)
+        _agg_add(size_stats['height_total'], w, h, pw, ph, ph)
+
+        cls = size_stats['class'][class_id]
+        _agg_add(cls['all'], w, h, pw, ph, pside)
+        cls['area_cnt'][ai] += 1
+        cls['height_cnt'][hi] += 1
+
+        # 형태는 px 기준 (해상도 없으면 비율 기준)
+        aspect = (ph / pw) if res else (h / w)
+        size_stats['shape'][_bucket_index(aspect, SIZE_SHAPE_BOUNDS)] += 1
+        size_stats['shape_sum'] += aspect
+        size_stats['shape_n'] += 1
+
+        box = (side, w, h, pw, ph)
+        if size_stats['min_box'] is None or side < size_stats['min_box'][0]:
+            size_stats['min_box'] = box
+        if size_stats['max_box'] is None or side > size_stats['max_box'][0]:
+            size_stats['max_box'] = box
+
+
+def _fmt_pct(v):
+    return f"{v * 100:.1f}%"
+
+
+def _bound_label(i, bounds, name=None):
+    if i == 0:
+        rng = f"<{bounds[0] * 100:g}%"
+    elif i == len(bounds):
+        rng = f"≥{bounds[-1] * 100:g}%"
+    else:
+        rng = f"{bounds[i - 1] * 100:g}~{bounds[i] * 100:g}%"
+    return f"{name} ({rng})" if name else rng
+
+
+def _avg_ratio_wh(agg):
+    if not agg['n']:
+        return '-'
+    return f"{_fmt_pct(agg['w'] / agg['n'])} × {_fmt_pct(agg['h'] / agg['n'])}"
+
+
+def _avg_px_wh(agg):
+    if not agg['pn']:
+        return '-'
+    return f"{agg['pw'] / agg['pn']:.0f} × {agg['ph'] / agg['pn']:.0f}"
+
+
+def _px_range(agg):
+    if agg['pmin'] is None:
+        return '-'
+    return f"{agg['pmin']:.0f} ~ {agg['pmax']:.0f}"
+
+
+def _box_text(box):
+    if box is None:
+        return '-'
+    _, w, h, pw, ph = box
+    text = f"{_fmt_pct(w)} × {_fmt_pct(h)}"
+    if pw is not None:
+        text += f" ({pw:.0f} × {ph:.0f} px)"
+    return text
+
+
+def build_size_report(size_stats):
+    """객체 크기 통계 리포트 라인 리스트"""
+    total = size_stats['area_total']['n']
+    lines = []
+    if total == 0:
+        return ["", "[객체 크기 통계]", "  유효한 박스가 없습니다."]
+
+    def share(n):
+        return _fmt_pct(n / total) if total else '0.0%'
+
+    area_bounds = size_stats['area_bounds']
+    height_bounds = size_stats['height_bounds']
+    use_names = len(area_bounds) + 1 == len(SIZE_AREA_NAMES)
+
+    # 1) 면적 기준
+    rows = []
+    for i, agg in enumerate(size_stats['area']):
+        name = SIZE_AREA_NAMES[i] if use_names else None
+        rows.append([_bound_label(i, area_bounds, name), f"{agg['n']:,}", share(agg['n']),
+                     _avg_ratio_wh(agg), _avg_px_wh(agg), _px_range(agg)])
+    t = size_stats['area_total']
+    rows += [None, ['전체', f"{t['n']:,}", '100%', _avg_ratio_wh(t), _avg_px_wh(t), _px_range(t)]]
+    lines += ["", "[객체 크기 통계] (구간 기준: 비율 √(w×h), 픽셀 = 이미지 해상도 반영 실측)"]
+    lines += _render_table(['구간', '수량', '비율', '평균 w×h (비율)', '평균 W×H (px)', 'px 범위(√면적)'],
+                           rows, ['left', 'right', 'right', 'right', 'right', 'right'])
+    lines.append(f"  최소: {_box_text(size_stats['min_box'])}  /  최대: {_box_text(size_stats['max_box'])}")
+
+    # 2) 클래스별 면적 기준
+    rows = []
+    for cid in sorted(size_stats['class']):
+        c = size_stats['class'][cid]
+        rows.append([str(cid), f"{c['all']['n']:,}", _avg_ratio_wh(c['all']), _avg_px_wh(c['all'])]
+                    + [f"{v:,}" for v in c['area_cnt']])
+    bucket_heads = [SIZE_AREA_NAMES[i] if use_names else _bound_label(i, area_bounds)
+                    for i in range(len(area_bounds) + 1)]
+    lines += ["", "[클래스별 크기 통계]"]
+    lines += _render_table(['클래스', '수량', '평균 w×h (비율)', '평균 W×H (px)'] + bucket_heads, rows)
+
+    # 3) 세로(높이) 기준
+    rows = []
+    for i, agg in enumerate(size_stats['height']):
+        avg_h = _fmt_pct(agg['h'] / agg['n']) if agg['n'] else '-'
+        avg_ph = f"{agg['ph'] / agg['pn']:.0f}" if agg['pn'] else '-'
+        rows.append([_bound_label(i, height_bounds), f"{agg['n']:,}", share(agg['n']),
+                     avg_h, avg_ph, _px_range(agg)])
+    t = size_stats['height_total']
+    rows += [None, ['전체', f"{t['n']:,}", '100%', _fmt_pct(t['h'] / t['n']),
+                    f"{t['ph'] / t['pn']:.0f}" if t['pn'] else '-', _px_range(t)]]
+    lines += ["", "[세로(높이) 기준 크기 통계] (구간 기준: 높이 비율 h = 박스높이 / 이미지높이)"]
+    lines += _render_table(['구간', '수량', '비율', '평균 h (비율)', '평균 높이 (px)', 'px 범위'],
+                           rows, ['left', 'right', 'right', 'right', 'right', 'right'])
+
+    # 4) 클래스별 세로 기준
+    rows = []
+    for cid in sorted(size_stats['class']):
+        c = size_stats['class'][cid]['all']
+        cnt = size_stats['class'][cid]['height_cnt']
+        rows.append([str(cid), _fmt_pct(c['h'] / c['n']) if c['n'] else '-',
+                     f"{c['ph'] / c['pn']:.0f}" if c['pn'] else '-'] + [f"{v:,}" for v in cnt])
+    lines += ["", "[클래스별 세로 기준]"]
+    lines += _render_table(['클래스', '평균 h (비율)', '평균 높이 (px)'] +
+                           [_bound_label(i, height_bounds) for i in range(len(height_bounds) + 1)], rows)
+
+    # 5) 형태
+    rows = []
+    for i, n in enumerate(size_stats['shape']):
+        if i == 0:
+            rng = f"<{SIZE_SHAPE_BOUNDS[0]:g}"
+        elif i == len(SIZE_SHAPE_BOUNDS):
+            rng = f"≥{SIZE_SHAPE_BOUNDS[-1]:g}"
+        else:
+            rng = f"{SIZE_SHAPE_BOUNDS[i - 1]:g}~{SIZE_SHAPE_BOUNDS[i]:g}"
+        rows.append([f"{SIZE_SHAPE_NAMES[i]} ({rng})", f"{n:,}", share(n)])
+    basis = 'h_px / w_px' if size_stats['resolution'] else 'h / w (해상도 미확인, 비율 기준)'
+    lines += ["", f"[객체 형태 (세로/가로 = {basis})]"]
+    lines += _render_table(['구간', '수량', '비율'], rows, ['left', 'right', 'right'])
+    if size_stats['shape_n']:
+        lines.append(f"  평균 세로/가로: {size_stats['shape_sum'] / size_stats['shape_n']:.2f}")
+
+    # 6) 해상도
+    res_total = sum(size_stats['resolution'].values())
+    lines += ["", "[이미지 해상도 분포] (박스가 있는 이미지 기준)"]
+    for (rw, rh), n in size_stats['resolution'].most_common():
+        lines.append(f"  {_pad(f'{rw}×{rh}', 11)} : {n:>8,}장 ({_fmt_pct(n / res_total)})")
+    if size_stats['no_resolution_images']:
+        lines.append(f"  해상도 읽기 실패: {size_stats['no_resolution_images']:,}장 (픽셀 값에서 제외)")
+    if size_stats['abnormal_cnt']:
+        lines.append(f"  이상 박스 (크기 0 또는 이미지 밖): {size_stats['abnormal_cnt']:,}개")
+    return lines
+
+
+def build_dataset_report(stats, input_path, keyword=None):
+    """create_complete_dataset_list 통계로 상세 리포트 문자열 생성 (cmd 출력/txt 저장 공용)"""
+    def pct(n, d):
+        return f"{n / d * 100:.1f}%" if d else "0.0%"
+
+    total = stats['total_cnt']
+    listed = stats['labeled_cnt'] + stats['background_cnt']
+    total_ann = int(stats['total_annotations'])
+    obj = stats['obj_annotation']
+    cls_img = stats['class_image_cnt']
+    bar = "=" * 70
+
+    lines = [
+        bar,
+        " 데이터셋 상세 리포트",
+        bar,
+        f"입력 경로: {input_path}",
+    ]
+    if keyword:
+        lines.append(f"키워드 필터: '{keyword}' (제외 {stats.get('filtered_cnt', 0)}개)")
+    lines += [
+        "",
+        "[요약]",
+        f"  전체 이미지           : {total:>10,}개",
+        f"  리스트 등록 이미지    : {listed:>10,}개",
+        f"  라벨 있는 이미지      : {stats['labeled_cnt']:>10,}개 ({pct(stats['labeled_cnt'], listed)})",
+        f"  배경 이미지(어노 0개) : {stats['background_cnt']:>10,}개 ({pct(stats['background_cnt'], listed)})",
+        f"  전체 어노테이션       : {total_ann:>10,}개",
+        f"  이미지당 평균 어노    : {total_ann / stats['labeled_cnt'] if stats['labeled_cnt'] else 0:>10.2f}개 (라벨 있는 이미지 기준)",
+        f"  이미지당 최대 어노    : {stats['max_annotations']:>10,}개",
+        f"  에러(리스트 제외)     : {stats['error_cnt']:>10,}개",
+        "",
+        "[배경 이미지 상세]",
+        f"  라벨 파일 없음 -> 빈 라벨 생성 : {stats['no_label_cnt']:,}개",
+        # empty_label_cnt에는 방금 생성한 빈 라벨도 포함되므로 제외
+        f"  기존 빈 라벨 파일              : {max(stats['empty_label_cnt'] - stats['no_label_cnt'], 0):,}개",
+        f"  유효 어노테이션 없는 라벨      : {stats['invalid_only_cnt']:,}개",
+        f"  무시된 잘못된 라인 수          : {stats['invalid_line_cnt']:,}개",
+        "",
+        "[클래스별 통계]",
+        f"  {'클래스':>6} | {'어노테이션':>10} | {'비율':>6} | {'포함 이미지':>10}",
+        "  " + "-" * 46,
+    ]
+    for i in range(1, len(obj)):
+        if obj[i] > 0:
+            lines.append(f"  {i - 1:>6} | {int(obj[i]):>10,} | {pct(obj[i], total_ann):>6} | {int(cls_img[i]):>10,}")
+
+    lines += [
+        "",
+        "[폴더별 통계]",
+        "  폴더 | 이미지 | 라벨있음 | 배경 | 어노테이션 | 라벨없음(생성) | 빈라벨 | 에러",
+    ]
+    for name in sorted(stats['folder_stats']):
+        fs = stats['folder_stats'][name]
+        lines.append(f"  {name} | {fs['total']:,} | {fs.get('labeled', 0):,} | {fs.get('background', 0):,} | "
+                     f"{fs['annotations']:,} | {fs['no_label']:,} | {fs['empty_label']:,} | {fs['error']:,}")
+    if stats.get('size_stats'):
+        lines += build_size_report(stats['size_stats'])
+    lines.append(bar)
+    return "\n".join(lines)
+
+
+def create_complete_dataset_list(input_path, output_path, keyword=None, output_prefix=None,
+                                 size_options=None):
     """
     입력 경로의 모든 이미지 파일을 하나의 리스트로 생성하는 함수
 
@@ -214,6 +608,7 @@ def create_complete_dataset_list(input_path, output_path, keyword=None, output_p
         output_path: 출력 저장 경로
         keyword: 파일명 필터링 키워드 (None이면 모든 파일 포함, 한글/특수문자 지원)
         output_prefix: 출력 파일명 prefix (여러 폴더 일괄 처리시 폴더명 구분용)
+        size_options: 객체 크기 분석 옵션 {'area_bounds': [...], 'height_bounds': [...]} (None이면 미실행)
     """
     output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -230,11 +625,15 @@ def create_complete_dataset_list(input_path, output_path, keyword=None, output_p
     if output_prefix:
         complete_list_path = output_path / f'{output_prefix}_complete_dataset.txt'
         complete_annotation_path = output_path / f'{output_prefix}_complete_annotation.txt'
+        folder_stats_path = output_path / f'{output_prefix}_folder_stats.txt'
         error_log_path = output_path / f'{output_prefix}_errors.txt'
+        report_path = output_path / f'{output_prefix}_dataset_report.txt'
     else:
         complete_list_path = output_path / 'complete_dataset.txt'
         complete_annotation_path = output_path / 'complete_annotation.txt'
+        folder_stats_path = output_path / 'folder_stats.txt'
         error_log_path = output_path / 'errors.txt'
+        report_path = output_path / 'dataset_report.txt'
     
     # 통계 변수 초기화
     obj_annotation = np.zeros(90)
@@ -249,6 +648,23 @@ def create_complete_dataset_list(input_path, output_path, keyword=None, output_p
         'obj_annotation': obj_annotation,
         'path_issues': [],        # 경로 문제 목록
         'filtered_cnt': 0,        # 키워드 필터링으로 제외된 파일 수
+        'labeled_cnt': 0,         # 어노테이션이 1개 이상 있는 이미지
+        'background_cnt': 0,      # 어노테이션 0개 이미지 (배경)
+        'invalid_only_cnt': 0,    # 라벨 내용은 있으나 유효 어노테이션이 없는 이미지
+        'invalid_line_cnt': 0,    # 형식 오류/범위 밖 클래스로 무시된 라인 수
+        'max_annotations': 0,     # 이미지 1장 최대 어노테이션 수
+        'class_image_cnt': np.zeros(90),  # 클래스별 등장 이미지 수
+        'size_stats': (new_size_stats(size_options.get('area_bounds'), size_options.get('height_bounds'))
+                       if size_options is not None else None),
+        'folder_stats': defaultdict(lambda: {
+            'total': 0,
+            'annotations': 0,
+            'no_label': 0,
+            'empty_label': 0,
+            'error': 0,
+            'labeled': 0,
+            'background': 0,
+        }),
     }
     
     # 파일 리스트 초기화
@@ -278,6 +694,9 @@ def create_complete_dataset_list(input_path, output_path, keyword=None, output_p
         progress = (stats['total_cnt'] / total_files) * 100
 
         label_path = get_label_path_from_image(full_path)
+        folder_key = get_folder_stats_key(input_path, full_path)
+        folder_stat = stats['folder_stats'][folder_key]
+        folder_stat['total'] += 1
 
         # 경로 유효성 검증
         path_issues = validate_paths(full_path, label_path, logger)
@@ -293,17 +712,21 @@ def create_complete_dataset_list(input_path, output_path, keyword=None, output_p
             if create_empty_label(label_path, logger):
                 stats['created_labels'] += 1
                 stats['no_label_cnt'] += 1
+                folder_stat['no_label'] += 1
             else:
                 stats['error_cnt'] += 1
+                folder_stat['error'] += 1
                 continue
 
         # 어노테이션 처리
         current_annotation = np.zeros(90)
+        boxes = []  # 객체 크기 분석용 (class_id, cx, cy, w, h)
         try:
             with open(label_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
                 if not lines:  # 빈 파일 처리
                     stats['empty_label_cnt'] += 1
+                    folder_stat['empty_label'] += 1
                 else:
                     for line_num, line in enumerate(lines, 1):
                         line = line.strip()
@@ -313,23 +736,36 @@ def create_complete_dataset_list(input_path, output_path, keyword=None, output_p
                         split_line = line.split()
                         if len(split_line) < 5:  # YOLO 형식은 최소 5개 값 필요
                             logger.warning(f"잘못된 어노테이션 형식 {label_path}:{line_num} - {line}")
+                            stats['invalid_line_cnt'] += 1
                             continue
 
                         try:
                             class_id = int(float(split_line[0]))
                             if class_id < 0 or class_id >= 89:  # 클래스 ID 범위 검증
                                 logger.warning(f"잘못된 클래스 ID {label_path}:{line_num} - {class_id}")
+                                stats['invalid_line_cnt'] += 1
                                 continue
 
                             current_annotation[0] += 1  # 전체 어노테이션 카운트
                             current_annotation[class_id + 1] += 1  # 클래스별 카운트
                         except (ValueError, IndexError) as e:
                             logger.warning(f"어노테이션 파싱 오류 {label_path}:{line_num} - {e}")
+                            stats['invalid_line_cnt'] += 1
                             continue
+
+                        if stats['size_stats'] is not None:
+                            try:
+                                boxes.append((class_id,) + tuple(float(v) for v in split_line[1:5]))
+                            except ValueError:
+                                pass
+
+                    if current_annotation[0] == 0:
+                        stats['invalid_only_cnt'] += 1
 
         except Exception as e:
             logger.error(f"라벨 파일 처리 오류 {label_path}: {e}")
             stats['error_cnt'] += 1
+            folder_stat['error'] += 1
             with open(error_log_path, 'a', encoding='utf-8') as f:
                 f.write(f"라벨 처리 오류 - {label_path}: {e}\n")
             continue
@@ -340,6 +776,17 @@ def create_complete_dataset_list(input_path, output_path, keyword=None, output_p
 
         stats['obj_annotation'] += current_annotation
         stats['total_annotations'] += current_annotation[0]
+        folder_stat['annotations'] += int(current_annotation[0])
+        if current_annotation[0] > 0:
+            stats['labeled_cnt'] += 1
+            folder_stat['labeled'] += 1
+            stats['class_image_cnt'] += (current_annotation > 0)
+            stats['max_annotations'] = max(stats['max_annotations'], int(current_annotation[0]))
+        else:
+            stats['background_cnt'] += 1
+            folder_stat['background'] += 1
+        if boxes:
+            add_image_sizes(stats['size_stats'], full_path, boxes)
 
         # 진행률 표시 (1000개마다 로그)
         if stats['total_cnt'] % 1000 == 0:
@@ -354,8 +801,23 @@ def create_complete_dataset_list(input_path, output_path, keyword=None, output_p
     print("\n")  # 진행률 표시 줄바꿈
     
     # 최종 통계 저장
-    np.savetxt(complete_annotation_path, stats['obj_annotation'], fmt='%2d', 
+    np.savetxt(complete_annotation_path, stats['obj_annotation'], fmt='%2d',
                delimiter=',', header='complete dataset annotation')
+
+    # 폴더별 수량 통계 저장 및 출력
+    with open(folder_stats_path, 'w', encoding='utf-8') as f:
+        f.write("폴더별 수량 통계\n")
+        f.write("=" * 80 + "\n")
+        f.write("폴더\t파일수\t어노테이션수\t라벨없음\t빈라벨\t에러\n")
+        for folder_name in sorted(stats['folder_stats'].keys()):
+            folder_stat = stats['folder_stats'][folder_name]
+            f.write(f"{folder_name}\t{folder_stat['total']}\t"
+                    f"{folder_stat['annotations']}\t"
+                    f"{folder_stat['no_label']}\t"
+                    f"{folder_stat['empty_label']}\t"
+                    f"{folder_stat['error']}\n")
+
+    print_folder_statistics(stats['folder_stats'])
     
     # 경로 문제 요약 저장
     if stats['path_issues']:
@@ -366,10 +828,18 @@ def create_complete_dataset_list(input_path, output_path, keyword=None, output_p
             for issue in stats['path_issues']:
                 f.write(f"{issue}\n")
     
+    report_text = build_dataset_report(stats, input_path, keyword)
+    with open(report_path, 'w', encoding='utf-8') as f:
+        f.write(report_text + "\n")
+    print("\n" + report_text)
+    stats['report_path'] = str(report_path)
+
     logger.info("전체 데이터셋 리스트 생성 완료")
+    logger.info(f"상세 리포트 저장: {report_path}")
     logger.info(f"처리된 파일: {stats['total_cnt']}개")
     logger.info(f"생성된 라벨: {stats['created_labels']}개")
     logger.info(f"에러 발생: {stats['error_cnt']}개")
+    logger.info(f"폴더별 수량 통계 저장: {folder_stats_path}")
 
     return stats
 
@@ -1313,6 +1783,709 @@ def create_balanced_class_dataset(input_path, output_path, num_files, target_cla
     logger.info("클래스 분포 균등화 데이터셋 생성 완료")
     return stats
 
+def parse_expand_target(user_input, base_count):
+    """
+    증강 목표 입력값을 최종 목표 개수로 변환
+
+    지원 형식:
+        '300'   -> 최종 총 300장
+        '3x'    -> 최종 총 base_count * 3 장
+        '3배'   -> 최종 총 base_count * 3 장
+        '2.5x'  -> 최종 총 base_count * 2.5 장 (내림)
+
+    Returns:
+        (target_count, err_msg) - 실패 시 (None, 오류메시지)
+    """
+    if not user_input:
+        return None, "입력값이 비어 있습니다."
+
+    text = user_input.strip().lower().replace(' ', '')
+    is_multiplier = False
+
+    for suffix in ('배', 'x', '*'):
+        if text.endswith(suffix):
+            text = text[:-len(suffix)]
+            is_multiplier = True
+            break
+
+    try:
+        value = float(text)
+    except ValueError:
+        return None, f"올바른 숫자 형식이 아닙니다: '{user_input}' (예: 300, 3x, 3배)"
+
+    if value <= 0:
+        return None, "0보다 큰 값을 입력해야 합니다."
+
+    if is_multiplier:
+        target_count = int(base_count * value)
+    else:
+        target_count = int(value)
+
+    if target_count <= 0:
+        return None, "계산된 목표 개수가 0입니다."
+
+    return target_count, None
+
+
+def collect_file_class_counts(image_files, logger=None):
+    """
+    이미지별 클래스 인스턴스 수 집계
+
+    Returns:
+        (file_class_counts, missing_label_files)
+            file_class_counts   - {image_path: {class_id: 인스턴스 수}}
+            missing_label_files - 라벨 파일이 없는 이미지 경로 리스트
+    """
+    file_class_counts = {}
+    missing_label_files = []
+
+    total = len(image_files)
+    for i, img_path in enumerate(image_files):
+        if total and (i + 1) % 200 == 0:
+            print(f"\r라벨 분석 진행률: {(i+1)/total*100:.1f}% ({i+1}/{total})", end='')
+
+        label_path = get_label_path_from_image(img_path)
+        counts = defaultdict(int)
+
+        if not os.path.isfile(label_path):
+            missing_label_files.append(img_path)
+        else:
+            try:
+                with open(label_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        split_line = line.strip().split()
+                        if not split_line or len(split_line) < 5:
+                            continue
+                        try:
+                            class_id = int(float(split_line[0]))
+                        except (ValueError, IndexError):
+                            continue
+                        if 0 <= class_id < 89:
+                            counts[class_id] += 1
+            except Exception as e:
+                if logger:
+                    logger.error(f"라벨 읽기 오류 {label_path}: {e}")
+
+        file_class_counts[img_path] = dict(counts)
+
+    if total:
+        print(f"\r라벨 분석 완료: {total}개 파일 분석                    ")
+
+    return file_class_counts, missing_label_files
+
+
+def parse_class_id_list(user_input):
+    """
+    클래스 ID 입력 문자열을 정수 리스트로 변환
+
+    지원 형식:
+        '0'        -> [0]
+        '0,2,5'    -> [0, 2, 5]
+        '0-3'      -> [0, 1, 2, 3]
+        '0-2,7'    -> [0, 1, 2, 7]
+
+    Returns:
+        (class_ids, err_msg) - 실패 시 (None, 오류메시지)
+    """
+    if not user_input or not user_input.strip():
+        return None, "클래스 ID를 입력해야 합니다."
+
+    class_ids = []
+    for token in user_input.replace(' ', '').split(','):
+        if not token:
+            continue
+
+        if '-' in token:  # 범위 입력 (예: 0-3)
+            start_text, _, end_text = token.partition('-')
+            try:
+                start, end = int(start_text), int(end_text)
+            except ValueError:
+                return None, f"올바른 클래스 ID 형식이 아닙니다: '{token}' (예: 0,2,5 또는 0-3)"
+            if start > end:
+                start, end = end, start
+            candidates = list(range(start, end + 1))
+        else:
+            try:
+                candidates = [int(token)]
+            except ValueError:
+                return None, f"올바른 클래스 ID 형식이 아닙니다: '{token}' (예: 0,2,5 또는 0-3)"
+
+        for class_id in candidates:
+            if not (0 <= class_id < 89):
+                return None, f"클래스 ID 범위를 벗어났습니다: {class_id} (사용 가능: 0~88)"
+            if class_id not in class_ids:
+                class_ids.append(class_id)
+
+    if not class_ids:
+        return None, "클래스 ID를 입력해야 합니다."
+
+    return class_ids, None
+
+
+def select_files_by_target_classes(base_files, file_class_counts, target_classes, match_mode='any'):
+    """
+    지정한 클래스가 포함된 이미지만 골라낸다
+
+    Args:
+        base_files: 원본 이미지 경로 리스트
+        file_class_counts: {image_path: {class_id: 인스턴스 수}}
+        target_classes: 대상 클래스 ID 리스트
+        match_mode: 'any' - 하나라도 포함(OR) / 'all' - 모두 포함(AND)
+
+    Returns:
+        (matched_files, skipped_files)
+    """
+    target_set = set(target_classes)
+    matched, skipped = [], []
+
+    for img_path in base_files:
+        classes = set((file_class_counts.get(img_path) or {}).keys())
+        if match_mode == 'all':
+            hit = bool(target_set) and target_set.issubset(classes)
+        else:
+            hit = bool(target_set & classes)
+
+        (matched if hit else skipped).append(img_path)
+
+    return matched, skipped
+
+
+def build_duplication_plan(base_files, need_copies, file_class_counts=None, balance_classes=False):
+    """
+    원본 파일별 복제 횟수 결정
+
+    Args:
+        base_files: 원본 이미지 경로 리스트
+        need_copies: 추가로 만들어야 할 복사본 수
+        file_class_counts: {image_path: {class_id: 인스턴스 수}}
+        balance_classes: True면 인스턴스 수가 적은 클래스를 포함한 이미지를 우선 복제
+
+    Returns:
+        {image_path: 복제 횟수} (0인 항목은 포함하지 않음)
+    """
+    plan = defaultdict(int)
+    n = len(base_files)
+
+    if need_copies <= 0 or n == 0:
+        return dict(plan)
+
+    if balance_classes and file_class_counts:
+        # 클래스별 현재 인스턴스 수 / 클래스별 후보 파일 목록
+        class_counts = defaultdict(int)
+        class_to_files = defaultdict(list)
+
+        for img_path in base_files:
+            for class_id, cnt in (file_class_counts.get(img_path) or {}).items():
+                class_counts[class_id] += cnt
+                class_to_files[class_id].append(img_path)
+
+        if class_counts:
+            class_ptr = defaultdict(int)
+            for _ in range(need_copies):
+                # 가장 인스턴스 수가 적은 클래스부터 채운다
+                weakest = min(sorted(class_counts.keys()), key=lambda c: class_counts[c])
+                candidates = class_to_files.get(weakest)
+                if not candidates:
+                    break
+
+                # 후보 파일을 순환하며 고르게 선택
+                pick = candidates[class_ptr[weakest] % len(candidates)]
+                class_ptr[weakest] += 1
+
+                plan[pick] += 1
+                for class_id, cnt in (file_class_counts.get(pick) or {}).items():
+                    class_counts[class_id] += cnt
+
+            assigned = sum(plan.values())
+            if assigned >= need_copies:
+                return dict(plan)
+            # 클래스 정보로 다 채우지 못한 경우 나머지는 균등 분배로 보충
+            need_copies -= assigned
+
+    # 균등 분배: 전체에 base_repeat회씩, 나머지는 등간격으로 1회 추가
+    base_repeat = need_copies // n
+    remainder = need_copies % n
+
+    if base_repeat:
+        for img_path in base_files:
+            plan[img_path] += base_repeat
+
+    if remainder:
+        step = n / remainder
+        used = set()
+        for k in range(remainder):
+            idx = int(k * step) % n
+            while idx in used:
+                idx = (idx + 1) % n
+            used.add(idx)
+            plan[base_files[idx]] += 1
+
+    return dict(plan)
+
+
+def build_duplicate_paths(img_path, label_path, dup_index, placement, output_root, taken_paths):
+    """
+    복사본 이미지/라벨 경로 생성 (파일명만 변경, 확장자/구조 유지)
+
+    Args:
+        placement: 'inplace' - 원본과 같은 폴더, 'new' - output_root 아래 새 폴더
+        taken_paths: 이번 실행에서 이미 예약된 경로 집합 (중복 방지)
+    """
+    directory, filename = os.path.split(img_path)
+    stem, ext = os.path.splitext(filename)
+
+    if placement == 'inplace':
+        img_dir = directory
+        label_dir = os.path.dirname(label_path)
+    else:
+        # 원본의 JPEGImages 이하 구조를 유지해야 labels 매핑이 그대로 동작한다
+        if 'JPEGImages' in img_path:
+            rel_dir = os.path.dirname(img_path.rsplit('JPEGImages', 1)[1]).strip('/\\')
+        else:
+            rel_dir = os.path.basename(directory)
+
+        img_dir = os.path.join(output_root, 'JPEGImages', rel_dir) if rel_dir \
+            else os.path.join(output_root, 'JPEGImages')
+        label_dir = os.path.join(output_root, 'labels', rel_dir) if rel_dir \
+            else os.path.join(output_root, 'labels')
+
+    # 파일명 충돌 회피 (이전 실행 결과 / 같은 이름의 다른 원본)
+    n = dup_index
+    for _ in range(100000):
+        new_stem = f"{stem}_dup{n:03d}"
+        new_img = os.path.join(img_dir, new_stem + ext)
+        new_label = os.path.join(label_dir, new_stem + '.txt')
+
+        if new_img not in taken_paths and not os.path.exists(new_img) and not os.path.exists(new_label):
+            taken_paths.add(new_img)
+            return new_img, new_label
+        n += 1
+
+    return None, None
+
+
+def replicate_file(src, dst, copy_mode, logger=None):
+    """
+    파일 1개 복제. hardlink/symlink 실패 시 실제 복사로 폴백
+
+    Returns:
+        실제 사용된 방식 문자열 ('copy'/'hardlink'/'symlink'), 실패 시 None
+    """
+    try:
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+
+        if copy_mode == 'hardlink':
+            try:
+                os.link(src, dst)
+                return 'hardlink'
+            except (OSError, NotImplementedError, AttributeError) as e:
+                if logger:
+                    logger.debug(f"하드링크 실패, 복사로 대체: {e}")
+
+        elif copy_mode == 'symlink':
+            try:
+                os.symlink(os.path.abspath(src), dst)
+                return 'symlink'
+            except (OSError, NotImplementedError, AttributeError) as e:
+                if logger:
+                    logger.debug(f"심볼릭 링크 실패, 복사로 대체: {e}")
+
+        shutil.copy2(src, dst)
+        return 'copy'
+
+    except Exception as e:
+        if logger:
+            logger.error(f"파일 복제 실패 {src} -> {dst}: {e}")
+        return None
+
+
+def expand_dataset_by_duplication(input_source, output_path, target_input,
+                                  placement='new', copy_mode='copy',
+                                  balance_classes=False, include_original_in_list=True,
+                                  auto_confirm=False, keyword=None,
+                                  target_classes=None, class_match_mode='any'):
+    """
+    이미지/라벨을 파일명만 바꿔 복제해 데이터셋 수량을 목표치까지 늘리는 함수
+
+    Args:
+        input_source: 이미지 폴더 또는 이미지 경로 리스트(.txt)
+        output_path: 결과(리스트/통계) 저장 경로. placement='new'면 복사본도 이 아래에 생성
+        target_input: 목표 수량 문자열 ('300', '3x', '3배')
+        placement: 'new' - 새 폴더에 복사본 생성 / 'inplace' - 원본과 같은 폴더에 생성
+        copy_mode: 'copy'(실제 복사) / 'hardlink' / 'symlink' / 'list'(파일 생성 없이 리스트만 중복)
+        balance_classes: True면 인스턴스가 적은 클래스를 우선 복제
+        include_original_in_list: 최종 리스트에 원본 포함 여부
+        auto_confirm: True면 실행 전 확인 프롬프트 생략
+        keyword: 파일명 필터 키워드
+        target_classes: 증강 대상 클래스 ID 리스트 (None이면 전체 DB 증강).
+                        지정하면 해당 클래스가 포함된 이미지만 복제하고,
+                        목표 수량도 '증강 대상 수량' 기준으로 계산한다.
+        class_match_mode: 'any' - 대상 클래스를 하나라도 포함(OR)
+                          'all' - 대상 클래스를 모두 포함(AND)
+
+    Returns:
+        stats 딕셔너리 (취소/실패 시 None)
+    """
+    output_path = Path(output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    logger = setup_logging(output_path)
+    logger.info(f"데이터셋 증강 복제 시작: 목표='{target_input}', 배치={placement}, 방식={copy_mode}")
+
+    # ── 1. 원본 수집 ────────────────────────────────────────────────
+    print("입력 경로에서 이미지 파일 찾는 중...")
+    base_files, filtered_cnt = collect_image_files_from_source(input_source, keyword)
+    base_files.sort()
+
+    base_count = len(base_files)
+    if base_count == 0:
+        print("오류: 입력 경로에 이미지 파일이 없습니다.")
+        logger.error("입력 경로에 이미지 파일이 없습니다.")
+        return None
+
+    print(f"원본 이미지: {base_count}개 (키워드 제외: {filtered_cnt}개)")
+    logger.info(f"원본 이미지 {base_count}개 수집")
+
+    # ── 2. 라벨 분석 (클래스 통계 / 클래스 필터 / 균형 복제용) ──────
+    print("라벨 파일 분석 중...")
+    file_class_counts, missing_label_files = collect_file_class_counts(base_files, logger)
+
+    if missing_label_files:
+        print(f"경고: 라벨 파일이 없는 이미지 {len(missing_label_files)}개 → 복사본은 빈 라벨로 생성됩니다.")
+        logger.warning(f"라벨 미존재 이미지 {len(missing_label_files)}개")
+
+    before_class_counts = defaultdict(int)
+    for counts in file_class_counts.values():
+        for class_id, cnt in counts.items():
+            before_class_counts[class_id] += cnt
+
+    # ── 3. 증강 대상 선별 (특정 클래스가 포함된 DB만 증강) ──────────
+    if target_classes:
+        target_classes = sorted(set(target_classes))
+        mode_text = '모두 포함(AND)' if class_match_mode == 'all' else '하나라도 포함(OR)'
+
+        dup_base_files, skipped_files = select_files_by_target_classes(
+            base_files, file_class_counts, target_classes, class_match_mode)
+
+        print(f"클래스 필터: {target_classes} - {mode_text}")
+        print(f"증강 대상 이미지: {len(dup_base_files)}개 / 증강 제외: {len(skipped_files)}개")
+        logger.info(f"클래스 필터 {target_classes}({class_match_mode}): "
+                    f"대상 {len(dup_base_files)}개, 제외 {len(skipped_files)}개")
+
+        if not dup_base_files:
+            print("오류: 지정한 클래스를 포함한 이미지가 없습니다.")
+            print("→ 클래스 ID 또는 매칭 모드(OR/AND)를 다시 확인하세요.")
+            logger.error("클래스 필터 결과가 비어 있어 작업을 중단합니다.")
+            return None
+    else:
+        dup_base_files = base_files
+        skipped_files = []
+
+    dup_base_count = len(dup_base_files)
+
+    # ── 4. 목표 수량 계산 (클래스 필터 시 '증강 대상 수량' 기준) ────
+    target_count, err_msg = parse_expand_target(target_input, dup_base_count)
+    if err_msg:
+        print(f"오류: {err_msg}")
+        return None
+
+    need_copies = target_count - dup_base_count
+    if need_copies <= 0:
+        base_label = "증강 대상 수량" if target_classes else "원본 수량"
+        print(f"목표 수량({target_count})이 {base_label}({dup_base_count}) 이하입니다.")
+        print("→ 수량을 줄이려면 메뉴 2(제한된 데이터셋 생성)를 사용하세요.")
+        logger.warning(f"목표 수량이 {base_label} 이하여서 작업을 중단합니다.")
+        return None
+
+    # ── 5. 복제 계획 수립 ───────────────────────────────────────────
+    plan = build_duplication_plan(dup_base_files, need_copies, file_class_counts, balance_classes)
+    planned_copies = sum(plan.values())
+
+    repeat_values = [plan.get(f, 0) for f in dup_base_files]
+    min_repeat = min(repeat_values) if repeat_values else 0
+    max_repeat = max(repeat_values) if repeat_values else 0
+
+    # 예상 디스크 사용량 (실제 복사 모드에서만 의미 있음)
+    sample = dup_base_files[:min(50, dup_base_count)]
+    sample_bytes = 0
+    sample_ok = 0
+    for f in sample:
+        try:
+            sample_bytes += os.path.getsize(f)
+            sample_ok += 1
+        except OSError:
+            continue
+    avg_bytes = (sample_bytes / sample_ok) if sample_ok else 0
+    est_gb = avg_bytes * planned_copies / (1024 ** 3)
+
+    print(f"\n{'='*60}")
+    print("증강 복제 계획")
+    print(f"{'='*60}")
+    print(f"원본 수량      : {base_count}개")
+    if target_classes:
+        print(f"클래스 필터    : {target_classes} - "
+              f"{'모두 포함(AND)' if class_match_mode == 'all' else '하나라도 포함(OR)'}")
+        print(f"증강 대상 수량 : {dup_base_count}개 (증강 제외 {len(skipped_files)}개)")
+        print(f"목표 수량      : {target_count}개 "
+              f"({target_count/dup_base_count:.2f}배, 증강 대상 기준)")
+    else:
+        print(f"목표 수량      : {target_count}개 ({target_count/dup_base_count:.2f}배)")
+    print(f"생성할 복사본  : {planned_copies}개")
+    print(f"파일별 복제 횟수: 최소 {min_repeat}회 ~ 최대 {max_repeat}회")
+    print(f"복제 배분      : {'클래스 균형 우선' if balance_classes else '전체 균등'}")
+    print(f"복사본 위치    : {'원본과 동일 폴더 (in-place)' if placement == 'inplace' else str(output_path / 'duplicated')}")
+    print(f"복제 방식      : {copy_mode}")
+    if copy_mode == 'copy':
+        print(f"예상 디스크    : 약 {est_gb:.2f} GB (이미지 기준)")
+    elif copy_mode == 'list':
+        print("예상 디스크    : 0 (파일 생성 없이 리스트에만 중복 기록)")
+    print(f"{'='*60}")
+
+    if not auto_confirm:
+        confirm = input("위 계획대로 진행할까요? (y/n): ").strip().lower()
+        if confirm != 'y':
+            print("작업을 취소했습니다.")
+            logger.info("사용자가 작업을 취소했습니다.")
+            return None
+
+    # ── 6. 복제 실행 ────────────────────────────────────────────────
+    dup_root = str(output_path / 'duplicated') if placement == 'new' else None
+
+    expanded_list_path = output_path / 'expanded_dataset.txt'
+    duplicated_list_path = output_path / 'duplicated_only.txt'
+    created_files_path = output_path / 'created_files.txt'
+    duplication_map_path = output_path / 'duplication_map.txt'
+    expanded_annotation_path = output_path / 'expanded_annotation.txt'
+    expansion_stats_path = output_path / 'expansion_stats.txt'
+
+    stats = {
+        'base_cnt': base_count,
+        'dup_base_cnt': dup_base_count,
+        'skipped_cnt': len(skipped_files),
+        'target_classes': list(target_classes) if target_classes else None,
+        'class_match_mode': class_match_mode if target_classes else None,
+        'target_cnt': target_count,
+        'planned_copies': planned_copies,
+        'created_cnt': 0,
+        'created_label_cnt': 0,
+        'empty_label_cnt': 0,
+        'error_cnt': 0,
+        'mode_counts': defaultdict(int),
+        'before_class_counts': dict(before_class_counts),
+        'after_class_counts': {},
+        'placement': placement,
+        'copy_mode': copy_mode,
+        'balance_classes': balance_classes,
+        'output_path': str(output_path),
+    }
+
+    duplicated_entries = []   # (원본, 복사본)
+    created_files = []        # 롤백용: 실제로 만들어진 모든 파일
+    taken_paths = set()
+    after_class_counts = defaultdict(int, before_class_counts)
+
+    processed = 0
+    for img_path in dup_base_files:
+        repeat = plan.get(img_path, 0)
+        if repeat <= 0:
+            continue
+
+        label_path = get_label_path_from_image(img_path)
+        label_exists = os.path.isfile(label_path)
+
+        for k in range(1, repeat + 1):
+            processed += 1
+
+            if copy_mode == 'list':
+                # 파일을 만들지 않고 리스트에만 중복 경로를 기록
+                duplicated_entries.append((img_path, img_path))
+                stats['created_cnt'] += 1
+                stats['mode_counts']['list'] += 1
+            else:
+                new_img, new_label = build_duplicate_paths(
+                    img_path, label_path, k, placement, dup_root, taken_paths)
+
+                if not new_img:
+                    logger.error(f"복사본 경로 생성 실패: {img_path}")
+                    stats['error_cnt'] += 1
+                    continue
+
+                used_mode = replicate_file(img_path, new_img, copy_mode, logger)
+                if not used_mode:
+                    stats['error_cnt'] += 1
+                    continue
+
+                created_files.append(new_img)
+                stats['created_cnt'] += 1
+                stats['mode_counts'][used_mode] += 1
+
+                # 라벨도 같은 이름으로 복제 (없으면 빈 라벨 생성)
+                if label_exists:
+                    label_mode = replicate_file(label_path, new_label, copy_mode, logger)
+                    if label_mode:
+                        created_files.append(new_label)
+                        stats['created_label_cnt'] += 1
+                    else:
+                        stats['error_cnt'] += 1
+                else:
+                    if create_empty_label(new_label, logger):
+                        created_files.append(new_label)
+                        stats['empty_label_cnt'] += 1
+                    else:
+                        stats['error_cnt'] += 1
+
+                duplicated_entries.append((img_path, new_img))
+
+            # 클래스 통계 누적
+            for class_id, cnt in (file_class_counts.get(img_path) or {}).items():
+                after_class_counts[class_id] += cnt
+
+            if processed % 20 == 0 or processed == planned_copies:
+                print(f"\r복제 진행률: {processed/planned_copies*100:.1f}% "
+                      f"({processed}/{planned_copies}) | 생성: {stats['created_cnt']} | "
+                      f"에러: {stats['error_cnt']}", end='')
+
+    print()
+    stats['after_class_counts'] = dict(after_class_counts)
+
+    # ── 7. 결과 파일 저장 ───────────────────────────────────────────
+    with open(expanded_list_path, 'w', encoding='utf-8') as f:
+        if include_original_in_list:
+            for img_path in base_files:
+                f.write(f"{img_path}\n")
+        for _, dup_path in duplicated_entries:
+            f.write(f"{dup_path}\n")
+
+    with open(duplicated_list_path, 'w', encoding='utf-8') as f:
+        for _, dup_path in duplicated_entries:
+            f.write(f"{dup_path}\n")
+
+    with open(duplication_map_path, 'w', encoding='utf-8') as f:
+        f.write("# 원본경로\t복사본경로\n")
+        for src, dup_path in duplicated_entries:
+            f.write(f"{src}\t{dup_path}\n")
+
+    with open(created_files_path, 'w', encoding='utf-8') as f:
+        f.write("# 이번 작업으로 생성된 파일 목록 (롤백용 - 메뉴 14의 '복제 취소'에서 사용)\n")
+        for path in created_files:
+            f.write(f"{path}\n")
+
+    # 클래스 통계를 기존 포맷(90칸 배열)으로도 저장
+    obj_annotation = np.zeros(90)
+    for class_id, cnt in after_class_counts.items():
+        if 0 <= class_id < 89:
+            obj_annotation[class_id + 1] = cnt
+    obj_annotation[0] = sum(after_class_counts.values())
+    np.savetxt(expanded_annotation_path, obj_annotation, fmt='%2d',
+               delimiter=',', header='expanded dataset annotation')
+    stats['obj_annotation'] = obj_annotation
+
+    final_total = (base_count if include_original_in_list else 0) + len(duplicated_entries)
+
+    with open(expansion_stats_path, 'w', encoding='utf-8') as f:
+        f.write("=== 데이터셋 증강 복제 통계 ===\n\n")
+        f.write(f"입력 경로       : {input_source}\n")
+        f.write(f"출력 경로       : {output_path}\n")
+        f.write(f"복사본 위치     : {'원본과 동일 폴더 (in-place)' if placement == 'inplace' else dup_root}\n")
+        f.write(f"복제 방식       : {copy_mode}\n")
+        f.write(f"복제 배분       : {'클래스 균형 우선' if balance_classes else '전체 균등'}\n")
+        if target_classes:
+            f.write(f"증강 대상 클래스: {target_classes} "
+                    f"({'모두 포함(AND)' if class_match_mode == 'all' else '하나라도 포함(OR)'})\n")
+        else:
+            f.write("증강 대상 클래스: 전체 (필터 없음)\n")
+        f.write("\n")
+        f.write(f"원본 수량       : {base_count}개\n")
+        if target_classes:
+            f.write(f"증강 대상 수량  : {dup_base_count}개 (증강 제외 {len(skipped_files)}개)\n")
+        f.write(f"목표 수량       : {target_count}개\n")
+        f.write(f"생성한 복사본   : {stats['created_cnt']}개\n")
+        f.write(f"복제한 라벨     : {stats['created_label_cnt']}개\n")
+        f.write(f"빈 라벨 생성    : {stats['empty_label_cnt']}개\n")
+        f.write(f"에러            : {stats['error_cnt']}개\n")
+        f.write(f"최종 리스트 수량: {final_total}개 (원본 포함: {'예' if include_original_in_list else '아니오'})\n\n")
+
+        f.write("클래스별 인스턴스 수 (증강 전 → 증강 후):\n")
+        all_classes = sorted(set(before_class_counts) | set(after_class_counts))
+        for class_id in all_classes:
+            before = before_class_counts.get(class_id, 0)
+            after = after_class_counts.get(class_id, 0)
+            ratio = (after / before) if before else 0
+            f.write(f"  클래스 {class_id}: {before} → {after} ({ratio:.2f}배)\n")
+
+    logger.info(f"증강 복제 완료: 복사본 {stats['created_cnt']}개, 최종 {final_total}개")
+    stats['final_total'] = final_total
+    return stats
+
+
+def rollback_duplication(created_files_path):
+    """
+    created_files.txt에 기록된 파일만 삭제해 증강 작업을 되돌리는 함수
+
+    Returns:
+        (deleted_cnt, missing_cnt, error_cnt) / 실패 시 None
+    """
+    if not os.path.isfile(created_files_path):
+        print(f"오류: 파일을 찾을 수 없습니다: {created_files_path}")
+        return None
+
+    targets = []
+    try:
+        with open(created_files_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                path = line.strip()
+                if not path or path.startswith('#'):
+                    continue
+                targets.append(path)
+    except Exception as e:
+        print(f"오류: 목록 파일 읽기 실패: {e}")
+        return None
+
+    if not targets:
+        print("삭제할 파일이 없습니다.")
+        return (0, 0, 0)
+
+    existing = [p for p in targets if os.path.isfile(p)]
+    print(f"\n삭제 대상: 기록 {len(targets)}개 중 실제 존재 {len(existing)}개")
+    for path in existing[:5]:
+        print(f"  예시: {path}")
+    if len(existing) > 5:
+        print(f"  ... 외 {len(existing) - 5}개")
+
+    confirm = input(f"\n위 {len(existing)}개 파일을 삭제할까요? (yes 입력 시 삭제): ").strip().lower()
+    if confirm != 'yes':
+        print("삭제를 취소했습니다.")
+        return None
+
+    deleted_cnt = 0
+    missing_cnt = 0
+    error_cnt = 0
+    touched_dirs = set()
+
+    for path in targets:
+        if not os.path.isfile(path):
+            missing_cnt += 1
+            continue
+        try:
+            os.remove(path)
+            deleted_cnt += 1
+            touched_dirs.add(os.path.dirname(path))
+        except Exception as e:
+            print(f"\n삭제 실패 {path}: {e}")
+            error_cnt += 1
+
+    # 비어버린 디렉토리 정리 (하위부터)
+    for directory in sorted(touched_dirs, key=len, reverse=True):
+        try:
+            if os.path.isdir(directory) and not os.listdir(directory):
+                os.rmdir(directory)
+        except OSError:
+            pass
+
+    print(f"\n삭제 완료: {deleted_cnt}개 | 이미 없음: {missing_cnt}개 | 실패: {error_cnt}개")
+    return (deleted_cnt, missing_cnt, error_cnt)
+
+
 def extract_background_images(input_path, output_path):
     """어노테이션이 없는 배경 이미지만 추출하는 함수"""
     output_path = Path(output_path)
@@ -1465,6 +2638,204 @@ def _collect_file_classes(all_files):
         file_classes[path] = frozenset(classes)
     print()
     return file_classes
+
+
+def _read_label_counts(image_path):
+    """Return YOLO annotation counts for one image as {class_id: count}."""
+    counts = defaultdict(int)
+    label_path = get_label_path_from_image(image_path)
+    if not os.path.isfile(label_path):
+        return counts
+    try:
+        with open(label_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) < 5:
+                    continue
+                try:
+                    class_id = int(float(parts[0]))
+                except (ValueError, IndexError):
+                    continue
+                if 0 <= class_id < 89:
+                    counts[class_id] += 1
+    except (OSError, UnicodeError):
+        pass
+    return counts
+
+
+def _select_annotation_balanced(records, target_count, target_class_counts,
+                                seed=42, phase='균형 샘플링'):
+    """Select exactly target_count records while following class annotation quotas.
+
+    A class-deficit driven sampler is used instead of sampling each class separately,
+    because one image may contain several classes. This avoids duplicate image paths
+    and handles multi-label images naturally.
+    """
+    if target_count >= len(records):
+        return list(records)
+    if target_count <= 0:
+        return []
+
+    rng = random.Random(seed)
+    buckets = defaultdict(list)
+    for idx, record in enumerate(records):
+        for class_id in record['counts']:
+            buckets[class_id].append(idx)
+
+    selected = set()
+    selected_counts = defaultdict(int)
+    class_ids = sorted(target_class_counts)
+    active_classes = set(class_ids)
+
+    while len(selected) < target_count and active_classes:
+        # Do not rebuild a filtered copy of a large class bucket on every round.
+        # A 600k-image DB can otherwise become effectively O(images * target).
+        candidates = [c for c in active_classes
+                      if selected_counts[c] < target_class_counts[c]]
+        if not candidates:
+            break
+        class_id = max(
+            candidates,
+            key=lambda c: ((target_class_counts[c] - selected_counts[c]) /
+                           max(1, target_class_counts[c]), rng.random()))
+
+        # Evaluate a small random candidate window. It keeps 100k-image datasets
+        # fast while preferring images that fill the remaining class deficits.
+        bucket = buckets[class_id]
+        window = []
+        max_attempts = min(max(64, len(bucket) * 2), 256)
+        for _ in range(max_attempts):
+            candidate = bucket[rng.randrange(len(bucket))]
+            if candidate not in selected and candidate not in window:
+                window.append(candidate)
+                if len(window) == 32:
+                    break
+        if not window:
+            active_classes.discard(class_id)
+            continue
+
+        def candidate_score(i):
+            score = 0.0
+            for c, amount in records[i]['counts'].items():
+                deficit = max(0, target_class_counts.get(c, 0) - selected_counts[c])
+                score += min(amount, deficit) / max(1, target_class_counts.get(c, 1))
+            return score + rng.random() * 1e-6
+        chosen = max(window, key=candidate_score)
+        selected.add(chosen)
+        for c, amount in records[chosen]['counts'].items():
+            selected_counts[c] += amount
+        if len(selected) % 1000 == 0 or len(selected) == target_count:
+            print(f"\r{phase}: {len(selected)}/{target_count}",
+                  end='', flush=True)
+
+    if selected:
+        print(flush=True)
+
+    # Fill the remaining image slots (mostly background-only images).
+    remaining = [i for i in range(len(records)) if i not in selected]
+    rng.shuffle(remaining)
+    selected.update(remaining[:target_count - len(selected)])
+    print(f"\r{phase}: {len(selected)}/{target_count}", flush=True)
+    return [records[i] for i in sorted(selected)]
+
+
+def _annotation_balanced_limited_dataset(input_path, output_path, num_files,
+                                         train_rate=0.8, seed=42):
+    """Create limited train/valid lists with class-wise annotation proportions."""
+    output_path = Path(output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+    all_files, _ = collect_image_files_from_source(input_path)
+    if not all_files:
+        raise ValueError('입력 데이터에서 JPG/JPEG 이미지를 찾지 못했습니다.')
+
+    records = []
+    total_counts = defaultdict(int)
+    for i, image_path in enumerate(all_files, 1):
+        counts = _read_label_counts(image_path)
+        records.append({'path': image_path, 'counts': dict(counts)})
+        for class_id, amount in counts.items():
+            total_counts[class_id] += amount
+        if i % 500 == 0 or i == len(all_files):
+            print(f'\r어노테이션 분석: {i}/{len(all_files)}',
+                  end='', flush=True)
+    print(flush=True)
+
+    target_count = min(int(num_files), len(records))
+    target_counts = {
+        c: int(round(amount * target_count / len(records)))
+        for c, amount in total_counts.items()
+    }
+    print(f'전체 균형 선택 시작: {target_count}장', flush=True)
+    selected = _select_annotation_balanced(
+        records, target_count, target_counts, seed, '전체 균형 선택')
+    selected_counts = defaultdict(int)
+    for record in selected:
+        for c, amount in record['counts'].items():
+            selected_counts[c] += amount
+
+    train_count = int(round(target_count * train_rate))
+    valid_count = target_count - train_count
+    valid_rate = 1.0 - train_rate
+    valid_targets = {c: int(round(amount * valid_rate))
+                     for c, amount in selected_counts.items()}
+    # VALID is the smaller split, so balance it first. TRAIN becomes the
+    # complement; this prevents the large TRAIN selection from swallowing
+    # additional instances of multi-label classes.
+    print(f'VALID 균형 선택 시작: {valid_count}장', flush=True)
+    valid_records = _select_annotation_balanced(
+        selected, valid_count, valid_targets, seed + 1, 'VALID 균형 선택')
+    valid_paths = {r['path'] for r in valid_records}
+    train_records = [r for r in selected if r['path'] not in valid_paths]
+
+    train_path = output_path / 'train.txt'
+    valid_path = output_path / 'valid.txt'
+    train_annotation_path = output_path / 'train_annotation.txt'
+    valid_annotation_path = output_path / 'val_annotation.txt'
+    train_annotation = np.zeros(90, dtype=int)
+    valid_annotation = np.zeros(90, dtype=int)
+
+    def write_split(path, annotation, split_records):
+        with open(path, 'w', encoding='utf-8') as f:
+            for record in split_records:
+                f.write(record['path'] + '\n')
+                for c, amount in record['counts'].items():
+                    annotation[c + 1] += amount
+                    annotation[0] += amount
+
+    print('TRAIN/VALID 리스트 및 annotation 통계 저장 중...', flush=True)
+    write_split(train_path, train_annotation, train_records)
+    write_split(valid_path, valid_annotation, valid_records)
+    np.savetxt(train_annotation_path, train_annotation, fmt='%d', delimiter=',',
+               header='train annotation')
+    np.savetxt(valid_annotation_path, valid_annotation, fmt='%d', delimiter=',',
+               header='valid annotation')
+
+    info_path = output_path / 'limited_balanced_info.txt'
+    with open(info_path, 'w', encoding='utf-8') as f:
+        f.write('=== 제한 수량 클래스별 어노테이션 균형 생성 결과 ===\n')
+        f.write(f'입력 이미지 수: {len(records)}\n')
+        f.write(f'선택 이미지 수: {len(selected)}\n')
+        f.write(f'TRAIN 이미지 수: {len(train_records)}\n')
+        f.write(f'VALID 이미지 수: {len(valid_records)}\n')
+        f.write(f'TRAIN 비율: {train_rate:.4f}\n')
+        f.write(f'시드: {seed}\n\n')
+        f.write('class,total_selected,train,valid,train_ratio\n')
+        for c in sorted(selected_counts):
+            total = selected_counts[c]
+            train = int(train_annotation[c + 1])
+            ratio = train / total if total else 0
+            f.write(f'{c},{total},{train},{int(valid_annotation[c + 1])},{ratio:.6f}\n')
+
+    return {
+        'selected_cnt': len(selected),
+        'train_img_cnt': len(train_records),
+        'valid_img_cnt': len(valid_records),
+        'train_annotations': int(train_annotation[0]),
+        'valid_annotations': int(valid_annotation[0]),
+        'train_annotation': train_annotation,
+        'valid_annotation': valid_annotation,
+        'output_path': str(output_path),
+    }
 
 
 def _print_valid_class_warnings(valid_files, file_classes, min_threshold=10):
@@ -2436,6 +3807,341 @@ def process_dataset_advanced(input_path, output_path, train_rate=0.8, skip_rate=
     logger.info("고급 데이터셋 처리 완료")
     return stats
 
+PAIR_IMAGE_EXTS = ('.jpg', '.jpeg', '.png', '.bmp')
+PAIR_IGNORE_TXT = {'classes.txt', 'class.txt', 'obj.names'}
+PAIR_MOVE_LOG_NAME = 'pair_move_log.tsv'
+
+
+def _path_key(path):
+    """대소문자/구분자 차이를 무시한 비교용 경로 키"""
+    return os.path.normcase(os.path.normpath(os.path.abspath(path)))
+
+
+def _is_under(path, root):
+    """path가 root 하위(또는 동일)인지 확인"""
+    try:
+        return os.path.commonpath([_path_key(path), _path_key(root)]) == _path_key(root)
+    except ValueError:  # 서로 다른 드라이브
+        return False
+
+
+def _candidate_label_paths(image_path):
+    """
+    이미지에 대응할 수 있는 라벨 경로 후보 목록
+    1) .../JPEGImages/.../a.jpg -> .../labels/.../a.txt (마지막 JPEGImages 세그먼트 치환)
+    2) 이미지와 같은 폴더의 a.txt
+    3) get_label_path_from_image() 규칙
+    """
+    stem = os.path.splitext(image_path)[0]
+    seen = set()
+
+    def _new(c):
+        k = _path_key(c)
+        if k in seen:
+            return False
+        seen.add(k)
+        return True
+
+    parts = stem.replace('\\', '/').split('/')
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i].lower() in ('jpegimages', 'images'):
+            c = os.path.normpath('/'.join(parts[:i] + ['labels'] + parts[i + 1:]) + '.txt')
+            if _new(c):
+                yield c
+            break
+    c = os.path.normpath(stem + '.txt')
+    if _new(c):
+        yield c
+    # 파일시스템 탐색이 필요한 기존 규칙은 마지막에만 시도
+    try:
+        legacy = get_label_path_from_image(image_path)
+        if legacy.lower().endswith('.txt'):
+            c = os.path.normpath(legacy)
+            if _new(c):
+                yield c
+    except Exception:
+        pass
+
+
+def _scan_image_label_folder(input_path, exclude_dirs=()):
+    """
+    폴더를 순회해 이미지/라벨 후보 파일 수집
+    - 라벨 후보: 경로에 'labels' 폴더가 포함된 .txt 이거나, 이미지와 같은 폴더에 있는 .txt
+      (train.txt 같은 리스트 파일이 라벨로 오인되지 않도록 제한)
+    """
+    images = []
+    txt_files = []
+    image_dirs = set()
+    exclude_keys = [_path_key(d) for d in exclude_dirs if d]
+
+    for root, dirs, files in os.walk(input_path):
+        if any(_is_under(root, ex) for ex in exclude_keys):
+            dirs[:] = []
+            continue
+        has_image = False
+        for name in files:
+            lower = name.lower()
+            full = os.path.join(root, name)
+            if lower.endswith(PAIR_IMAGE_EXTS):
+                images.append(full)
+                has_image = True
+            elif lower.endswith('.txt') and lower not in PAIR_IGNORE_TXT:
+                txt_files.append(full)
+        if has_image:
+            image_dirs.add(_path_key(root))
+
+    labels = []
+    for txt in txt_files:
+        segs = [s.lower() for s in txt.replace('\\', '/').split('/')[:-1]]
+        if 'labels' in segs or _path_key(os.path.dirname(txt)) in image_dirs:
+            labels.append(txt)
+    return images, labels
+
+
+def analyze_image_label_pairs(input_path, exclude_dirs=()):
+    """
+    이미지-라벨 매칭 분석
+
+    Returns:
+        dict: matched(list of (img, label)), image_only(list), label_only(list),
+              empty_label_cnt, total_images, total_labels
+    """
+    images, labels = _scan_image_label_folder(input_path, exclude_dirs)
+    label_by_key = {_path_key(p): p for p in labels}
+    claimed = set()
+    matched = []
+    image_only = []
+
+    for img in sorted(images):
+        found = None
+        for cand in _candidate_label_paths(img):
+            k = _path_key(cand)
+            if k in label_by_key and k not in claimed:
+                found = label_by_key[k]
+                claimed.add(k)
+                break
+        if found:
+            matched.append((img, found))
+        else:
+            image_only.append(img)
+
+    label_only = sorted(p for k, p in label_by_key.items() if k not in claimed)
+
+    empty_label_cnt = 0
+    for _, lbl in matched:
+        try:
+            if os.path.getsize(lbl) == 0:
+                empty_label_cnt += 1
+        except OSError:
+            pass
+
+    return {
+        'matched': matched,
+        'image_only': image_only,
+        'label_only': label_only,
+        'empty_label_cnt': empty_label_cnt,
+        'total_images': len(images),
+        'total_labels': len(labels),
+    }
+
+
+def _unique_dest(path):
+    """이동 대상 경로가 이미 있으면 _dup1, _dup2 ... 를 붙인 경로 반환"""
+    if not os.path.exists(path):
+        return path
+    base, ext = os.path.splitext(path)
+    n = 1
+    while os.path.exists(f"{base}_dup{n}{ext}"):
+        n += 1
+    return f"{base}_dup{n}{ext}"
+
+
+def _write_path_list(path, header, items):
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(f"# {header}\n")
+        for item in items:
+            f.write(f"{item}\n")
+
+
+def separate_unmatched_pairs(input_path, move_root, do_move=True):
+    """
+    이미지/라벨 폴더 전체 분석 후 매칭 안 되는 파일을 move_root로 분리 이동
+
+    move_root/
+      images_without_label/<입력 기준 상대경로>
+      labels_without_image/<입력 기준 상대경로>
+      matched_images.txt, image_only.txt, label_only.txt, pair_report.txt
+      pair_move_log.tsv (원본경로<TAB>이동경로, 복원용)
+    """
+    input_path = os.path.abspath(input_path)
+    move_root = os.path.abspath(move_root)
+    if _is_under(input_path, move_root):
+        print("오류: 이동 경로는 입력 경로와 같거나 입력 경로의 상위 폴더일 수 없습니다.")
+        return None
+    os.makedirs(move_root, exist_ok=True)
+
+    print("\n분석 중... (파일이 많으면 시간이 걸릴 수 있습니다)")
+    result = analyze_image_label_pairs(input_path, exclude_dirs=[move_root])
+    matched = result['matched']
+    image_only = result['image_only']
+    label_only = result['label_only']
+
+    # 폴더별 통계
+    dir_stats = defaultdict(lambda: {'matched': 0, 'image_only': 0, 'label_only': 0})
+
+    def _dir_key(p):
+        rel = os.path.relpath(os.path.dirname(p), input_path)
+        return '(root)' if rel == '.' else rel.replace(os.sep, '/')
+
+    for img, _ in matched:
+        dir_stats[_dir_key(img)]['matched'] += 1
+    for img in image_only:
+        dir_stats[_dir_key(img)]['image_only'] += 1
+    for lbl in label_only:
+        dir_stats[_dir_key(lbl)]['label_only'] += 1
+
+    # 리포트/리스트 저장
+    _write_path_list(os.path.join(move_root, 'matched_images.txt'),
+                     '이미지-라벨 매칭된 정상 이미지 목록 (분석 시점 원본 경로)',
+                     [img for img, _ in matched])
+    _write_path_list(os.path.join(move_root, 'image_only.txt'),
+                     '라벨 없는 이미지 목록 (분석 시점 원본 경로)', image_only)
+    _write_path_list(os.path.join(move_root, 'label_only.txt'),
+                     '이미지 없는 라벨 목록 (분석 시점 원본 경로)', label_only)
+
+    lines = [
+        "=== 이미지/라벨 매칭 분석 결과 ===",
+        f"입력 경로: {input_path}",
+        f"전체 이미지 파일: {result['total_images']}개",
+        f"전체 라벨 파일: {result['total_labels']}개",
+        f"정상 DB (이미지-라벨 매칭): {len(matched)}쌍 (빈 라벨 {result['empty_label_cnt']}개 포함)",
+        f"라벨 없는 이미지: {len(image_only)}개",
+        f"이미지 없는 라벨: {len(label_only)}개",
+        "",
+        "폴더별 통계 (매칭 / 라벨없는이미지 / 이미지없는라벨):",
+    ]
+    for d in sorted(dir_stats):
+        s = dir_stats[d]
+        mark = '  <-- 불일치' if s['image_only'] or s['label_only'] else ''
+        lines.append(f"  {d}: {s['matched']} / {s['image_only']} / {s['label_only']}{mark}")
+    report = "\n".join(lines)
+    with open(os.path.join(move_root, 'pair_report.txt'), 'w', encoding='utf-8') as f:
+        f.write(report + "\n")
+    print("\n" + report)
+
+    stats = {
+        'total_images': result['total_images'],
+        'total_labels': result['total_labels'],
+        'matched_cnt': len(matched),
+        'empty_label_cnt': result['empty_label_cnt'],
+        'image_only_cnt': len(image_only),
+        'label_only_cnt': len(label_only),
+        'moved_cnt': 0,
+        'move_error_cnt': 0,
+        'move_root': move_root,
+    }
+
+    unmatched_total = len(image_only) + len(label_only)
+    if unmatched_total == 0:
+        print("\n불일치 파일이 없습니다. 이동할 파일이 없습니다.")
+        return stats
+    if not do_move:
+        print("\n분석만 수행했습니다 (파일 이동 없음).")
+        return stats
+
+    print(f"\n이동 위치:")
+    print(f"  라벨 없는 이미지 -> {os.path.join(move_root, 'images_without_label')}")
+    print(f"  이미지 없는 라벨 -> {os.path.join(move_root, 'labels_without_image')}")
+    confirm = input(f"\n불일치 파일 {unmatched_total}개를 이동할까요? (yes 입력 시 이동): ").strip().lower()
+    if confirm != 'yes':
+        print("이동을 취소했습니다. (분석 결과 파일은 저장됨)")
+        return stats
+
+    log_path = os.path.join(move_root, PAIR_MOVE_LOG_NAME)
+    log_exists = os.path.exists(log_path)
+    plan = ([(p, 'images_without_label') for p in image_only] +
+            [(p, 'labels_without_image') for p in label_only])
+
+    with open(log_path, 'a', encoding='utf-8') as log:
+        if not log_exists:
+            log.write("# 원본경로\t이동경로 (복원 시 사용)\n")
+        for i, (src, sub) in enumerate(plan, 1):
+            rel = os.path.relpath(src, input_path)
+            dst = _unique_dest(os.path.join(move_root, sub, rel))
+            try:
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.move(src, dst)
+                log.write(f"{src}\t{dst}\n")
+                log.flush()
+                stats['moved_cnt'] += 1
+            except Exception as e:
+                print(f"\n이동 실패 {src}: {e}")
+                stats['move_error_cnt'] += 1
+            if i % 500 == 0 or i == len(plan):
+                print(f"\r이동 진행: {i}/{len(plan)}", end='', flush=True)
+    print()
+
+    print(f"\n이동 완료: {stats['moved_cnt']}개 | 실패: {stats['move_error_cnt']}개")
+    print(f"이동 기록: {log_path}")
+    return stats
+
+
+def restore_moved_pairs(log_path):
+    """pair_move_log.tsv 를 읽어 이동했던 파일을 원래 위치로 되돌림"""
+    if os.path.isdir(log_path):
+        log_path = os.path.join(log_path, PAIR_MOVE_LOG_NAME)
+    if not os.path.isfile(log_path):
+        print(f"오류: 이동 기록 파일을 찾을 수 없습니다: {log_path}")
+        return None
+
+    entries = []
+    with open(log_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.rstrip('\n')
+            if not line or line.startswith('#') or '\t' not in line:
+                continue
+            src, dst = line.split('\t', 1)
+            entries.append((src, dst))
+
+    if not entries:
+        print("복원할 기록이 없습니다.")
+        return (0, 0, 0)
+
+    confirm = input(f"\n{len(entries)}개 파일을 원래 위치로 되돌릴까요? (yes 입력 시 복원): ").strip().lower()
+    if confirm != 'yes':
+        print("복원을 취소했습니다.")
+        return None
+
+    restored = skipped = errors = 0
+    remaining = []
+    for src, dst in reversed(entries):
+        if not os.path.exists(dst):
+            skipped += 1
+            continue
+        if os.path.exists(src):
+            print(f"건너뜀 (원래 위치에 이미 파일 존재): {src}")
+            skipped += 1
+            remaining.append((src, dst))
+            continue
+        try:
+            os.makedirs(os.path.dirname(src), exist_ok=True)
+            shutil.move(dst, src)
+            restored += 1
+        except Exception as e:
+            print(f"복원 실패 {dst}: {e}")
+            errors += 1
+            remaining.append((src, dst))
+
+    # 복원된 항목은 기록에서 제거 (남은 항목만 유지)
+    with open(log_path, 'w', encoding='utf-8') as f:
+        f.write("# 원본경로\t이동경로 (복원 시 사용)\n")
+        for src, dst in reversed(remaining):
+            f.write(f"{src}\t{dst}\n")
+
+    print(f"\n복원 완료: {restored}개 | 건너뜀: {skipped}개 | 실패: {errors}개")
+    return (restored, skipped, errors)
+
+
 def test_path_generation():
     """경로 생성 함수 테스트"""
     test_cases = [
@@ -2489,9 +4195,12 @@ def main():
             print("11. 특정 클래스 없는 파일 리스트 생성 (NEW!)")
             print("12. 클래스 분포 균등화 데이터셋 생성 (NEW!)")
             print("13. 라벨 미존재 이미지 리스트 생성 (NEW!)")
-            print("14. 종료")
+            print("14. DB 증강 복제 - 목표 수량까지 파일 복사로 늘리기 (NEW!)")
+            print("15. 제한 수량 + 클래스별 TRAIN/VALID 균형 리스트 생성 (NEW!)")
+            print("16. 이미지/라벨 매칭 검사 + 불일치 파일 분리 이동 (NEW!)")
+            print("17. 종료")
 
-            choice = input("\n작업을 선택하세요 (1-14): ")
+            choice = input("\n작업을 선택하세요 (1-17): ")
             
             if choice == '1':
                 # 데이터셋 처리 기능
@@ -2657,6 +4366,21 @@ def main():
                 keyword_input = input("파일명 필터링 키워드를 입력하세요 (없으면 Enter): ").strip()
                 keyword = keyword_input if keyword_input else None
 
+                # 객체 크기 분석 옵션
+                size_options = None
+                if input("객체 크기 분석 포함? (y/n, 기본값 n: Enter): ").strip().lower() == 'y':
+                    try:
+                        area_bounds = parse_percent_bounds(
+                            input("면적(√w×h) 구간 경계 % (기본 1,3,10,30: Enter): "), SIZE_AREA_BOUNDS)
+                        height_bounds = parse_percent_bounds(
+                            input("세로(높이) 구간 경계 % (기본 2,5,10,25: Enter): "), SIZE_HEIGHT_BOUNDS)
+                    except ValueError as e:
+                        print(f"오류: {e}")
+                        continue
+                    size_options = {'area_bounds': area_bounds, 'height_bounds': height_bounds}
+                    if _PILImage is None:
+                        print("경고: PIL이 없어 해상도를 읽을 수 없습니다. 비율 통계만 표시합니다.")
+
                 if process_mode == '2':
                     # ── 폴더별 분리 모드 ──────────────────────────────────────
                     subfolders = [f for f in os.listdir(input_path)
@@ -2715,11 +4439,12 @@ def main():
                             if output_mode == '2' and common_output_path:
                                 stats = create_complete_dataset_list(
                                     folder_path, folder_output_path,
-                                    keyword=keyword, output_prefix=folder)
+                                    keyword=keyword, output_prefix=folder,
+                                    size_options=size_options)
                             else:
                                 stats = create_complete_dataset_list(
                                     folder_path, folder_output_path,
-                                    keyword=keyword)
+                                    keyword=keyword, size_options=size_options)
 
                             if stats:
                                 total_stats['processed_folders'] += 1
@@ -2769,7 +4494,8 @@ def main():
                         print(f"키워드 필터: '{keyword}'")
 
                     try:
-                        stats = create_complete_dataset_list(input_path, output_path, keyword=keyword)
+                        stats = create_complete_dataset_list(input_path, output_path, keyword=keyword,
+                                                             size_options=size_options)
 
                         if stats:
                             print("\n전체 데이터셋 리스트 생성 완료!")
@@ -2778,8 +4504,7 @@ def main():
                                 print(f"키워드 필터로 제외된 파일: {stats['filtered_cnt']}개")
                             print(f"에러 발생 수: {stats['error_cnt']}개")
                             print(f"생성된 라벨: {stats['created_labels']}개")
-
-                            print_class_statistics(stats['obj_annotation'], "클래스별 통계")
+                            print(f"상세 리포트: {stats['report_path']}")
 
                     except Exception as e:
                         print(f"\n데이터 처리 중 오류 발생: {e}")
@@ -3282,6 +5007,228 @@ def main():
                     traceback.print_exc()
 
             elif choice == '14':
+                # DB 증강 복제 (오버샘플링)
+                print("\n=== DB 증강 복제 ===")
+                print("특정 클래스만 추출한 리스트처럼 수량이 부족한 DB를,")
+                print("이미지/라벨을 파일명만 바꿔 복사해서 목표 수량까지 늘립니다.")
+                print("특정 클래스가 포함된 이미지만 골라서 증강할 수도 있습니다.")
+                print("  1. 증강 실행")
+                print("  2. 증강 취소 (이전 작업으로 만든 파일 삭제)")
+                sub_choice = input("선택 (1/2, 기본값 1: Enter): ").strip() or '1'
+
+                if sub_choice == '2':
+                    created_files_path = input("created_files.txt 경로를 입력하세요: ").strip()
+                    if not created_files_path:
+                        print("오류: 경로를 입력해야 합니다.")
+                        continue
+                    try:
+                        rollback_duplication(created_files_path)
+                    except Exception as e:
+                        print(f"\n롤백 중 오류 발생: {e}")
+                        traceback.print_exc()
+                    continue
+
+                input_path = input("입력 경로 또는 파일 리스트(.txt)를 입력하세요 (기본 경로: Enter): ")
+                if not input_path:
+                    input_path = get_default_input_path()
+
+                is_valid, err_msg = validate_input_source(input_path)
+                if not is_valid:
+                    print(err_msg)
+                    continue
+
+                output_path = input("출력 저장 경로를 입력하세요 (기본 경로: Enter): ")
+                if not output_path:
+                    output_path = get_default_output_path(input_path)
+
+                keyword_input = input("파일명 필터링 키워드를 입력하세요 (없으면 Enter): ").strip()
+                keyword = keyword_input if keyword_input else None
+
+                # 증강 대상 클래스 필터 (해당 클래스가 포함된 이미지만 복제)
+                target_classes = None
+                class_match_mode = 'any'
+
+                print("\n증강할 클래스를 지정하면 그 클래스가 들어있는 이미지만 복제합니다.")
+                print("(나머지 이미지는 원본 그대로 최종 리스트에 남습니다)")
+                class_input = input("증강 대상 클래스 ID (예: 0,2,5 또는 0-3 / 전체 증강은 Enter): ").strip()
+
+                if class_input:
+                    target_classes, class_err = parse_class_id_list(class_input)
+                    if class_err:
+                        print(f"오류: {class_err}")
+                        continue
+
+                    if len(target_classes) > 1:
+                        print("\n대상 이미지 판정 방식을 선택하세요.")
+                        print("  1. OR  - 지정한 클래스 중 하나라도 있으면 증강 [권장]")
+                        print("  2. AND - 지정한 클래스가 모두 있는 이미지만 증강")
+                        match_choice = input("선택 (1/2, 기본값 1: Enter): ").strip() or '1'
+                        class_match_mode = 'all' if match_choice == '2' else 'any'
+
+                if target_classes:
+                    print("\n목표 수량은 '증강 대상(해당 클래스 포함) 이미지' 기준으로 계산됩니다.")
+                target_input = input("목표 수량을 입력하세요 (예: 300 / 3x / 3배): ").strip()
+                if not target_input:
+                    print("오류: 목표 수량을 입력해야 합니다.")
+                    continue
+
+                print("\n복사본을 어디에 만들까요?")
+                print("  1. 새 출력 폴더에 생성 (원본 DB는 그대로 유지) [권장]")
+                print("  2. 원본과 같은 폴더에 생성 (원본 DB 자체가 늘어남)")
+                placement_choice = input("선택 (1/2, 기본값 1: Enter): ").strip() or '1'
+                placement = 'inplace' if placement_choice == '2' else 'new'
+
+                print("\n복제 방식을 선택하세요.")
+                print("  1. 실제 파일 복사 (디스크 사용, 어떤 학습 코드에서도 안전) [권장]")
+                print("  2. 하드링크 (같은 디스크에서 용량 거의 0, 실패 시 자동 복사)")
+                print("  3. 심볼릭 링크 (용량 0, 리눅스 권장 / 윈도우는 권한 필요)")
+                print("  4. 리스트 중복만 (파일 생성 없음, 리스트에 같은 경로를 여러 번 기록)")
+                copy_choice = input("선택 (1-4, 기본값 1: Enter): ").strip() or '1'
+                copy_mode = {'1': 'copy', '2': 'hardlink', '3': 'symlink', '4': 'list'}.get(copy_choice, 'copy')
+
+                balance_choice = input("\n인스턴스가 적은 클래스를 우선 복제할까요? (y/n, 기본값 n: Enter): ").strip().lower()
+                balance_classes = balance_choice == 'y'
+
+                include_choice = input("최종 리스트에 원본도 포함할까요? (y/n, 기본값 y: Enter): ").strip().lower()
+                include_original_in_list = include_choice != 'n'
+
+                print(f"\n처리 시작...")
+                print(f"입력 경로: {input_path}")
+                print(f"출력 경로: {output_path}")
+                print(f"목표 수량: {target_input}")
+                if target_classes:
+                    print(f"증강 대상 클래스: {target_classes} "
+                          f"({'AND' if class_match_mode == 'all' else 'OR'})")
+                else:
+                    print("증강 대상 클래스: 전체 (필터 없음)")
+
+                try:
+                    stats = expand_dataset_by_duplication(
+                        input_path, output_path, target_input,
+                        placement=placement, copy_mode=copy_mode,
+                        balance_classes=balance_classes,
+                        include_original_in_list=include_original_in_list,
+                        keyword=keyword,
+                        target_classes=target_classes,
+                        class_match_mode=class_match_mode)
+
+                    if stats:
+                        print("\nDB 증강 복제 완료!")
+                        print(f"원본 수량: {stats['base_cnt']}개")
+                        if stats.get('target_classes'):
+                            print(f"증강 대상 클래스: {stats['target_classes']} "
+                                  f"({'AND' if stats['class_match_mode'] == 'all' else 'OR'})")
+                            print(f"증강 대상 수량: {stats['dup_base_cnt']}개 "
+                                  f"(증강 제외 {stats['skipped_cnt']}개)")
+                        print(f"목표 수량: {stats['target_cnt']}개")
+                        print(f"생성한 복사본: {stats['created_cnt']}개 "
+                              f"(라벨 {stats['created_label_cnt']}개, 빈 라벨 {stats['empty_label_cnt']}개)")
+                        print(f"최종 리스트 수량: {stats['final_total']}개")
+                        print(f"에러 발생: {stats['error_cnt']}개")
+
+                        if stats['mode_counts']:
+                            print(f"\n실제 사용된 복제 방식:")
+                            for mode_name, cnt in stats['mode_counts'].items():
+                                print(f"  {mode_name}: {cnt}개")
+
+                        print(f"\n클래스별 인스턴스 수 (증강 전 → 증강 후):")
+                        all_classes = sorted(set(stats['before_class_counts']) | set(stats['after_class_counts']))
+                        for class_id in all_classes:
+                            before = stats['before_class_counts'].get(class_id, 0)
+                            after = stats['after_class_counts'].get(class_id, 0)
+                            ratio = (after / before) if before else 0
+                            print(f"  클래스 {class_id}: {before} → {after} ({ratio:.2f}배)")
+
+                        print(f"\n생성된 파일:")
+                        print(f"  - expanded_dataset.txt: 최종 학습용 리스트")
+                        print(f"  - duplicated_only.txt: 복사본 경로만")
+                        print(f"  - duplication_map.txt: 원본↔복사본 매핑 (검증용)")
+                        print(f"  - created_files.txt: 생성 파일 전체 목록 (롤백용)")
+                        print(f"  - expansion_stats.txt: 증강 전/후 클래스 통계")
+                        print(f"\n주의: 복사본과 원본이 train/valid로 나뉘면 검증 점수가 부풀려집니다.")
+                        print(f"      train/valid 분할을 먼저 하고, train 리스트만 증강하세요.")
+
+                except Exception as e:
+                    print(f"\n데이터 처리 중 오류 발생: {e}")
+                    traceback.print_exc()
+
+            elif choice == '15':
+                input_path = input("입력 데이터셋 경로 또는 이미지 목록(.txt): ").strip()
+                if not input_path:
+                    input_path = get_default_input_path()
+                is_valid, err_msg = validate_input_source(input_path)
+                if not is_valid:
+                    print(err_msg)
+                    continue
+                output_path = input("출력 저장 경로 (Enter: 기본 output): ").strip()
+                if not output_path:
+                    output_path = get_default_output_path(input_path)
+                try:
+                    num_files = int(input("생성할 전체 이미지 수 (예: 30000): ").strip())
+                    train_rate = float(input("TRAIN 비율 (기본값 0.8): ") or '0.8')
+                    seed = int(input("랜덤 시드 (기본값 42): ") or '42')
+                    if num_files <= 0 or not 0 < train_rate < 1:
+                        raise ValueError
+                except ValueError:
+                    print("오류: 이미지 수는 1 이상, TRAIN 비율은 0과 1 사이여야 합니다.")
+                    continue
+                try:
+                    stats = _annotation_balanced_limited_dataset(
+                        input_path, output_path, num_files, train_rate, seed)
+                    print("\n제한 수량 클래스 균형 리스트 생성 완료!")
+                    print(f"선택: {stats['selected_cnt']} | TRAIN: {stats['train_img_cnt']} "
+                          f"({stats['train_annotations']} annotations) | "
+                          f"VALID: {stats['valid_img_cnt']} "
+                          f"({stats['valid_annotations']} annotations)")
+                    print(f"결과 경로: {stats['output_path']}")
+                    print("클래스별 실제 비율은 limited_balanced_info.txt에서 확인할 수 있습니다.")
+                except Exception as e:
+                    print(f"\n데이터 처리 중 오류 발생: {e}")
+                    traceback.print_exc()
+
+            elif choice == '16':
+                print("\n=== 이미지/라벨 매칭 검사 ===")
+                print("  1. 분석 + 불일치 파일 분리 이동")
+                print("  2. 분석만 (이동 없음)")
+                print("  3. 이전 이동 되돌리기 (pair_move_log.tsv)")
+                sub_choice = input("선택 (기본값 1: Enter): ").strip() or '1'
+
+                if sub_choice == '3':
+                    log_path = input("pair_move_log.tsv 경로 또는 이동했던 폴더: ").strip().strip('"')
+                    if log_path:
+                        restore_moved_pairs(log_path)
+                    continue
+                if sub_choice not in ('1', '2'):
+                    print("잘못된 선택입니다.")
+                    continue
+
+                input_path = input("이미지/라벨이 있는 폴더 경로: ").strip().strip('"')
+                if not input_path or not os.path.isdir(input_path):
+                    print(f"오류: 폴더가 존재하지 않습니다: {input_path}")
+                    continue
+
+                abs_input = os.path.abspath(input_path)
+                default_move = os.path.join(os.path.dirname(abs_input),
+                                            os.path.basename(abs_input) + '_unmatched')
+                move_root = input(f"불일치 파일 이동(결과 저장) 경로 (기본값: {default_move}): ").strip().strip('"')
+                if not move_root:
+                    move_root = default_move
+
+                try:
+                    stats = separate_unmatched_pairs(input_path, move_root, do_move=(sub_choice == '1'))
+                    if stats:
+                        print(f"\n정상 DB 수량: {stats['matched_cnt']}쌍")
+                        print(f"결과 파일: {stats['move_root']}")
+                        print("  - pair_report.txt: 전체/폴더별 분석 결과")
+                        print("  - matched_images.txt: 정상(매칭) 이미지 목록")
+                        print("  - image_only.txt / label_only.txt: 불일치 목록")
+                        if stats['moved_cnt']:
+                            print("  - pair_move_log.tsv: 이동 기록 (메뉴 16-3으로 되돌리기 가능)")
+                except Exception as e:
+                    print(f"\n데이터 처리 중 오류 발생: {e}")
+                    traceback.print_exc()
+
+            elif choice == '17':
                 print("프로그램을 종료합니다.")
                 return 0
 

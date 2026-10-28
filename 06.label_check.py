@@ -3030,7 +3030,11 @@ class ImageViewer:
                                             current_row += 2
                                 else:
                                     # 전체 이미지 모드일 때
-                                    img_resized = img.resize((200, 200))
+                                    if img_resized is None:
+                                        img_resized = img.resize((200, 200))
+                                        if len(self.image_cache) >= self.cache_limit:
+                                            self.image_cache.pop(next(iter(self.image_cache)))
+                                        self.image_cache[cache_key] = img_resized
                                     self.draw_boxes_on_image(img_resized, label_path, current_row, current_col, start_idx + idx)
                                     current_col += 1
                                     if current_col >= 5:
@@ -3074,7 +3078,8 @@ class ImageViewer:
             
             print(f"Number of images for class {class_idx}: {len(self.labelsdata[class_idx])}")
             # Get all images for selected class
-            class_images = [path for path in self.labels if path in self.labelsdata[class_idx]]
+            class_image_set = set(self.labelsdata[class_idx])
+            class_images = [path for path in self.labels if path in class_image_set]
             if not class_images:
                 print(f"No images found for class {class_idx}")
                 return
@@ -3123,24 +3128,7 @@ class ImageViewer:
                     print(f"File not found: {img_path} or {label_path}")
                     continue
                 cache_key = f"{img_path}_{200}"  # 200px 크기 썸네일
-                if cache_key in self.image_cache:
-                    img_resized = self.image_cache[cache_key]
-                    img = Image.open(img_path)  # 원본 이미지도 필요한 경우
-                else:
-                    try:
-                        img = Image.open(img_path)
-                        img_resized = img.resize((200, 200))
-                        
-                        # 캐시 크기 제한 확인
-                        if len(self.image_cache) >= self.cache_limit:
-                            # 가장 오래된 항목 제거 (간단한 LRU 전략)
-                            self.image_cache.pop(next(iter(self.image_cache)))
-                            
-                        # 캐시에 저장
-                        self.image_cache[cache_key] = img_resized
-                    except Exception as e:
-                        print(f"이미지 로드 오류 ({img_path}): {e}")
-                        continue
+                img_resized = self.image_cache.get(cache_key)
                 show_full = hasattr(self, 'current_full_view') and img_path == self.current_full_view
 
                 try:
@@ -3154,8 +3142,11 @@ class ImageViewer:
                             try:
                                 # 라벨 파일에서 클래스 박스 정보 읽기
                                 box_idx = 0  # 같은 클래스 내 박스 인덱스
-                                with open(label_path, "r", encoding='utf-8') as f:
-                                    lines = f.readlines()
+                                lines = self._get_label_data(label_path)
+                                overlap_result = None
+                                if overlap_class != "선택 안함":
+                                    overlap_result = self.check_box_overlap(
+                                        label_path, class_idx, int(overlap_class))
                                     for line_idx, line in enumerate(lines):
                                         try:
                                             class_index, x_center, y_center, width, height = map(float, line.split())
@@ -3171,8 +3162,7 @@ class ImageViewer:
                                             show_box = True
                                             if overlap_class != "선택 안함":
                                                 # 박스별 겹침 정보 확인
-                                                has_overlap, max_iou, detail_info, all_boxes_info = self.check_box_overlap(
-                                                    label_path, class_idx, int(overlap_class))
+                                                has_overlap, max_iou, detail_info, all_boxes_info = overlap_result
                                                 
                                                 # 해당 박스의 겹침 정보 찾기
                                                 current_box_overlap = False
@@ -3225,7 +3215,11 @@ class ImageViewer:
                                         show_image = False
                                 
                                 if show_image:
-                                    img_resized = img.resize((200, 200))
+                                    if img_resized is None:
+                                        img_resized = img.resize((200, 200))
+                                        if len(self.image_cache) >= self.cache_limit:
+                                            self.image_cache.pop(next(iter(self.image_cache)))
+                                        self.image_cache[cache_key] = img_resized
                                     self.draw_boxes_on_image(img_resized, label_path, current_row, current_col, start_idx + idx)
                                     current_col += 1
                                     if current_col >= 5:
@@ -3244,7 +3238,11 @@ class ImageViewer:
                                     show_image = False
                             
                             if show_image:
-                                img_resized = img.resize((200, 200))
+                                if img_resized is None:
+                                    img_resized = img.resize((200, 200))
+                                    if len(self.image_cache) >= self.cache_limit:
+                                        self.image_cache.pop(next(iter(self.image_cache)))
+                                    self.image_cache[cache_key] = img_resized
                                 self.draw_boxes_on_image(img_resized, label_path, current_row, current_col, start_idx + idx)
                                 current_col += 1
                                 if current_col >= 5:
@@ -5197,7 +5195,8 @@ class ImageViewer:
         class_idx = int(float(selected_class))
         
         # 해당 클래스의 모든 이미지 가져오기
-        class_images = [path for path in self.labels if path in self.labelsdata[class_idx]]
+        class_image_set = set(self.labelsdata[class_idx])
+        class_images = [path for path in self.labels if path in class_image_set]
         
         # 겹침 필터가 적용된 경우 필터링
         overlap_class = self.overlap_class_selector.get()
