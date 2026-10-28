@@ -4,7 +4,7 @@
 # 이미지 처리
 Pillow>=9.0.0
 opencv-python>=4.5.0
-numpy>=1.21.0
+numpy>=1.21.0,<2
 
 # GUI (tkinter는 Python 기본 패키지로 별도 설치 불필요)
 
@@ -12,6 +12,7 @@ numpy>=1.21.0
 natsort>=8.0.0
 pyautogui>=0.9.50
 tqdm>=4.60.0
+chardet>=4.0.0   # 02.data_slice 인코딩 감지
 six>=1.16.0
 
 # 시스템 모니터링 (선택적)

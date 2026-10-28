@@ -9,6 +9,7 @@
 - 중복 라인 제거 옵션
 - 셔플(무작위 순서) 옵션
 - 파일 존재 여부 검증 옵션
+- 경로 단어 교체 옵션 (--replace 원본=교체, 여러 번 지정 가능)
 
 사용 예시:
     # 기본 병합 (중복 제거)
@@ -25,6 +26,9 @@
 
     # 전체 옵션 조합
     python 08.list_merge.py train1.txt train2.txt train3.txt -o merged.txt --shuffle --verify
+
+    # 경로 단어 교체 (파일 1개만 주면 단어 교체 전용으로 동작)
+    python 08.list_merge.py list.txt -o list_linux.txt --replace 'V:\\=/mnt/v/' --replace '\\=/'
 """
 
 import os
@@ -89,7 +93,7 @@ def verify_file_exists(file_list):
     return existing, missing
 
 
-def merge_lists(input_files, output_file, allow_duplicates=False, shuffle=False, verify=False):
+def merge_lists(input_files, output_file, allow_duplicates=False, shuffle=False, verify=False, replacements=None):
     """
     여러 리스트 파일을 하나로 병합합니다.
 
@@ -99,6 +103,7 @@ def merge_lists(input_files, output_file, allow_duplicates=False, shuffle=False,
         allow_duplicates: True이면 중복 허용, False이면 중복 제거
         shuffle: True이면 결과를 셔플
         verify: True이면 파일 존재 여부 확인
+        replacements: [(원본, 교체), ...] 각 라인에 순서대로 적용할 단어 교체
 
     Returns:
         dict: 처리 통계 정보
@@ -119,6 +124,17 @@ def merge_lists(input_files, output_file, allow_duplicates=False, shuffle=False,
         all_lines.extend(lines)
 
     stats['total_lines'] = len(all_lines)
+
+    # 단어 교체 (중복 제거 전에 적용해야 교체 후 같아진 경로도 중복으로 처리된다)
+    if replacements:
+        for old_word, new_word in replacements:
+            print(f"[INFO] 교체: '{old_word}' -> '{new_word}'")
+        replaced_lines = []
+        for line in all_lines:
+            for old_word, new_word in replacements:
+                line = line.replace(old_word, new_word)
+            replaced_lines.append(line)
+        all_lines = replaced_lines
 
     # 중복 처리
     if allow_duplicates:
@@ -238,6 +254,13 @@ def main():
     )
 
     parser.add_argument(
+        '--replace',
+        action='append',
+        metavar='원본=교체',
+        help='각 라인의 단어 교체 (여러 번 지정 가능, 지정한 순서대로 적용)'
+    )
+
+    parser.add_argument(
         '--seed',
         type=int,
         default=None,
@@ -256,6 +279,16 @@ def main():
             print(f"[ERROR] 입력 파일을 찾을 수 없습니다: {input_file}")
             sys.exit(1)
 
+    # 단어 교체 인자 파싱
+    replacements = []
+    for item in args.replace or []:
+        if '=' not in item:
+            parser.error(f"--replace 형식은 '원본=교체' 입니다: {item}")
+        old_word, new_word = item.split('=', 1)
+        if not old_word:
+            parser.error(f"--replace 원본 단어가 비어 있습니다: {item}")
+        replacements.append((old_word, new_word))
+
     # 랜덤 시드 설정
     if args.seed is not None:
         random.seed(args.seed)
@@ -271,6 +304,7 @@ def main():
     print(f"중복 제거: {'아니오' if args.allow_duplicates else '예'}")
     print(f"셔플: {'예' if args.shuffle else '아니오'}")
     print(f"파일 검증: {'예' if args.verify else '아니오'}")
+    print(f"단어 교체: {len(replacements)}개" if replacements else "단어 교체: 없음")
     print("=" * 60)
 
     # 병합 실행
@@ -279,7 +313,8 @@ def main():
         output_file=args.output,
         allow_duplicates=args.allow_duplicates,
         shuffle=args.shuffle,
-        verify=args.verify
+        verify=args.verify,
+        replacements=replacements
     )
 
     # 결과 출력

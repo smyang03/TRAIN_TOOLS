@@ -41,6 +41,13 @@ class YOLOLabelModifier:
                 orig, new = mapping.split(':')
                 self.class_mapping[orig.strip()] = new.strip()
         
+        # 클래스 복제 설정 (원본 클래스 라벨을 대상 클래스로 하나 더 추가)
+        self.duplication_mappings = defaultdict(list)
+        if args.duplicate:
+            for mapping in args.duplicate.split(','):
+                source, target = mapping.split(':')
+                self.duplication_mappings[source.strip()].append(target.strip())
+
         # 클래스 시프트 설정
         self.apply_shift = False
         if args.shift_value is not None:
@@ -114,7 +121,8 @@ class YOLOLabelModifier:
     def process_labels(self, original_labels):
         """라벨 처리 로직"""
         new_labels = []
-        
+        duplicate_labels = []  # 복제 라벨은 마지막에 추가
+
         for line in original_labels:
             parts = line.split()
             if len(parts) < 5:  # YOLO 포맷은 최소 5개 값이 필요
@@ -131,7 +139,15 @@ class YOLOLabelModifier:
                 except ValueError:
                     # 변환 실패 시 원래 값 유지
                     pass
-            
+
+            # 복제 설정에 따라 원본 라인을 대상 클래스로 복제 (Windows 버전과 같이 삭제/매핑 전에 처리)
+            for target_class in self.duplication_mappings.get(class_id, []):
+                duplicate_labels.append(" ".join([target_class] + parts[1:]))
+                key = f"복제: {class_id} → {target_class}"
+                self.class_stats[key] = self.class_stats.get(key, 0) + 1
+                self.annotated_classes[target_class] += 1
+                self.total_annotations += 1
+
             # 클래스 선택 모드에서는 선택된 클래스만 처리
             if self.selected_classes and class_id not in self.selected_classes:
                 continue
@@ -184,7 +200,8 @@ class YOLOLabelModifier:
             parts[0] = new_class_id
             new_line = " ".join(parts)
             new_labels.append(new_line)
-        
+
+        new_labels.extend(duplicate_labels)
         return new_labels
     
     def sort_stats_by_class(self):
@@ -628,6 +645,9 @@ def parse_args():
     # 클래스 매핑 관련 인자
     parser.add_argument('--class-mapping', help='클래스 매핑 (형식: "원본:새클래스,원본:새클래스,...") 예: "0:1,2:3"')
     
+    # 클래스 복제 관련 인자
+    parser.add_argument('--duplicate', help='클래스 복제 (형식: "원본:대상,...") 예: "0:5" → 0번 라벨을 5번으로 하나 더 추가')
+
     # 클래스 시프트 관련 인자
     parser.add_argument('--shift-start', type=int, default=0, help='시프트 시작 클래스 ID')
     parser.add_argument('--shift-value', type=int, help='시프트 값 (+/-)')
