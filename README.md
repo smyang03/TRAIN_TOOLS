@@ -12,7 +12,7 @@
 | 05 | 라벨 클래스 변경 / 삭제 / 복제 | `05.label_change.py` | `linux/05.label_change.py` |
 | 06 | 라벨 검수 | `06.label_check.py` | - |
 | 08 | 리스트 병합 / 경로 단어 교체 | `08.list_merge.py` | `linux/08.list_merge.py` |
-| 10 | 이미지 육안 검수 / 분류 | `10.ImageCheck.py` | - |
+| 10 | 이미지 육안 검수 / 분류 | `10.ImageCheck.py` | `linux/10.image_check.py` (썸네일 시트 + 번호로 분류) |
 
 ```
 .
@@ -37,6 +37,11 @@ python3 linux/05.label_change.py --input-path list.txt --input-mode file --in-pl
 
 # 08 리스트 병합 + Windows 경로를 Linux 경로로 교체
 python3 linux/08.list_merge.py a.txt b.txt -o merged.txt --replace 'V:\=/mnt/v/' --replace '\=/'
+
+# 10 이미지 검수: 번호 붙은 썸네일 시트 생성 -> 시트 보고 번호로 분류 -> 진행 현황
+python3 linux/10.image_check.py sheet list.txt --boxes
+python3 linux/10.image_check.py apply list.txt_imagecheck --category 주간 --ids 1-40,45
+python3 linux/10.image_check.py stats list.txt_imagecheck --unprocessed
 ```
 
 각 도구의 전체 옵션은 `-h`로 확인한다.
